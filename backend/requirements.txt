@@ -1,0 +1,33 @@
+# CityLand 9 backend — LOCAL / LAN deployment only (no cloud services).
+# Install:  python -m pip install -r backend/requirements.txt
+#
+# The root requirements.txt is still used by START_WINDOWS.bat for the legacy
+# SQLite deployment. It will be retired once the backend runs on local MySQL.
+
+# Web framework (existing, same pins as the working system)
+Flask==3.1.3
+Werkzeug==3.1.3            # also provides the existing password hashing
+waitress==3.0.2            # production WSGI server for the local server / LAN
+python-dotenv==1.2.3       # reads the local .env file
+
+# Database (existing ORM; SQLAlchemy stays on 1.4 — see V10_63_DLL_FIX_NOTES.txt)
+Flask-SQLAlchemy==3.0.5
+SQLAlchemy==1.4.54
+
+# Local MySQL / MariaDB support (new)
+PyMySQL==1.2.3             # pure-Python driver: no compiled DLLs, no MySQL client install needed
+cryptography==50.0.1       # required by PyMySQL for MySQL 8 caching_sha2_password logins
+
+# Schema migrations (new; planned in docs/migration.md, section 8)
+Flask-Migrate==4.1.0
+alembic==1.19.2
+
+# Existing features
+openpyxl==3.1.5            # Excel database export/import and report export
+qrcode[pil]==8.2           # SOA payment QR code
+
+# Deliberately NOT included:
+#   pyodbc      - only needed by the old SQL Server migration script, not by the target system
+#   Flask-CORS  - the React build is served by this same local Flask server (same origin);
+#                 in development the Vite dev server proxies /api, so no CORS is needed
+#   any cloud SDK (Firebase, AWS, Supabase, ...) - the client requires a self-hosted system
