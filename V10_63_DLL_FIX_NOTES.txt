@@ -1,0 +1,19 @@
+CITYLAND 9 V10.63 - DLL ERROR FIX
+
+Problem:
+Windows Application Control was blocking SQLAlchemy 2.x _result_cy.
+
+Fix in this package:
+- Flask 3.1.3
+- Flask-SQLAlchemy 3.0.5
+- SQLAlchemy 1.4.54
+- Other dependencies pinned to the versions used by the project.
+
+How to use:
+1. Extract this ZIP to a NEW folder.
+2. Run FIX_DLL_ERROR.bat as Administrator.
+3. It recreates/updates .venv dependencies and tests app.py.
+4. If successful it starts the system automatically.
+
+Do not delete or modify the SQL Server database.
+The existing application database configuration is retained.

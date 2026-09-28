@@ -1,0 +1,13 @@
+{% extends "base.html" %}{% block content %}<div class="eyebrow">OPERATIONS</div><h1>Expenses</h1><p class="subtitle">Association expenses with standardized categories</p><div class="card form-card"><form method="post" class="form-grid"><label>Date<input type="date" name="expense_date" value="{{today}}"></label><label>Category<select name="category"><option>ELECTRICITY</option><option>WATER</option><option>INTERNET</option><option>SALARY</option><option>REPAIR</option><option>MAINTENANCE</option><option>SECURITY</option><option>OFFICE SUPPLIES</option><option>INSURANCE</option><option>PERMITS & FEES</option><option>OTHERS</option></select></label><label>Description<input name="description" required></label><label>Amount<input type="number" step="0.01" name="amount" required></label><div class="form-actions"><button class="btn primary">Save Expense</button></div></form></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Category</th><th>Description</th><th>Amount</th></tr></thead><tbody>{% for e in expenses %}<tr><td>{{e.expense_date}}</td><td><span class="badge">{{e.category}}</span></td><td>{{e.description}}</td><td class="red">{{e.amount|currency}}</td></tr>{% else %}<tr><td colspan="4" class="empty">No expenses recorded.</td></tr>{% endfor %}</tbody></table></div>{% endblock %}
+<script>
+(function(){
+ function syncTheme(){
+   var b=document.body,r=document.documentElement;
+   var t=(r.getAttribute('data-theme')||b.getAttribute('data-theme')||'').toLowerCase();
+   if(t==='dark') b.classList.add('cl-dark');
+   else if(t==='light') b.classList.remove('cl-dark');
+ }
+ syncTheme();
+ new MutationObserver(syncTheme).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+})();
+</script>

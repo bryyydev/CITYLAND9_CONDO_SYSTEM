@@ -1,0 +1,12 @@
+<!doctype html><html><body style="font-family:Arial,sans-serif;color:#222;line-height:1.5"><h2>CITYLAND 9 CONDOMINIUM CORPORATION</h2><h3>Statement of Account</h3><p><strong>Unit:</strong> {{bill.unit.unit_no}}<br><strong>Billing Period:</strong> {{bill.billing_month|month_year}}<br><strong>Statement No.:</strong> BILL-{{'%03d'|format(bill.id)}}<br><strong>Due Date:</strong> {{bill.due_date.strftime('%B %d, %Y') if bill.due_date else '—'}}</p><p><strong>Owner/Tenant:</strong> {{recipient_name}}</p><table cellpadding="8" cellspacing="0" border="1" style="border-collapse:collapse;width:100%;max-width:650px"><tr><th align="left">Charge</th><th align="right">Amount</th></tr><tr><td>Condo Dues</td><td align="right">{{bill.assessment|currency}}</td></tr><tr><td>Water</td><td align="right">{{bill.water|currency}}</td></tr><tr><td>Parking</td><td align="right">{{bill.parking_dues|currency}}</td></tr><tr><td>Storage</td><td align="right">{{bill.storage_dues|currency}}</td></tr><tr><td>Previous Balance</td><td align="right">{{bill.previous_balance|currency}}</td></tr><tr><td>Penalty</td><td align="right">{{bill.penalty|currency}}</td></tr><tr><td>Other / Adjustment</td><td align="right">{{bill.other|currency}} + {{bill.adjustment|currency}}</td></tr><tr><th align="left">TOTAL AMOUNT DUE</th><th align="right">{{bill_total(bill)|currency}}</th></tr></table>{% if water_reading %}<p><strong>Water Consumption:</strong> {{water_reading.usage|num}} m³ × {{water_reading.rate|currency}}/m³ = {{water_reading.bill_amount|currency}}</p>{% endif %}<p>{{setting('online_payment_instructions','Please contact Admin for payment instructions.')}}</p><p>This is an automated message from the CityLand 9 Condo Web System.</p><script>
+(function(){
+ function syncTheme(){
+   var b=document.body,r=document.documentElement;
+   var t=(r.getAttribute('data-theme')||b.getAttribute('data-theme')||'').toLowerCase();
+   if(t==='dark') b.classList.add('cl-dark');
+   else if(t==='light') b.classList.remove('cl-dark');
+ }
+ syncTheme();
+ new MutationObserver(syncTheme).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+})();
+</script></body></html>

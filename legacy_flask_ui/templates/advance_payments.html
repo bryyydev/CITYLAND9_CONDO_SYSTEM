@@ -1,0 +1,36 @@
+{% extends "base.html" %}{% block content %}
+<div class="eyebrow">BILLING</div><h1>Advance Payments</h1><p class="subtitle">Record 1-year or 2-year advance condo dues and automatically apply the credit to monthly condo dues.</p>
+<div class="card form-card">
+  <h2>💳 Record Advance Condo Dues</h2>
+  <p class="muted">Example: ₱24,000 for 12 months creates a ₱2,000 monthly credit. The system applies the credit to Condo Dues only; water and parking remain separate.</p>
+  <form method="post" class="form-grid">
+    <label>Unit<select name="unit_id" required><option value="">Select Unit</option>{% for u in units %}<option value="{{u.id}}" {% if selected_unit==u.id %}selected{% endif %}>Unit {{u.unit_no}} — {{u.owner_name or 'No owner'}}</option>{% endfor %}</select></label>
+    <label>Payment Date<input type="date" name="payment_date" value="{{today}}" required></label>
+    <label>Advance Amount<input type="number" name="amount" min="0.01" step="0.01" placeholder="24000.00" required></label>
+    <label>Coverage Start Month<input type="month" name="start_month" value="{{current_month}}" required></label>
+    <label>Number of Months<select name="coverage_months"><option value="1">1 Month</option><option value="3">3 Months</option><option value="6">6 Months</option><option value="12" selected>12 Months (1 Year)</option><option value="24">24 Months (2 Years)</option></select></label>
+    <label>Payment Method<select name="payment_method"><option value="CASH">CASH</option><option value="CHECK">CHECK</option><option value="ONLINE">ONLINE</option></select></label>
+    <label>Reference Number<input name="reference" maxlength="100" placeholder="Check no. / online reference"></label>
+    <label>Remarks<input name="remarks" maxlength="300" placeholder="Optional remarks"></label>
+    <div class="form-actions"><button class="btn primary" type="submit">Save Advance Payment</button></div>
+  </form>
+</div>
+<div class="card">
+  <div class="card-head"><div><h2>Advance Payment Ledger</h2><p class="muted">Remaining balances are calculated from the monthly applications already made to bills.</p></div></div>
+  <div class="table-wrap"><table><thead><tr><th>UNIT</th><th>PAYMENT DATE</th><th>ADVANCE</th><th>MONTHLY CREDIT</th><th>COVERAGE</th><th>APPLIED</th><th>REMAINING</th><th>METHOD / REF.</th><th>REMARKS</th></tr></thead><tbody>
+  {% for a,remaining in advances %}<tr><td><strong>{{a.unit.unit_no}}</strong><br><span class="muted small">{{a.unit.owner_name or '—'}}</span></td><td>{{a.payment_date}}</td><td><strong>{{a.amount|currency}}</strong></td><td>{{a.monthly_amount|currency}}</td><td>{{a.start_month|month_year}} – {{month_shift(a.start_month, (a.coverage_months or 1)-1)|month_year}}</td><td>{{(a.amount|float - remaining|float)|currency}}</td><td><strong class="cyan">{{remaining|currency}}</strong></td><td>{{a.payment_method}}{% if a.reference %}<br><span class="muted small">{{a.reference}}</span>{% endif %}</td><td>{{a.remarks or '—'}}</td></tr>{% else %}<tr><td colspan="9" class="empty">No advance payments recorded yet.</td></tr>{% endfor %}
+  </tbody></table></div>
+</div>
+{% endblock %}
+<script>
+(function(){
+ function syncTheme(){
+   var b=document.body,r=document.documentElement;
+   var t=(r.getAttribute('data-theme')||b.getAttribute('data-theme')||'').toLowerCase();
+   if(t==='dark') b.classList.add('cl-dark');
+   else if(t==='light') b.classList.remove('cl-dark');
+ }
+ syncTheme();
+ new MutationObserver(syncTheme).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+})();
+</script>

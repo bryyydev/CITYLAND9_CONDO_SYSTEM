@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header">
+  <h1>Employee Payroll</h1>
+  <form method="get">
+    <label>Period Start <input type="date" name="start" value="{{start}}"></label>
+    <label>Period End <input type="date" name="end" value="{{end}}"></label>
+    <button class="btn">Load</button>
+  </form>
+</div>
+
+<div class="card">
+<h2>Generate Payroll</h2>
+<form method="post" class="form-grid">
+  <label>Employee
+    <select name="employee_id" required>{% for e in employees %}<option value="{{e.id}}">{{e.full_name if e else ('Employee #' ~ p.employee_id)}}</option>{% endfor %}</select>
+  </label>
+  <label>Basic Salary <input type="number" step="0.01" name="basic_salary" placeholder="Uses monthly salary if blank"></label>
+  <label>Overtime Pay <input type="number" step="0.01" name="overtime_pay" placeholder="Leave blank = approved OT"></label>
+  <label>Allowances <input type="number" step="0.01" name="allowances" value="0"></label>
+  <label>Other Deductions <input type="number" step="0.01" name="deductions" value="0"></label>
+  <label>Status <select name="status"><option>DRAFT</option><option>FINAL</option><option>PAID</option></select></label>
+  <label>Remarks <input type="text" name="remarks"></label>
+  <div><button class="btn btn-primary" type="submit">Generate Payroll</button></div>
+</form>
+</div>
+
+<div class="table-wrap">
+<table class="modern-table">
+<thead><tr><th>EMPLOYEE</th><th>PERIOD</th><th>BASIC</th><th>OT</th><th>ALLOWANCES</th><th>DEDUCTIONS</th><th>NET PAY</th><th>STATUS</th><th>ACTION</th></tr></thead>
+<tbody>
+{% for p in payroll %}
+{% set e = employees|selectattr('id','equalto',p.employee_id)|first %}
+<tr>
+<td>{{e.full_name if e and e.full_name is defined else (e.name if e and e.name is defined else ('Employee #' ~ p.employee_id))}}</td>
+<td>{{p.period_start}} – {{p.period_end}}</td>
+<td>₱{{"%.2f"|format(p.basic_salary or 0)}}</td>
+<td>₱{{"%.2f"|format(p.overtime_pay or 0)}}</td>
+<td>₱{{"%.2f"|format(p.allowances or 0)}}</td>
+<td>₱{{"%.2f"|format((p.deductions or 0)+(p.absences or 0)+(p.late_undertime or 0))}}</td>
+<td><strong>₱{{"%.2f"|format(p.net_pay or 0)}}</strong></td>
+<td>{{p.status}}</td>
+<td><a class="btn btn-primary" target="_blank" href="{{url_for('employee_payroll_print', payroll_id=p.id)}}">Print Payslip</a> <a class="btn" href="{{url_for('employee_payroll_statutory', payroll_id=p.id)}}">Gov. Contributions</a></td>
+</tr>
+{% else %}<tr><td colspan="9" class="empty">No payroll records for this period.</td></tr>{% endfor %}
+</tbody></table></div>
+{% endblock %}
+<script>
+(function(){
+ function syncTheme(){
+   var b=document.body,r=document.documentElement;
+   var t=(r.getAttribute('data-theme')||b.getAttribute('data-theme')||'').toLowerCase();
+   if(t==='dark') b.classList.add('cl-dark');
+   else if(t==='light') b.classList.remove('cl-dark');
+ }
+ syncTheme();
+ new MutationObserver(syncTheme).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+})();
+</script>

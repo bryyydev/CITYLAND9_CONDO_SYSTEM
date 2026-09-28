@@ -1,0 +1,6 @@
+V10.13 - Billing/SOA browser layout
+- Compact Billing/SOA table to fit standard desktop browser width.
+- Reduced cell/header spacing and font size only for Billing table.
+- Wrapped long owner/tenant and previous unpaid values instead of forcing horizontal overflow.
+- Compact payment controls and SOA/View/Print buttons.
+- Preserved horizontal scrolling on smaller screens.

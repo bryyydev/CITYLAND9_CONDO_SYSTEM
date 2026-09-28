@@ -1,0 +1,17 @@
+{% extends "base.html" %}{% block content %}
+<div class="eyebrow">OPERATIONS</div><h1>Edit Water Reading</h1><p class="subtitle">Edit the water reading for Unit {{reading.unit.unit_no}} — {{reading.reading_month}}</p>
+<div class="tabs"><a class="tab" href="{{url_for('units')}}">▥ Units</a><a class="tab" href="{{url_for('billing')}}">▤ Billing / SOA</a><a class="tab active" href="{{url_for('water')}}">♨ Water Readings</a></div>
+<div class="card form-card water-entry-card"><div class="section-head"><h2>♨ Add / Edit Water Reading</h2></div><form method="post" class="form-grid"><label>Billing Month<input type="month" value="{{reading.reading_month}}" disabled></label><label>Unit<input value="{{reading.unit.unit_no}} — {{reading.unit.owner_name or 'No owner'}}{% if reading.unit.tenant_name %} / {{reading.unit.tenant_name}}{% endif %}" disabled></label><label>Previous Reading<input type="number" step="0.01" min="0" name="previous_reading" value="{{reading.previous_reading}}" required></label><label>Current Reading<input type="number" step="0.01" min="0" name="current_reading" value="{{reading.current_reading}}" required></label><label>Rate / m³<input type="number" step="0.01" min="0" name="rate" value="{{reading.rate}}" required></label><label>Reading Date<input type="date" name="reading_date" value="{{reading.reading_date}}"></label><div class="form-actions"><button class="btn primary">Save Reading</button><a class="btn" href="{{url_for('water',month=reading.reading_month)}}">Cancel</a></div></form><div class="notice">Consumption: <strong>{{reading.usage|num}} m³</strong> · Water Bill: <strong>{{reading.bill_amount|currency}}</strong>. The water charge is synchronized with the monthly bill.</div></div>
+{% endblock %}
+<script>
+(function(){
+ function syncTheme(){
+   var b=document.body,r=document.documentElement;
+   var t=(r.getAttribute('data-theme')||b.getAttribute('data-theme')||'').toLowerCase();
+   if(t==='dark') b.classList.add('cl-dark');
+   else if(t==='light') b.classList.remove('cl-dark');
+ }
+ syncTheme();
+ new MutationObserver(syncTheme).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+})();
+</script>

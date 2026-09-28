@@ -1,0 +1,13 @@
+CITYLAND 9 CONDO SYSTEM 2026
+V10.60 – Units layout / fixed sidebar / light status UI
+
+Based on V10.59.
+- Fixed left navigation while the main Units area scrolls.
+- Recovered unused horizontal space beside the sidebar.
+- Kept main content scrollable.
+- Changed dark unit/billing status backgrounds to approximately 10% tinted backgrounds.
+- Kept status text dark/bold for readability.
+- Added light treatments for Current/Paid, Pending/Partial, Unpaid, Overdue,
+  Occupied, Vacant, Active, Inactive, Parking and Storage.
+- Retained Android/iOS responsive behavior.
+- No database or billing calculation changes.

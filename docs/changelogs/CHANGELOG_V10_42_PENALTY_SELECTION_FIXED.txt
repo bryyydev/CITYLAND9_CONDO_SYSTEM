@@ -1,0 +1,18 @@
+CITYLAND 9 CONDO WEB SYSTEM V10.42 - PENALTY SELECTION FIXED
+
+Penalty Rule now has four independent checkboxes:
+- Condo Dues
+- Parking
+- Storage
+- Water
+
+Default: Condo Dues selected; Parking, Storage and Water unselected.
+
+The selected components are used consistently by Billing and SOA. Penalty is calculated
+from outstanding selected charge types from prior billing months and only when the
+current bill is overdue. Payments are allocated Condo Dues -> Parking -> Storage -> Water
+for determining the remaining penalty base. Advance payments continue to apply to Condo
+Dues only.
+
+Also fixed the Rates & Rules POST handler so unchecked boxes are saved as 0 instead of
+retaining the previous setting.

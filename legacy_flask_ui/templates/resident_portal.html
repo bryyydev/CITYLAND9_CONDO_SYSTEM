@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="eyebrow">V10.63 COMMUNITY SERVICES</div><h1>Resident Portal</h1>
+<p class="muted">Resident-facing foundation for announcements, maintenance requests and future online payments.</p>
+<div class="grid-3">
+<div class="card"><h3>Unit</h3><div class="metric">{{ profile.unit.unit_no if profile else (unit_id or '—') }}</div><p class="muted">{{ profile.display_name if profile else 'Admin preview' }}</p></div>
+<div class="card"><h3>Open Requests</h3><div class="metric">{{ tickets|selectattr('status','equalto','Open')|list|length }}</div><p class="muted">Maintenance tickets</p></div>
+<div class="card"><h3>Announcements</h3><div class="metric">{{ announcements|length }}</div><p class="muted">Recent published notices</p></div></div>
+<div class="card"><div class="section-head"><h2>Latest Announcements</h2><a class="btn small" href="{{url_for('announcements')}}">View All</a></div>{% for a in announcements %}<div class="list-row"><strong>{{a.title}}</strong><span class="muted">{{a.publish_date}}</span><p>{{a.message}}</p></div>{% else %}<p class="muted">No announcements yet.</p>{% endfor %}</div>
+<div class="card"><div class="section-head"><h2>Maintenance Requests</h2><a class="btn primary small" href="{{url_for('maintenance')}}">Create Request</a></div><div class="table-wrap"><table><thead><tr><th>Ticket</th><th>Title</th><th>Priority</th><th>Status</th><th>Date</th></tr></thead><tbody>{% for x in tickets %}<tr><td>{{x.ticket_no}}</td><td>{{x.title}}</td><td>{{x.priority}}</td><td>{{x.status}}</td><td>{{x.requested_at.strftime('%Y-%m-%d') if x.requested_at else ''}}</td></tr>{% else %}<tr><td colspan="5" class="muted">No maintenance requests.</td></tr>{% endfor %}</tbody></table></div></div>
+{% endblock %}

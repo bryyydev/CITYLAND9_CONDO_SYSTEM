@@ -1,0 +1,10 @@
+CityLand 9 Condo Web System V10.21
+SOA Water Reading History Status Update
+
+Changes:
+- Replaced the Action column in SOA Water Reading History with Status.
+- Status follows the corresponding monthly SOA payment state.
+- Displays Unpaid, Partially Paid, or Overdue for outstanding readings.
+- Paid water-reading rows are hidden from the SOA Water Reading History.
+- View and Print SOA use the same status-only table.
+- If all readings are paid, a clear no-outstanding-readings message is shown.

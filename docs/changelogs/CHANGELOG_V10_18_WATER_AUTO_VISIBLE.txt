@@ -1,0 +1,8 @@
+V10.18 – WATER AUTO COMPUTATION VISIBILITY FIX
+
+- Made Automatic Water Computation clearly visible in Rates & Rules.
+- Added prominent Enabled — Auto Calculate / Disabled — Manual Amount choices.
+- Added explanation directly below the selector.
+- Kept default as Enabled.
+- Calculation remains: (Current Reading - Previous Reading) x Water Rate per m3.
+- Water rate remains editable globally and per individual reading.

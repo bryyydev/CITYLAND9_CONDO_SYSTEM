@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="eyebrow">OPERATIONS</div>
+<h1>Move In / Out Certificate Log</h1>
+<p class="subtitle">Track certificates issued by the Property Management Office.</p>
+<div class="card">
+  <div class="table-wrap"><table>
+    <thead><tr><th>Certificate No.</th><th>Type</th><th>Unit</th><th>Person</th><th>Move Date</th><th>Certificate Date</th><th>Issued By</th><th></th></tr></thead>
+    <tbody>
+    {% for c in certificates %}
+    <tr>
+      <td><strong>{{c.certificate_no}}</strong></td><td>{{c.move_type}}</td><td>{{c.unit.unit_no}}</td><td>{{c.person_name}} <span class="muted">({{c.person_type}})</span></td>
+      <td>{{c.move_date or '—'}}</td><td>{{c.certificate_date}}</td><td>{{c.issued_by or '—'}}</td>
+      <td><a class="btn small" href="{{url_for('move_certificate')}}?certificate_id={{c.id}}">View / Reprint</a></td>
+    </tr>
+    {% else %}<tr><td colspan="8" class="empty">No move certificates issued yet.</td></tr>{% endfor %}
+    </tbody>
+  </table></div>
+</div>
+{% endblock %}
+<script>
+(function(){
+ function syncTheme(){
+   var b=document.body,r=document.documentElement;
+   var t=(r.getAttribute('data-theme')||b.getAttribute('data-theme')||'').toLowerCase();
+   if(t==='dark') b.classList.add('cl-dark');
+   else if(t==='light') b.classList.remove('cl-dark');
+ }
+ syncTheme();
+ new MutationObserver(syncTheme).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+})();
+</script>

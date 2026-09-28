@@ -1,0 +1,8 @@
+V10.23 – WATER PAID STATUS SYNC
+
+- Fixed the SOA Water Reading History so clicking Paid on a water reading immediately makes that reading Paid in the SOA.
+- The reading's own Paid flag now takes priority over the overall monthly SOA billing status.
+- Paid water readings are therefore hidden from the SOA Water Reading History as requested.
+- Unpaid, Partially Paid, and Overdue readings continue to use the corresponding monthly billing status.
+- Updated the Water Readings table to use the same status helper for consistent display.
+- Marking a water reading Paid does NOT mark the entire condo SOA as paid.

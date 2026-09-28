@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block auth %}
+<div class="login-page"><div class="login-backdrop" aria-hidden="true"></div><div class="login-card">
+<div class="brand center">▲ <span>CITYLAND 9<br><small>CONDO SYSTEM 2026</small></span></div>
+<h1>Condo Management System</h1><p class="muted">Version 10.64</p>
+{% with messages=get_flashed_messages(with_categories=true) %}{% for category,message in messages %}<div class="alert {{category}}">{{message}}</div>{% endfor %}{% endwith %}
+<form method="post">
+<label>Username<input name="username" required autofocus></label>
+<label>Password<input type="password" name="password" required></label>
+<button class="btn primary full">Sign In</button>
+</form>
+<p class="muted small">Default: superadmin / admin123</p>
+</div></div>
+{% endblock %}
+<script>
+(function(){
+ function syncTheme(){
+   var b=document.body,r=document.documentElement;
+   var t=(r.getAttribute('data-theme')||b.getAttribute('data-theme')||'').toLowerCase();
+   if(t==='dark') b.classList.add('cl-dark');
+   else if(t==='light') b.classList.remove('cl-dark');
+ }
+ syncTheme();
+ new MutationObserver(syncTheme).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+})();
+</script>

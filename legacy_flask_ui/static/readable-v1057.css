@@ -1,0 +1,648 @@
+/* CITYLAND 9 SYSTEM V10.57 — Reference UI + Readability pass
+   Matches the supplied light-blue/teal reference while keeping all screens readable. */
+:root{
+  --v1057-bg:#f4f8fb;
+  --v1057-surface:#ffffff;
+  --v1057-sidebar:#e8f2f6;
+  --v1057-sidebar-2:#edf5f8;
+  --v1057-border:#cfe0e8;
+  --v1057-text:#17364a;
+  --v1057-muted:#55748a;
+  --v1057-primary:#3b93a4;
+  --v1057-primary-dark:#26798a;
+  --v1057-primary-soft:#dcecf1;
+}
+
+/* Larger, clearer type across the authenticated application. */
+html{font-size:17px!important}
+body{font-size:17px!important;line-height:1.55!important;color:var(--v1057-text)!important;background:var(--v1057-bg)!important}
+.content{max-width:1500px!important;padding:30px 42px!important}
+.content h1{font-size:2rem!important;line-height:1.15!important;letter-spacing:-.02em!important;margin-bottom:5px!important}
+.content h2{font-size:1.4rem!important}
+.content h3{font-size:1.18rem!important}
+.subtitle,.muted,.content small{font-size:.94rem!important}
+label{font-size:.96rem!important}
+
+/* Reference-image shell: light blue sidebar, white topbar, soft blue canvas. */
+.layout{background:linear-gradient(135deg,#f7fbfd 0%,#eef5f8 55%,#f4f8fa 100%)!important}
+.layout::after{background:rgba(244,249,251,.84)!important}
+.sidebar{width:250px!important;background:linear-gradient(180deg,var(--v1057-sidebar) 0%,var(--v1057-sidebar-2) 100%)!important;border-right:1px solid var(--v1057-border)!important;padding:17px 10px!important}
+.main{margin-left:250px!important}
+.brand{color:#2f7f91!important;border-bottom:1px solid #d4e4ea!important;min-height:48px!important;font-size:15px!important}
+.brand small{color:#274b63!important;font-size:11px!important;letter-spacing:1.3px!important}
+.brand-mark{background:#3f91a1!important;color:#fff!important;border-color:#68abb7!important}
+.side-label,.side-section{color:#5b7890!important;font-size:11px!important;font-weight:800!important;letter-spacing:1.05px!important;margin-top:10px!important}
+.sidebar .nav{color:#21465b!important;font-size:16px!important;font-weight:600!important;padding:10px 12px!important;border-radius:8px!important;box-shadow:none!important}
+.sidebar .nav:hover{background:#dcebf0!important;color:#153b50!important;box-shadow:none!important}
+.sidebar .nav.active{background:#d5e8ee!important;color:#216f80!important;font-weight:750!important;box-shadow:none!important}
+.sidebar .nav-icon{color:#357f90!important;font-size:17px!important}
+.sidebar-footer{color:#57788b!important}
+
+.topbar{height:72px!important;background:rgba(255,255,255,.97)!important;border-bottom:1px solid var(--v1057-border)!important;color:var(--v1057-text)!important;padding:0 28px!important}
+.topbar>div:not(.user) .muted{color:#6f8ca0!important;font-size:12px!important;letter-spacing:.35px!important;text-transform:uppercase!important}
+.topbar>div:not(.user)>strong{font-size:15px!important;color:#27465a!important}
+.topbar .user{background:linear-gradient(135deg,#f5fafc,#edf5f8)!important;border:1px solid #c7dce5!important;color:#1d4055!important;border-radius:22px!important;font-size:14px!important}
+.topbar .user small{background:#d8eef3!important;color:#26778a!important}
+
+/* Cards/tables/controls: more spacing without looking oversized. */
+.card,.form-card,.table-wrap,.notice,.panel,.content-card,.table-container,
+.units-filter,.units-directory-card,.billing-hero,.billing-kpi,.billing-filter-card,.billing-list-card{
+  background:#fff!important;border:1px solid var(--v1057-border)!important;border-radius:14px!important;
+  box-shadow:0 7px 22px rgba(35,78,99,.07)!important
+}
+.card,.form-card{padding:22px!important}
+.cards .card{min-height:142px!important}
+.metric{font-size:31px!important;line-height:1.15!important}
+.table-wrap table,table{font-size:16px!important}
+th,td{padding:14px 15px!important}
+th,.table-wrap th{font-size:13px!important;letter-spacing:.03em!important;color:#35586d!important;background:#eaf3f6!important}
+td,.table-wrap td{font-size:16px!important;color:#29495d!important}
+input,select,textarea{font-size:16px!important;min-height:46px!important;padding:10px 13px!important;border-radius:8px!important}
+button,.btn,a.btn,input[type=submit]{font-size:16px!important;min-height:44px!important;padding:9px 16px!important;border-radius:8px!important}
+.btn.primary,.btn-primary,button.btn-primary,.primary-btn{background:var(--v1057-primary)!important;border-color:var(--v1057-primary)!important;color:#fff!important}
+.btn.primary:hover,.btn-primary:hover,button.btn-primary:hover,.primary-btn:hover{background:var(--v1057-primary-dark)!important}
+
+/* Rates & Rules tabs — directly modeled after the supplied reference screenshot. */
+.rr-tabs{gap:7px!important;margin:18px 0 16px!important}
+.rr-tab{
+  min-height:54px!important;padding:10px 12px!important;border:1px solid #d4e2e8!important;
+  background:linear-gradient(180deg,#eaf2f5,#e1ebef)!important;color:#193c52!important;
+  border-radius:8px!important;font-size:15px!important;font-weight:700!important;line-height:1.15!important;
+  box-shadow:0 2px 6px rgba(43,76,92,.05)!important
+}
+.rr-tab:hover{background:#dcebef!important;border-color:#bcd5df!important}
+.rr-tab.active{background:linear-gradient(180deg,#4aa0af,#368b9c)!important;color:#fff!important;border-color:#398b9b!important;box-shadow:0 5px 12px rgba(45,133,150,.18)!important}
+.edit-note{font-size:14px!important;color:#567589!important}
+
+/* Critical contrast fix: the SOA dark summary card used dark inherited text in prior builds. */
+.soa-total-card,.soa-total-card span,.soa-total-card strong,.soa-total-card small,
+.soa-total-card b,.soa-total-card div{color:#fff!important;text-shadow:none!important}
+.soa-total-card{background:#0b4e80!important}
+.soa-summary-title{font-weight:800!important}
+.soa-penalty-card,.soa-penalty-card *{text-shadow:none!important}
+
+/* Any intentionally dark summary/status surface gets light text automatically. */
+.summary-dark,.summary-dark *,.dark-summary,.dark-summary *,.bg-dark,.bg-dark *,.dark-bg,.dark-bg *{
+  color:#f7fbfd!important
+}
+
+@media(max-width:1100px){
+  .rr-tabs{grid-template-columns:repeat(4,minmax(120px,1fr))!important}
+}
+@media(max-width:800px){
+  html,body{font-size:16px!important}
+  .sidebar{width:72px!important}
+  .main{margin-left:72px!important}
+  .content{padding:20px!important}
+  .rr-tabs{grid-template-columns:repeat(2,minmax(120px,1fr))!important}
+}
+@media print{
+  html,body{font-size:11pt!important}
+}
+
+
+/* =========================================================
+   V10.57 requested UI refinements
+   ========================================================= */
+
+/* Keep menu-to-content/details spacing compact. */
+.content{
+  padding-top:16px!important;
+}
+.section-head{
+  margin-top:14px!important;
+  margin-bottom:8px!important;
+}
+.toolbar{
+  margin-top:8px!important;
+  margin-bottom:10px!important;
+}
+.nav{
+  margin-top:1px!important;
+  margin-bottom:1px!important;
+}
+.side-label,.side-section{
+  margin-top:6px!important;
+  padding-top:6px!important;
+  padding-bottom:4px!important;
+}
+.nav-group{
+  gap:0!important;
+}
+
+/* SOA header unit number: no building-name line above it. */
+.soa-brand-building{
+  gap:0!important;
+}
+.soa-brand-building .soa-unit-number{
+  font-size:17px!important;
+  font-weight:900!important;
+  letter-spacing:.8px!important;
+  line-height:1.1!important;
+}
+
+/* Dark detail surfaces: use a 50% visual opacity treatment while
+   retaining readable light text. This applies across tabs/functions
+   when the active UI theme is dark. */
+.cl-dark .card,
+.cl-dark .panel,
+.cl-dark .content-card,
+.cl-dark .table-container,
+.cl-dark .table-wrap,
+.cl-dark .form-card,
+.cl-dark .notice,
+.cl-dark .billing-hero,
+.cl-dark .billing-kpi,
+.cl-dark .billing-filter-card,
+.cl-dark .billing-list-card,
+.cl-dark .billing-tabs,
+.cl-dark .tabs,
+.cl-dark .tab.active,
+.cl-dark .field-group,
+.cl-dark .modal-content,
+.cl-dark .cityland-theme-panel{
+  background-color: color-mix(in srgb, var(--cl-card, #222d32) 50%, transparent)!important;
+  backdrop-filter: blur(8px)!important;
+}
+.cl-dark .billing-hero,
+.cl-dark .billing-kpi,
+.cl-dark .billing-filter-card,
+.cl-dark .billing-list-card{
+  background-image:none!important;
+}
+.cl-dark .table-wrap,
+.cl-dark .table-container{
+  background-color: color-mix(in srgb, var(--cl-card, #222d32) 50%, transparent)!important;
+}
+.cl-dark .card *,
+.cl-dark .panel *,
+.cl-dark .content-card *,
+.cl-dark .form-card *,
+.cl-dark .billing-hero *,
+.cl-dark .billing-kpi *,
+.cl-dark .billing-filter-card *,
+.cl-dark .billing-list-card *{
+  color: inherit;
+}
+
+/* Keep deliberately colored action buttons readable rather than
+   applying the 50% treatment to the controls themselves. */
+.cl-dark .btn.primary,
+.cl-dark .btn-primary,
+.cl-dark button.btn-primary{
+  background: var(--cl-primary)!important;
+  color:#fff!important;
+}
+
+/* =========================================================
+   FINAL CONTRAST AUDIT — V10.57
+   Covers legacy/futuristic views that use their own component classes.
+   ========================================================= */
+
+/* DARK THEME: every common dark-detail surface gets a translucent
+   50% treatment and light, high-contrast typography. */
+body.cl-dark .card,
+body.cl-dark .form-card,
+body.cl-dark .panel,
+body.cl-dark .content-card,
+body.cl-dark .table-container,
+body.cl-dark .table-wrap,
+body.cl-dark .units-filter,
+body.cl-dark .units-directory-card,
+body.cl-dark .billing-hero,
+body.cl-dark .billing-kpi,
+body.cl-dark .billing-filter-card,
+body.cl-dark .billing-list-card,
+body.cl-dark .units-navtabs,
+body.cl-dark .billing-tabs,
+body.cl-dark .tabs,
+body.cl-dark .rr-tab,
+body.cl-dark .field-group,
+body.cl-dark .toolbar,
+body.cl-dark .notice,
+body.cl-dark .cityland-theme-panel,
+body.cl-dark .cityland-theme-option {
+  background-color: color-mix(in srgb, var(--cl-card) 50%, transparent) !important;
+  background-image: none !important;
+  backdrop-filter: blur(8px);
+}
+
+body.cl-dark .card,
+body.cl-dark .form-card,
+body.cl-dark .panel,
+body.cl-dark .content-card,
+body.cl-dark .table-container,
+body.cl-dark .table-wrap,
+body.cl-dark .units-filter,
+body.cl-dark .units-directory-card,
+body.cl-dark .billing-hero,
+body.cl-dark .billing-kpi,
+body.cl-dark .billing-filter-card,
+body.cl-dark .billing-list-card,
+body.cl-dark .field-group,
+body.cl-dark .toolbar,
+body.cl-dark .notice {
+  color: #f4fbfc !important;
+}
+
+body.cl-dark .card p,
+body.cl-dark .card span,
+body.cl-dark .card div,
+body.cl-dark .card label,
+body.cl-dark .card td,
+body.cl-dark .card dd,
+body.cl-dark .form-card p,
+body.cl-dark .form-card label,
+body.cl-dark .panel p,
+body.cl-dark .panel span,
+body.cl-dark .content-card p,
+body.cl-dark .content-card span,
+body.cl-dark .table-container td,
+body.cl-dark .table-wrap td,
+body.cl-dark .units-modern-table td,
+body.cl-dark .billing-modern-table td {
+  color: #edf7fa !important;
+}
+
+body.cl-dark .card h1,
+body.cl-dark .card h2,
+body.cl-dark .card h3,
+body.cl-dark .card h4,
+body.cl-dark .card h5,
+body.cl-dark .card h6,
+body.cl-dark .form-card h1,
+body.cl-dark .form-card h2,
+body.cl-dark .form-card h3,
+body.cl-dark .form-card h4,
+body.cl-dark .form-card h5,
+body.cl-dark .form-card h6,
+body.cl-dark .panel h1,
+body.cl-dark .panel h2,
+body.cl-dark .panel h3,
+body.cl-dark .panel h4,
+body.cl-dark .panel h5,
+body.cl-dark .panel h6 {
+  color: #ffffff !important;
+}
+
+body.cl-dark .muted,
+body.cl-dark .subtitle,
+body.cl-dark small,
+body.cl-dark .small,
+body.cl-dark .edit-note,
+body.cl-dark .field-help,
+body.cl-dark .help-text,
+body.cl-dark .billing-pagination {
+  color: #c4d6dd !important;
+}
+
+/* Dark-theme legacy tabs and navigation. */
+body.cl-dark .tabs,
+body.cl-dark .units-navtabs,
+body.cl-dark .billing-tabs {
+  border-color: #496674 !important;
+}
+body.cl-dark .tabs .tab,
+body.cl-dark .units-navtabs a,
+body.cl-dark .billing-tabs a {
+  color: #d7e7ec !important;
+  background: transparent !important;
+}
+body.cl-dark .tabs .tab.active,
+body.cl-dark .units-navtabs a.active,
+body.cl-dark .billing-tabs a.active {
+  background: #3cabb7 !important;
+  color: #071519 !important;
+}
+body.cl-dark .rr-tab {
+  color: #e5f2f5 !important;
+  border-color: #4a6571 !important;
+  background: color-mix(in srgb, var(--cl-card) 50%, transparent) !important;
+}
+body.cl-dark .rr-tab.active {
+  background: #3cabb7 !important;
+  color: #071519 !important;
+  border-color: #62d3de !important;
+}
+
+/* Dark-theme tables: headers and body cells must never fall back to dark text. */
+body.cl-dark table,
+body.cl-dark table tbody,
+body.cl-dark table tr {
+  background: transparent !important;
+  color: #edf7fa !important;
+}
+body.cl-dark table th,
+body.cl-dark .units-modern-table th,
+body.cl-dark .billing-modern-table th {
+  background: rgba(34,55,68,.50) !important;
+  color: #e7f4f7 !important;
+  border-color: #49616c !important;
+}
+body.cl-dark table td,
+body.cl-dark .units-modern-table td,
+body.cl-dark .billing-modern-table td {
+  background: transparent !important;
+  color: #edf7fa !important;
+  border-color: #405763 !important;
+}
+body.cl-dark table td a,
+body.cl-dark .unit-link {
+  color: #91e8ef !important;
+}
+
+/* Dark-theme controls. */
+body.cl-dark label { color: #d4e4e9 !important; }
+body.cl-dark input,
+body.cl-dark select,
+body.cl-dark textarea {
+  background: #101c25 !important;
+  color: #f4fbfc !important;
+  border-color: #607985 !important;
+}
+body.cl-dark input::placeholder,
+body.cl-dark textarea::placeholder { color: #b9cbd3 !important; }
+body.cl-dark select option { background: #101c25 !important; color: #f4fbfc !important; }
+
+/* Dark theme colored/status chips retain their intended color but use
+   sufficiently light foregrounds. */
+body.cl-dark .status-chip,
+body.cl-dark .soa-chip,
+body.cl-dark .asset-chip,
+body.cl-dark .badge,
+body.cl-dark .billing-status {
+  text-shadow: none !important;
+}
+body.cl-dark .status-chip.occupied,
+body.cl-dark .soa-chip.paid,
+body.cl-dark .billing-status.paid { color: #86f4cb !important; }
+body.cl-dark .status-chip.vacant,
+body.cl-dark .soa-chip.unpaid,
+body.cl-dark .soa-chip.partially-paid,
+body.cl-dark .billing-status.unpaid,
+body.cl-dark .billing-status.partially-paid { color: #ffe18a !important; }
+body.cl-dark .status-chip.overdue,
+body.cl-dark .soa-chip.overdue,
+body.cl-dark .billing-status.overdue { color: #ffb0b6 !important; }
+
+/* Light theme: legacy components should switch to dark text on light surfaces. */
+body:not(.cl-dark) .card,
+body:not(.cl-dark) .form-card,
+body:not(.cl-dark) .panel,
+body:not(.cl-dark) .content-card,
+body:not(.cl-dark) .table-container,
+body:not(.cl-dark) .table-wrap,
+body:not(.cl-dark) .units-filter,
+body:not(.cl-dark) .units-directory-card,
+body:not(.cl-dark) .billing-filter-card,
+body:not(.cl-dark) .billing-list-card,
+body:not(.cl-dark) .tabs,
+body:not(.cl-dark) .units-navtabs,
+body:not(.cl-dark) .billing-tabs,
+body:not(.cl-dark) .rr-tab {
+  color: #203b4c !important;
+}
+body:not(.cl-dark) .card p,
+body:not(.cl-dark) .card span,
+body:not(.cl-dark) .card div,
+body:not(.cl-dark) .card label,
+body:not(.cl-dark) .form-card label,
+body:not(.cl-dark) .panel p,
+body:not(.cl-dark) .content-card p,
+body:not(.cl-dark) .table-container td,
+body:not(.cl-dark) .table-wrap td {
+  color: #29495d !important;
+}
+body:not(.cl-dark) .tabs .tab,
+body:not(.cl-dark) .units-navtabs a,
+body:not(.cl-dark) .billing-tabs a,
+body:not(.cl-dark) .rr-tab {
+  color: #35576b !important;
+}
+body:not(.cl-dark) .tabs .tab.active,
+body:not(.cl-dark) .units-navtabs a.active,
+body:not(.cl-dark) .billing-tabs a.active,
+body:not(.cl-dark) .rr-tab.active {
+  color: #ffffff !important;
+}
+
+
+/* V10.57 final contrast + spacing fix */
+.content, main.content, .page-content { padding-top:8px!important; }
+.section-head { margin-top:6px!important; margin-bottom:6px!important; }
+.toolbar { margin-top:4px!important; margin-bottom:6px!important; }
+.tabs { margin-top:3px!important; margin-bottom:6px!important; }
+.nav, .nav-group { margin-bottom:2px!important; }
+
+/* Unit Directory: readable text on dark data areas */
+.cl-dark .unit-directory *,
+.cl-dark .units-view *,
+.cl-dark .unit-table *,
+.cl-dark .directory-table * {
+  color:#f5f7fb!important;
+}
+.cl-dark .unit-directory th,
+.cl-dark .units-view th,
+.cl-dark .unit-table th,
+.cl-dark .directory-table th {
+  color:#fff!important;
+  background:rgba(20,28,34,.50)!important;
+  font-weight:800!important;
+}
+.cl-dark .unit-directory td,
+.cl-dark .units-view td,
+.cl-dark .unit-table td,
+.cl-dark .directory-table td {
+  color:#f5f7fb!important;
+  background:rgba(20,28,34,.50)!important;
+}
+.cl-dark [class*="status"],
+.cl-dark [class*="parking"],
+.cl-dark [class*="storage"],
+.cl-dark [class*="soa"] {
+  color:#f5f7fb!important;
+}
+
+/* Billing Management/status views */
+.cl-dark .billing-management *,
+.cl-dark .billing-view *,
+.cl-dark .billing-status *,
+.cl-dark .billing-table *,
+.cl-dark .status-view *,
+.cl-dark .status-card *,
+.cl-dark .status-panel *,
+.cl-dark .status-list * {
+  color:#f5f7fb!important;
+}
+.cl-dark .billing-management th,
+.cl-dark .billing-view th,
+.cl-dark .billing-status th,
+.cl-dark .billing-table th,
+.cl-dark .status-view th {
+  color:#fff!important;
+  background:rgba(20,28,34,.50)!important;
+  font-weight:800!important;
+}
+.cl-dark .billing-management td,
+.cl-dark .billing-view td,
+.cl-dark .billing-status td,
+.cl-dark .billing-table td,
+.cl-dark .status-view td {
+  color:#f5f7fb!important;
+  background:rgba(20,28,34,.50)!important;
+}
+.cl-dark .status-view,
+.cl-dark .status-card,
+.cl-dark .status-panel,
+.cl-dark .status-list {
+  background:rgba(20,28,34,.50)!important;
+}
+
+/* Generic dark-theme tables */
+.cl-dark table th {
+  color:#fff!important;
+  background:rgba(20,28,34,.50)!important;
+}
+.cl-dark table td {
+  color:#f5f7fb!important;
+  background:rgba(20,28,34,.50)!important;
+}
+.cl-dark input, .cl-dark select, .cl-dark textarea {
+  color:#f5f7fb!important;
+  background:rgba(15,22,27,.50)!important;
+}
+.cl-dark input::placeholder, .cl-dark textarea::placeholder {
+  color:rgba(245,247,251,.72)!important;
+}
+.cl-dark .btn-primary, .cl-dark .btn.primary {
+  color:#fff!important;
+}
+
+
+/* V10.58 baseline navigation hierarchy */
+.sidebar .nav-tree{margin:2px 0 5px!important;padding:3px!important;border-radius:10px!important;}
+.sidebar .nav-parent{cursor:default!important;font-weight:800!important;color:#254654!important;background:rgba(255,255,255,.30)!important;}
+.sidebar .nav-parent-link{font-weight:800!important;}
+.sidebar .nav-tree .nav.sub{padding-left:28px!important;margin-left:7px!important;font-size:14px!important;font-weight:650!important;border-left:2px solid #b8cfd7!important;}
+.sidebar .nav-tree .nav.sub .nav-icon{font-size:15px!important;min-width:15px!important;opacity:.8;}
+.sidebar .nav-tree .nav.sub.active{border-left-color:#3f8fa2!important;background:#d7e8ed!important;color:#173d4a!important;}
+.sidebar .side-label{margin-top:12px!important;}
+@media(max-width:800px){.sidebar .nav-parent{justify-content:center!important}.sidebar .nav-tree .nav.sub{padding-left:6px!important;margin-left:0!important;border-left:0!important}}
+
+
+/* V10.59 SCREEN-REFERENCE UI BASELINE */
+:root{--screen-sidebar:#173840;--screen-sidebar-hover:#214f58;--screen-sidebar-active:#2d7b86;--screen-workspace:#f0f4f4;--screen-surface:#fff;--screen-text:#152b33;--screen-muted:#5b7078;--screen-border:#d0dcdf}
+html,body{background:var(--screen-workspace)!important;color:var(--screen-text)!important;font-size:16px!important}
+.layout{background:var(--screen-workspace)!important;background-image:none!important}.layout::before,.layout::after{display:none!important}
+.sidebar,.side-nav,.left-sidebar,nav.sidebar{background:var(--screen-sidebar)!important;background-image:none!important;color:#eef7f8!important;border-right:1px solid rgba(255,255,255,.08)!important}
+.sidebar .brand{color:#eef7f8!important}.sidebar .brand small{color:#a9cbd0!important}.sidebar .side-label{color:#7ea7af!important;font-size:11px!important;font-weight:800!important;letter-spacing:.45px!important}
+.sidebar a,.sidebar .nav,.side-nav a,.left-sidebar a{color:#cfe1e4!important;font-size:15.5px!important;font-weight:650!important}.sidebar .nav:hover,.sidebar .nav.active,.side-nav a:hover,.left-sidebar a:hover{background:var(--screen-sidebar-hover)!important;color:#fff!important;box-shadow:none!important}
+.sidebar .nav-tree{background:transparent!important;border:0!important;padding:0!important;margin:1px 0 4px!important}.sidebar .nav-parent,.sidebar .nav-parent-link{background:transparent!important;color:#d9eaed!important;font-weight:750!important}
+.sidebar .nav-tree .nav.sub{color:#bfd7db!important;font-size:14.5px!important;padding-left:30px!important;margin-left:4px!important;border-left:2px solid rgba(126,167,175,.45)!important}.sidebar .nav-tree .nav.sub:hover,.sidebar .nav-tree .nav.sub.active{background:rgba(45,123,134,.34)!important;color:#fff!important;border-left-color:#63b7c0!important}
+.sidebar .sidebar-footer{color:#7ea7af!important}.topbar{background:#fff!important;color:var(--screen-text)!important;border-bottom:1px solid var(--screen-border)!important;box-shadow:none!important}.topbar .muted,.topbar small{color:var(--screen-muted)!important}
+.content{padding-top:14px!important;color:var(--screen-text)!important}.content h1{font-size:1.65rem!important;margin-top:0!important;margin-bottom:4px!important}.content h2{font-size:1.32rem!important}.content h3{font-size:1.12rem!important}
+.content p,.content li,.content td,.content th,.content label,.content input,.content select,.content textarea{font-size:15.5px!important}.content .subtitle,.content .muted,.content small,.content .help-text,.content .field-help{font-size:14px!important;color:var(--screen-muted)!important}
+.card,.panel,.content-card,.table-container,.table-wrap,.form-card,.notice,.units-filter,.units-directory-card,.billing-hero,.billing-kpi,.billing-filter-card,.billing-list-card{background:var(--screen-surface)!important;color:var(--screen-text)!important;border-color:var(--screen-border)!important;box-shadow:0 2px 8px rgba(26,55,63,.06)!important}
+input,select,textarea{font-size:15.5px!important;color:var(--screen-text)!important;background:#fff!important;border-color:#b9cbd0!important}button,.btn,a.btn,input[type=submit]{font-size:15px!important}table{font-size:15px!important}table th{background:#edf2f3!important;color:#29454d!important}table td{color:#263f47!important;background:#fff!important}
+/* Compact function tabs and detail panels */
+.tabs,.units-navtabs,.billing-tabs{margin-top:2px!important;margin-bottom:3px!important}.tabs .tab,.units-navtabs a,.billing-tabs a{padding-top:10px!important;padding-bottom:10px!important}.tabs + *, .units-navtabs + *, .billing-tabs + *{margin-top:4px!important}.section-head{margin-top:3px!important;margin-bottom:4px!important}.toolbar{margin-top:2px!important;margin-bottom:4px!important}.form-card,.table-wrap,.table-container,.content-card{margin-top:5px!important}.card{margin-top:6px!important}
+.dashboard-card{padding:14px!important}.dashboard-card h3{margin-bottom:4px!important}.dashboard-card .value{font-size:1.55rem!important}.rr-tab{font-size:15px!important;font-weight:700!important;background:#e7eef0!important;color:#27444c!important;border-color:#d0dcdf!important}.rr-tab.active{background:var(--screen-sidebar-active)!important;color:#fff!important;border-color:var(--screen-sidebar-active)!important}
+/* Summary readability */
+.summary,.summary-card,.summary-panel,.soa-summary,.billing-summary{color:#17303a!important}.summary h1,.summary h2,.summary h3,.summary h4,.summary p,.summary span,.summary strong,.summary-card h1,.summary-card h2,.summary-card h3,.summary-card h4,.summary-card p,.summary-card span,.summary-card strong,.summary-panel h1,.summary-panel h2,.summary-panel h3,.summary-panel h4,.summary-panel p,.summary-panel span,.summary-panel strong,.soa-summary h1,.soa-summary h2,.soa-summary h3,.soa-summary h4,.soa-summary p,.soa-summary span,.soa-summary strong,.billing-summary h1,.billing-summary h2,.billing-summary h3,.billing-summary h4,.billing-summary p,.billing-summary span,.billing-summary strong{color:inherit!important}
+@media(max-width:800px){.content{padding-top:10px!important}.content h1{font-size:1.5rem!important}.content p,.content li,.content td,.content th,.content label{font-size:15px!important}.tabs .tab,.units-navtabs a,.billing-tabs a{padding-top:9px!important;padding-bottom:9px!important}}
+
+
+/* =========================================================
+   V10.61 — ATTACHED REFERENCE UI SHELL
+   Light sidebar + white header + compact professional navigation.
+   Functional routes and page content are unchanged.
+   ========================================================= */
+:root{
+  --ref-sidebar:#e8f2f6;
+  --ref-sidebar-2:#eef6f8;
+  --ref-sidebar-border:#d2e1e6;
+  --ref-text:#18384d;
+  --ref-muted:#6d8aa0;
+  --ref-primary:#3f91a2;
+  --ref-primary-dark:#2f7888;
+  --ref-active:#d8ebf0;
+  --ref-bg:#f1f6f8;
+}
+html,body{background:var(--ref-bg)!important;color:var(--ref-text)!important}
+.layout{background:linear-gradient(135deg,#f7fbfd 0%,#eef5f8 58%,#f3f7f9 100%)!important;background-image:none!important}
+.layout::before,.layout::after{display:none!important}
+.sidebar,.side-nav,.left-sidebar,nav.sidebar,aside.sidebar{
+  width:234px!important;position:fixed!important;left:0!important;top:0!important;bottom:0!important;
+  height:100vh!important;min-height:100vh!important;overflow-y:auto!important;overflow-x:hidden!important;
+  padding:0 10px 14px!important;box-sizing:border-box!important;
+  background:linear-gradient(180deg,var(--ref-sidebar) 0%,var(--ref-sidebar-2) 100%)!important;
+  color:var(--ref-text)!important;border-right:1px solid var(--ref-sidebar-border)!important;
+  box-shadow:2px 0 10px rgba(40,77,91,.045)!important
+}
+.sidebar .brand{
+  height:72px!important;margin:0 -10px 10px!important;padding:0 18px!important;box-sizing:border-box!important;
+  display:flex!important;align-items:center!important;gap:11px!important;
+  background:rgba(255,255,255,.24)!important;border-bottom:1px solid #d4e2e7!important;
+  color:#2d6e84!important
+}
+.sidebar .brand-mark{
+  width:34px!important;height:34px!important;min-width:34px!important;border:0!important;border-radius:6px!important;
+  display:grid!important;place-items:center!important;background:transparent!important;color:#2e7890!important;
+  font-size:32px!important;line-height:1!important;font-weight:900!important
+}
+.sidebar .brand span{display:flex!important;flex-direction:column!important;line-height:1.05!important}
+.sidebar .brand strong{font-size:18px!important;letter-spacing:.6px!important;color:#2b7188!important;font-weight:850!important}
+.sidebar .brand small{margin-top:5px!important;font-size:12px!important;letter-spacing:.7px!important;color:#254b60!important;font-weight:800!important}
+.sidebar .side-label{
+  margin:12px 8px 5px!important;padding:0!important;color:#62839a!important;font-size:11px!important;
+  font-weight:800!important;letter-spacing:.8px!important;text-transform:uppercase!important
+}
+.sidebar .nav,.sidebar a.nav,.sidebar .nav-parent,.sidebar .nav-parent-link{
+  min-height:38px!important;box-sizing:border-box!important;margin:2px 0!important;padding:8px 10px!important;
+  border-radius:7px!important;display:flex!important;align-items:center!important;gap:10px!important;
+  color:#274b60!important;background:transparent!important;box-shadow:none!important;border:0!important;
+  font-size:15px!important;font-weight:650!important;text-decoration:none!important
+}
+.sidebar .nav-icon{width:18px!important;min-width:18px!important;text-align:center!important;color:#2d7187!important;font-size:17px!important;font-weight:800!important}
+.sidebar .nav:hover{background:#dcecf1!important;color:#1f5168!important}
+.sidebar .nav.active{background:#d2e8ee!important;color:#22677c!important;font-weight:800!important}
+.sidebar .nav.active .nav-icon{color:#267489!important}
+.sidebar .nav-tree{margin:0!important;padding:0!important;background:transparent!important;border:0!important}
+.sidebar .nav-tree .nav.sub{padding-left:34px!important;margin:1px 0!important;border-left:0!important;border-radius:7px!important;font-size:14px!important;color:#486b7d!important}
+.sidebar .nav-tree .nav.sub:hover,.sidebar .nav-tree .nav.sub.active{background:#dcecf1!important;color:#21677c!important;border-left:0!important}
+.sidebar .nav-tree .nav.sub .nav-icon{font-size:15px!important}
+.sidebar .nav-parent{cursor:default!important}
+.sidebar .sidebar-footer{margin-top:12px!important;background:transparent!important;border-top:1px solid #d0e0e5!important;color:#6b8998!important;padding:10px 8px!important}
+.main{margin-left:234px!important;width:calc(100% - 234px)!important;min-width:0!important}
+.topbar,.top-header,.header,header.main-header,.app-header{
+  margin-left:0!important;width:100%!important;height:72px!important;box-sizing:border-box!important;
+  padding:0 18px 0 22px!important;background:rgba(255,255,255,.96)!important;
+  border-bottom:1px solid #d7e3e7!important;box-shadow:0 1px 7px rgba(31,65,78,.035)!important;
+  color:var(--ref-text)!important;display:flex!important;align-items:center!important;justify-content:space-between!important;gap:16px!important
+}
+.topbar-identity{min-width:0;flex:1}
+.topbar-identity .muted{font-size:12px!important;letter-spacing:.25px!important;text-transform:uppercase!important;color:#7895a9!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important}
+.topbar-identity strong{display:block!important;margin-top:4px!important;font-size:15px!important;font-weight:700!important;color:#28465b!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important}
+.location-pin{display:inline-grid!important;place-items:center!important;width:16px!important;height:16px!important;margin-right:7px!important;color:#285b73!important;font-size:12px!important}
+.topbar .user{
+  display:flex!important;align-items:center!important;gap:8px!important;min-height:50px!important;padding:5px 8px 5px 13px!important;
+  background:linear-gradient(135deg,#f7fbfd,#eef6f8)!important;border:1px solid #c9dce4!important;
+  border-radius:28px!important;color:#23465b!important;box-sizing:border-box!important;white-space:nowrap!important
+}
+.topbar .user .user-account{display:flex!important;align-items:center!important;gap:7px!important;font-size:14px!important;font-weight:700!important}
+.topbar .user .user-icon{font-size:13px!important;color:#31566c!important}
+.topbar .user small{display:inline-flex!important;align-items:center!important;padding:5px 9px!important;margin:0!important;border-radius:14px!important;background:#d9eef3!important;color:#27778a!important;font-size:10px!important;font-weight:800!important}
+.topbar .user a{display:inline-flex!important;align-items:center!important;gap:5px!important;margin:0!important;padding:7px 9px!important;border-radius:15px!important;text-decoration:none!important;font-size:12px!important;font-weight:700!important;color:#47758a!important;background:transparent!important}
+.topbar .user a:hover{background:#e1eff3!important;color:#246b7d!important}
+.topbar .user .logout-action{color:#c84248!important;border-left:1px solid #d7e3e7!important;padding-left:11px!important}
+.topbar .user .logout-action:hover{background:#fff0f0!important;color:#b52f36!important}
+.content{padding:18px 34px 45px!important;max-width:none!important;box-sizing:border-box!important}
+.content h1{font-size:1.72rem!important;color:#193a50!important;margin-top:0!important;margin-bottom:4px!important}
+.content .subtitle{color:#607f93!important}
+.card,.panel,.content-card,.table-container,.table-wrap,.form-card,.notice,.dashboard-card{
+  border-radius:14px!important;border:1px solid #d9e5e9!important;box-shadow:0 3px 12px rgba(37,74,87,.055)!important;background:#fff!important
+}
+@media(max-width:800px){
+ .sidebar{width:72px!important;padding:0 7px 10px!important}.sidebar .brand{height:64px!important;margin:0 -7px 8px!important;padding:0!important;justify-content:center!important}.sidebar .brand span,.sidebar .side-label,.sidebar .nav span:not(.nav-icon),.sidebar .nav b,.sidebar-footer{display:none!important}.sidebar .nav{justify-content:center!important;padding:9px 6px!important}.main{margin-left:72px!important;width:calc(100% - 72px)!important}.topbar{height:64px!important;padding:0 12px!important}.topbar-identity{display:none!important}.topbar .user{max-width:calc(100vw - 95px)!important;overflow:hidden!important}.topbar .user a.top-action{display:none!important}.content{padding:14px!important}
+}
+@media(max-width:520px){.topbar .user small{display:none!important}.topbar .user .logout-action{border-left:0!important;padding-left:6px!important}.content{padding:12px!important}}

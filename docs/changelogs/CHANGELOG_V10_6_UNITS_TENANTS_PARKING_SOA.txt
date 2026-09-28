@@ -1,0 +1,9 @@
+CityLand 9 Condo Web System V10.6
+
+Changes:
+- Tenant management is now presented under Units; the separate Tenants item was removed from the main sidebar.
+- Unit detail tenant section supports multiple tenants with name, contact number, email, move dates, notes, and Active/Inactive status controls.
+- Added clear Activate/Deactivate tenant actions and inline Edit.
+- Parking was moved into the MAIN sidebar section.
+- Unit billing history now shows View/Print SOA actions.
+- SOA billing period, water history months, and previous statement months now display as friendly Month Year labels (for example, Sep 2026) instead of YYYY-MM numbers.

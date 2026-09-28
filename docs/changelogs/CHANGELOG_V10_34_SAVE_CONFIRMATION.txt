@@ -1,0 +1,7 @@
+V10.34 – Save Changes Confirmation
+
+Added a global confirmation prompt for data-changing Save/Edit/Add/Update/Reset/Status/Payment actions.
+Prompt: “Save Changes? Yes/No”.
+- Yes/OK submits the change.
+- No/Cancel stops the submission and leaves the form unchanged.
+- GET filters and authentication/email/database import flows are not intercepted.

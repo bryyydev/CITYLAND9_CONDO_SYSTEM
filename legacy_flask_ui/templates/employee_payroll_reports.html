@@ -1,0 +1,16 @@
+{% extends "base.html" %}{% block content %}<div class="eyebrow">HR / REPORTS</div><h1>Payroll Reports</h1><p class="subtitle">Annual payroll register and statutory totals.</p>
+<div class="card form-card"><form method="get" class="toolbar"><label>Year<input type="number" name="year" value="{{year}}" min="2000" max="2100"></label><button class="btn primary">Load Report</button><button type="button" class="btn" onclick="window.print()">Print</button></form></div>
+<div class="grid-4"><div class="card"><div class="muted">BASIC</div><h2>₱{{"%.2f"|format(total_basic)}}</h2></div><div class="card"><div class="muted">OVERTIME</div><h2>₱{{"%.2f"|format(total_ot)}}</h2></div><div class="card"><div class="muted">ALLOWANCES</div><h2>₱{{"%.2f"|format(total_allow)}}</h2></div><div class="card"><div class="muted">NET PAY</div><h2>₱{{"%.2f"|format(total_net)}}</h2></div></div>
+<div class="table-wrap"><table><thead><tr><th>EMPLOYEE</th><th>PERIOD</th><th>BASIC</th><th>OT</th><th>ALLOWANCES</th><th>NET</th><th>STATUS</th></tr></thead><tbody>{% for p in rows %}{% set e=employees.get(p.employee_id) %}<tr><td>{{e.full_name if e else p.employee_id}}</td><td>{{p.period_start}} – {{p.period_end}}</td><td>₱{{"%.2f"|format(p.basic_salary or 0)}}</td><td>₱{{"%.2f"|format(p.overtime_pay or 0)}}</td><td>₱{{"%.2f"|format(p.allowances or 0)}}</td><td>₱{{"%.2f"|format(p.net_pay or 0)}}</td><td>{{p.status}}</td></tr>{% else %}<tr><td colspan="7" class="empty">No payroll records.</td></tr>{% endfor %}</tbody></table></div>{% endblock %}
+<script>
+(function(){
+ function syncTheme(){
+   var b=document.body,r=document.documentElement;
+   var t=(r.getAttribute('data-theme')||b.getAttribute('data-theme')||'').toLowerCase();
+   if(t==='dark') b.classList.add('cl-dark');
+   else if(t==='light') b.classList.remove('cl-dark');
+ }
+ syncTheme();
+ new MutationObserver(syncTheme).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+})();
+</script>

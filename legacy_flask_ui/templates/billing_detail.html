@@ -1,0 +1,115 @@
+{% extends "base.html" %}{% block content %}
+<div class="soa-page soa-reference">
+  <button type="button" class="soa-close-btn no-print" onclick="closeSoaPreview()" aria-label="Close SOA preview" title="Close SOA preview">✕</button>
+  <div class="soa-brand-row">
+    <div class="soa-logo-mark">▥</div>
+    <div class="soa-brand-text"><strong>CITYLAND 9 DELA ROSA<br>CONDOMINIUM</strong><small>Dela Rosa Street, Barangay Pio del Pilar, Makati City<br>Telephone: 8812-2222 · Cityland Group of Companies</small></div>
+    <div class="soa-brand-building"><span class="soa-unit-number">UNIT {{bill.unit.unit_no}}</span></div>
+  </div>
+  <div class="soa-banner">STATEMENT OF ACCOUNT (SOA)</div>
+
+  <div class="soa-meta">
+    <div><span>▣ &nbsp; BILLING PERIOD</span><strong>{{bill.billing_month|month_year}}</strong><small>Generated: {{bill.created_at.strftime('%b %d, %Y') if bill.created_at else '—'}}</small></div>
+    <div><span>▤ &nbsp; STATEMENT NO.</span><strong>BILL-{{'%03d'|format(bill.id)}}</strong><small>Unit Number: {{bill.unit.unit_no}}</small></div>
+    <div><span>☑ &nbsp; DUE DATE</span><strong>{{bill.due_date.strftime('%B %d, %Y') if bill.due_date else '—'}}</strong><small>Floor: {{bill.unit.floor or '—'}} &nbsp; | &nbsp; Unit Type: {{bill.unit.unit_type or '—'}}</small></div>
+  </div>
+
+  <div class="soa-people">
+    <div><span>👤 &nbsp; OWNER</span>{% set soa_owner=bill.unit.owners|selectattr('status','equalto','Current')|selectattr('include_in_soa','equalto',true)|list|first %}{% if soa_owner %}<strong>{{soa_owner.owner_name}}</strong><small>{{soa_owner.contact_no or '—'}}</small>{% else %}<strong>—</strong><small>Owner name excluded from SOA.</small>{% endif %}</div>
+    <div><span>👥 &nbsp; TENANT REPRESENTATIVE</span>
+      {% set rep=bill.unit.tenants|selectattr('status','equalto','Current')|selectattr('representative','equalto',true)|list|first %}
+      {% if rep and rep.include_in_soa %}<strong>{{rep.tenant_name}}</strong><small>{{rep.contact_no or '—'}}</small>{% elif rep %}<strong>—</strong><small>Tenant representative name excluded from SOA.</small>{% else %}<strong>None designated</strong><small>Please designate a tenant representative under Unit → Tenants.</small>{% endif %}
+    </div>
+    <div><span>✉ &nbsp; CONTACT / EMAIL</span>{% if rep and rep.include_in_soa %}<strong>{{rep.email or '—'}}</strong><small>{{rep.contact_no or 'Optional'}}</small>{% elif rep %}<strong>{{rep.email or '—'}}</strong><small>{{rep.contact_no or 'Optional'}}</small>{% else %}<strong>{{bill.unit.email or '—'}}</strong><small>{{bill.unit.contact_no or 'Optional'}}</small>{% endif %}</div>
+  </div>
+
+  <section class="soa-section"><h2>▣ &nbsp; CHARGES BREAKDOWN</h2>
+    <table class="soa-charges"><thead><tr><th>DESCRIPTION ({{bill.billing_month|month_year}})</th><th>AMOUNT</th></tr></thead><tbody>
+      <tr class="soa-month-row"><td colspan="2">{{bill.billing_month|month_year}}</td></tr>
+      {% set live_condo = authoritative_bill_values(bill)[0] %}
+      <tr class="soa-detail-row"><td>Condo Dues <small class="soa-calc">{{bill.unit.area_sqm|float|round(2)}} sqm × ₱{{(bill.unit.unit_rate_per_sqm or rate_for_type(bill.unit.unit_type))|float|round(2)}}/sqm</small></td><td>{{live_condo|currency}}</td></tr>
+      {% if advance_applied|float > 0 %}<tr class="soa-detail-row"><td><strong>Advance Condo Dues Credit Applied</strong></td><td>-{{advance_applied|currency}}</td></tr>{% endif %}
+      {% set soa_parking = bill.unit.parking_lots|selectattr('active','equalto',true)|selectattr('include_in_soa_owner','equalto',true)|list %}{% set soa_parking_t = bill.unit.parking_lots|selectattr('active','equalto',true)|selectattr('include_in_soa_tenant','equalto',true)|list %}{% if bill.parking_dues|float>0 and (soa_parking or soa_parking_t) %}<tr class="soa-detail-row"><td>Parking{% if assigned_parking %} — Unit {{assigned_parking.unit_no}}{% endif %}</td><td>{{bill.parking_dues|currency}}</td></tr>{% endif %}
+      {% if bill.storage_dues|float>0 %}<tr class="soa-detail-row"><td>Storage{% if assigned_storage %} — Unit {{assigned_storage.unit_no}}{% endif %}</td><td>{{bill.storage_dues|currency}}</td></tr>{% endif %}
+      {% set current_water_paid=water_reading and water_reading.paid %}{% if bill.water|float>0 and not current_water_paid %}<tr class="soa-detail-row"><td>Water Bill — {{water_reading.usage|num if water_reading else '0.00'}} m³ × {{water_reading.rate|currency if water_reading else setting('water_rate','50')|currency}}/m³</td><td>{{bill.water|currency}}</td></tr>{% endif %}
+      {% if bill.other|float>0 %}<tr class="soa-detail-row"><td>Other Charges</td><td>{{bill.other|currency}}</td></tr>{% endif %}
+      {% if bill.adjustment|float!=0 %}<tr class="soa-detail-row"><td>Adjustment</td><td>{{bill.adjustment|currency}}</td></tr>{% endif %}
+      {% set ns=namespace(has_previous=false) %}{% for p in previous %}{% if soa_bill_status(p)!='Paid' %}{% set ns.has_previous=true %}{% endif %}{% endfor %}
+      {% if ns.has_previous or bill.previous_balance|float>0 %}
+        <tr class="soa-history-header"><td colspan="2">PREVIOUS UNPAID STATEMENTS HISTORY</td></tr>
+        {% for p in previous %}{% set ps=soa_bill_status(p) %}{% if ps!='Paid' and p.assessment|float>0 %}<tr class="soa-history-row"><td>{{p.billing_month|month_year}} — Condo Dues <span class="soa-mini-status {{ps|lower|replace(' ','-')}}">{{ps|upper}}</span></td><td>{{p.assessment|currency}}</td></tr>{% endif %}{% endfor %}
+        {% for p in previous %}{% set ps=soa_bill_status(p) %}{% set pr=water_reading_map.get((p.unit_id,p.billing_month)) %}{% if ps!='Paid' and p.water|float>0 and not (pr and pr.paid) %}<tr class="soa-history-row"><td>{{p.billing_month|month_year}} — Water Bill <span class="soa-mini-status {{ps|lower|replace(' ','-')}}">{{ps|upper}}</span></td><td>{{p.water|currency}}</td></tr>{% endif %}{% endfor %}
+        {% if assigned_parking %}{% for p in previous %}{% if soa_bill_status(p)!='Paid' %}{% set pc=asset_unit_charge(assigned_parking,'parking_rate_per_sqm') %}{% if pc>0 %}<tr class="soa-history-row"><td>{{p.billing_month|month_year}} — Parking — Unit {{assigned_parking.unit_no}} <span class="soa-mini-status {{soa_bill_status(p)|lower|replace(' ','-')}}">{{soa_bill_status(p)|upper}}</span></td><td>{{pc|currency}}</td></tr>{% endif %}{% endif %}{% endfor %}{% endif %}
+        {% if assigned_storage %}{% for p in previous %}{% if soa_bill_status(p)!='Paid' %}{% set sc=asset_unit_charge(assigned_storage,'storage_rate_per_sqm') %}{% if sc>0 %}<tr class="soa-history-row"><td>{{p.billing_month|month_year}} — Storage — Unit {{assigned_storage.unit_no}} <span class="soa-mini-status {{soa_bill_status(p)|lower|replace(' ','-')}}">{{soa_bill_status(p)|upper}}</span></td><td>{{sc|currency}}</td></tr>{% endif %}{% endif %}{% endfor %}{% endif %}
+        {% if bill.previous_balance|float>0 and not ns.has_previous %}<tr class="soa-history-row"><td>Carried Forward Outstanding Balance</td><td>{{bill.previous_balance|currency}}</td></tr>{% endif %}
+      {% endif %}
+    </tbody></table>
+  </section>
+
+  <div class="soa-bottom-summary">
+    {% set soa_vals=authoritative_bill_values(bill) %}
+    {% set soa_current=soa_vals[0]+soa_vals[1]+soa_vals[2] %}
+    {% set soa_overdue=soa_vals[4] %}
+    {% set soa_penalty=soa_penalty_amount(bill) %}
+    <div class="soa-penalty-card"><div class="soa-summary-title">% &nbsp; PENALTY</div><small>Total Overdue</small><strong>{{soa_overdue|currency}}</strong><small>Penalty Rate &nbsp; 10% of Total Overdue</small><b>{{soa_penalty|currency}}</b></div>
+    <div class="soa-total-card"><span>▤ &nbsp; TOTAL AMOUNT DUE</span><small>Current Bill: {{soa_current|currency}}{% if advance_applied|float > 0 %} &nbsp; − &nbsp; Advance Credit: {{advance_applied|currency}}{% endif %} &nbsp; + &nbsp; Overdue: {{soa_overdue|currency}} &nbsp; + &nbsp; Penalty: {{soa_penalty|currency}}</small><strong>{{soa_bill_total(bill)|currency}}</strong><small>{{bill.status}}{% if bill.soa_manual_override %} · Manually Corrected{% endif %}</small></div>
+  </div>
+
+  <section class="soa-payment"><h2>▣ &nbsp; HOW TO PAY</h2><div class="payment-instructions soa-pay-grid"><div><strong>🌐 ONLINE PAYMENT</strong><p>{{setting('online_payment_instructions','Please use the online payment link or scan the Payment QR shown on this SOA.')}}</p>{% if setting('online_payment_url','') %}<p><strong>Payment Link:</strong> {{setting('online_payment_url','')}}</p>{% endif %}<a class="btn no-print" href="{{url_for('billing_qr',bid=bill.id)}}">▣ Open Payment QR</a></div><div class="soa-qr-box"><strong>▦ &nbsp; SCAN TO PAY</strong><p>Use the QR code available from the Payment QR button.</p><a class="btn no-print" href="{{url_for('billing_qr',bid=bill.id)}}">Open QR</a></div><div><strong>▣ CASH PAYMENT</strong><p>For cash payments, please visit Admin and present this SOA.</p></div></div></section>
+
+  {% if advance_applied|float > 0 %}<div class="card soa-advance-note"><strong>💳 Advance Payment Applied</strong><p>₱{{advance_applied|currency}} of this month's Condo Dues was covered by an advance payment. Water, parking and other charges remain payable unless separately covered.</p></div>{% endif %}
+
+  <section class="soa-payment"><h2>▤ &nbsp; PAYMENT HISTORY</h2><table class="soa-payment-history"><thead><tr><th>DATE</th><th>REFERENCE</th><th>AMOUNT</th><th>PAYMENT TYPE</th></tr></thead><tbody>{% for p in bill.payments %}<tr><td>{{p.payment_date}}</td><td>{{p.reference or '—'}}</td><td>{{p.amount|currency}}</td><td>{{p.remarks or 'Cash / Manual'}}</td></tr>{% else %}<tr><td colspan="4">No payments recorded.</td></tr>{% endfor %}</tbody></table></section>
+  <div class="soa-footer">Thank you for your continued support. <span>CITYLAND 9 SYSTEM</span></div>
+{% if bill.soa_note %}<div class="card no-print"><strong>Admin Correction Note:</strong> {{bill.soa_note}}</div>{% endif %}
+{% if current_user and current_user.role in ["super_admin", "admin"] %}
+<div class="card no-print soa-edit-panel" id="edit-soa-panel" hidden>
+  <div class="card-head"><div><h2>✎ Edit SOA</h2><p class="muted">Manual editing controls are visible only to Superadmin/Admin. Saved changes are recorded in Audit Logs.</p></div><button type="button" class="btn small" onclick="closeSoaEditor()">✕ Close</button></div>
+<form method="post" action="{{url_for('edit_soa',bid=bill.id)}}" class="form-grid compact">
+<label>Condo Dues<input type="number" step="0.01" name="assessment" value="{{bill.assessment}}"></label>
+<label>Parking<input type="number" step="0.01" name="parking_dues" value="{{bill.parking_dues}}"></label>
+<label>Storage<input type="number" step="0.01" name="storage_dues" value="{{bill.storage_dues}}"></label>
+<label>Water<input type="number" step="0.01" name="water" value="{{bill.water}}"></label>
+<label>Other<input type="number" step="0.01" name="other" value="{{bill.other}}"></label>
+<label>Penalty<input type="number" step="0.01" name="penalty" value="{{bill.penalty}}"></label>
+<label>Adjustment<input type="number" step="0.01" name="adjustment" value="{{bill.adjustment}}"></label>
+<label>Previous Balance<input type="number" step="0.01" name="previous_balance" value="{{bill.previous_balance}}"></label>
+<label>Due Date<input type="date" name="due_date" value="{{bill.due_date}}"></label>
+<label class="full-span">Correction Note<textarea name="soa_note" rows="3" placeholder="Reason/details for the correction">{{bill.soa_note or ''}}</textarea></label>
+<div class="form-actions"><button type="submit" class="btn primary" onclick="return confirm('Save this manual SOA correction? The change will be recorded in Audit Logs.')">Save SOA Correction</button><button type="button" class="btn" onclick="closeSoaEditor()">Cancel</button></div>
+</form></div>{% endif %}
+</div>
+<div class="toolbar no-print"><a class="btn" href="{{url_for('billing')}}?month={{bill.billing_month}}">← Back to Billing</a><button class="btn primary" onclick="window.print()">🖨 View / Print SOA</button>{% if current_user and current_user.role in ["super_admin", "admin"] %}<button class="btn" type="button" onclick="openSoaEditor()">✎ EDIT SOA</button>{% endif %}<form method="post" action="{{url_for('email_bill',bid=bill.id)}}" class="inline-form"><button class="btn" type="submit">✉ Send Email</button></form><a class="btn" href="{{url_for('billing_qr',bid=bill.id)}}">▣ Payment QR</a></div>
+<script>
+function openSoaEditor(){
+  const panel=document.getElementById("edit-soa-panel");
+  if(!panel) return;
+  panel.hidden=false;
+  panel.scrollIntoView({behavior:"smooth",block:"start"});
+}
+function closeSoaEditor(){
+  const panel=document.getElementById("edit-soa-panel");
+  if(panel) panel.hidden=true;
+}
+function closeSoaPreview(){
+  const panel=document.getElementById("edit-soa-panel");
+  if(panel && !panel.hidden){ closeSoaEditor(); return; }
+  if(window.history.length>1){ window.history.back(); }
+  else { window.location.href='{{url_for("billing")}}?month={{bill.billing_month}}'; }
+}
+document.addEventListener("keydown",function(e){ if(e.key==="Escape") closeSoaPreview(); });
+if(new URLSearchParams(window.location.search).get("print")==="1"){window.addEventListener("load",()=>setTimeout(()=>window.print(),250));}
+</script>
+{% endblock %}
+<script>
+(function(){
+ function syncTheme(){
+   var b=document.body,r=document.documentElement;
+   var t=(r.getAttribute('data-theme')||b.getAttribute('data-theme')||'').toLowerCase();
+   if(t==='dark') b.classList.add('cl-dark');
+   else if(t==='light') b.classList.remove('cl-dark');
+ }
+ syncTheme();
+ new MutationObserver(syncTheme).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+})();
+</script>

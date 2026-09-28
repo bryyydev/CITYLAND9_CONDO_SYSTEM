@@ -1,0 +1,15 @@
+CITYLAND 9 SYSTEM V10.57 — REFERENCE UI + READABILITY UPDATE
+
+Changes requested from the supplied UI reference:
+- Updated the authenticated system shell to a light blue / teal professional layout.
+- Enlarged general system fonts, sidebar labels, tables, buttons, inputs, and headings.
+- Reworked Rates & Rules tabs from dark navy to light gray/blue tabs with a teal active state.
+- Improved sidebar readability and selected-menu visibility.
+- Improved top header readability and spacing.
+- Added stronger contrast on form controls and table headers.
+- Fixed SOA Summary / Total Due dark panel so all text stays white and readable.
+- Added general contrast protection for intentionally dark summary surfaces.
+- Retained responsive behavior and print behavior.
+
+Version: V10.57
+- Fixed an existing Jinja syntax typo in the statutory payroll view and print templates discovered during validation.

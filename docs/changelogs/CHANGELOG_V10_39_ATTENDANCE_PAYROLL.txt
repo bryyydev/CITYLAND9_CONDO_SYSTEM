@@ -1,0 +1,19 @@
+CITYLAND 9 CONDO SYSTEM V10.39
+Employee Attendance & Payroll
+
+Added:
+- Daily employee attendance recording
+- Time-in and time-out
+- Present, Absent, Late, Undertime, Leave and Rest Day statuses
+- Attendance remarks
+- Attendance date filtering
+- Payroll period selection
+- Basic salary, overtime, allowances and deductions
+- Automatic absence and late/undertime deductions from attendance
+- Net pay calculation
+- Payroll Draft/Final/Paid status
+- Printable payroll slip
+- New Attendance and Payroll navigation links
+
+Note:
+Payroll uses the employee monthly salary already stored in the Employee module when Basic Salary is left blank. The initial absence calculation uses a 26-working-day divisor. This is an initial payroll framework and should be configured to the condominium's approved payroll rules before actual salary processing.

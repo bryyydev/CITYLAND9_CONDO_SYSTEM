@@ -1,0 +1,28 @@
+CITYLAND 9 V10.3 - VALIDATION REPORT
+====================================
+
+Static validation completed successfully:
+[PASS] app.py parses with Python AST.
+[PASS] app.py passes py_compile.
+[PASS] No duplicate top-level function/class definitions found.
+[PASS] All template url_for() endpoint names match declared Flask routes.
+[PASS] SOA has View / Print using window.print().
+[PASS] Unit creation has Owner/Tenant occupancy dropdown.
+[PASS] Multiple Tenant model and add-tenant route are present.
+[PASS] Owner/Tenant email fields are optional.
+[PASS] With Parking reveals parking assignment controls.
+[PASS] Parking supports Owner/Tenant assignment and per-sqm calculation.
+[PASS] Dedicated Parking page/tab exists.
+[PASS] Parking monthly billing records are generated with monthly bills.
+[PASS] SOA shows unit overdue months and parking overdue months.
+[PASS] Water history shows previous months and Paid/Unpaid/Partially Paid filter.
+[PASS] Billing page now includes the Parking tab alongside Units/Billing/Water.
+[PASS] SOA parking table shows this-month parking billing status when a ParkingBilling record exists.
+
+Runtime limitation:
+-------------------
+The validation environment does not have Flask/Flask-SQLAlchemy installed and
+cannot download packages, so a live browser/server test could not be performed.
+On Windows, run START_WINDOWS.bat after installing requirements.txt. Then test
+login, unit creation, tenant creation, parking assignment, monthly billing,
+water readings, payments, and SOA printing in the browser.

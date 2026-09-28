@@ -1,0 +1,15 @@
+{% extends "base.html" %}{% block content %}
+<div class="eyebrow">OVERVIEW</div><h1>Dashboard</h1><p class="subtitle">{{ month }} · Billing Period Active</p>
+<div class="grid cards"><div class="card hero-card"><div class="metric">{{ billed|currency }}</div><b>Total Billed This Month</b><span class="muted">{{ units|length }} active units</span></div><div class="card"><div class="metric green">{{ collected|currency }}</div><b>Amount Collected</b><span class="muted">Current month</span></div><div class="card danger-card"><div class="metric red">{{ overdue|currency }}</div><b>Overdue Amount</b><span class="muted">Outstanding past due</span></div><div class="card"><div class="metric amber">{{ pending_water }}</div><b>Pending Water Readings</b><span class="muted">Units without {{ month }} reading</span></div><div class="card"><div class="metric cyan">{{ occupied }} / {{ units|length }}</div><b>Occupied Units</b><span class="muted">Current occupancy</span></div></div>
+<div class="section-head"><h2>Recent Billing</h2><a class="btn" href="{{ url_for('billing') }}">Billing Management</a></div><div class="table-wrap"><table><thead><tr><th>Unit</th><th>Owner</th><th>Month</th><th>Condo Due</th><th>Water</th><th>Storage</th><th>Total</th><th>Balance</th></tr></thead><tbody>{% for b in recent_bills if b.unit.unit_type not in ['PARKING','STORAGE'] %}<tr><td><a href="{{ url_for('unit_detail',uid=b.unit.id) }}">{{ b.unit.unit_no }}</a></td><td>{{ b.unit.owner_name or '—' }}</td><td>{{ b.billing_month }}</td><td>{{ b.assessment|currency }}</td><td>{{ b.water|currency }}</td><td>{{ b.storage_dues|currency }}</td><td class="cyan">{{ bill_total(b)|currency }}</td><td class="red">{{ bill_balance(b)|currency }}</td></tr>{% else %}<tr><td colspan="8" class="empty">No billing records yet.</td></tr>{% endfor %}</tbody></table></div>{% endblock %}<script>
+(function(){
+ function syncTheme(){
+   var b=document.body,r=document.documentElement;
+   var t=(r.getAttribute('data-theme')||b.getAttribute('data-theme')||'').toLowerCase();
+   if(t==='dark') b.classList.add('cl-dark');
+   else if(t==='light') b.classList.remove('cl-dark');
+ }
+ syncTheme();
+ new MutationObserver(syncTheme).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+})();
+</script>

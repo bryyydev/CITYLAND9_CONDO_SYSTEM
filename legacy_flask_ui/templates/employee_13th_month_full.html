@@ -1,0 +1,14 @@
+{% extends "base.html" %}{% block content %}<div class="eyebrow">HR / YEAR-END</div><h1>13th Month Pay</h1><p class="subtitle">Computed from actual basic salary in payroll records for {{year}}.</p><div class="toolbar"><form method="get"><label>Year<input type="number" name="year" value="{{year}}"></label><button class="btn">Load</button></form><button class="btn" onclick="window.print()">Print</button></div>
+<div class="table-wrap"><table><thead><tr><th>EMPLOYEE</th><th>EMPLOYEE NO.</th><th>BASIC SALARY EARNED</th><th>13TH MONTH</th></tr></thead><tbody>{% for e,b,t in rows %}<tr><td>{{e.full_name}}</td><td>{{e.employee_no}}</td><td>₱{{"%.2f"|format(b)}}</td><td><strong>₱{{"%.2f"|format(t)}}</strong></td></tr>{% endfor %}<tr><th colspan="3">TOTAL</th><th>₱{{"%.2f"|format(total)}}</th></tr></tbody></table></div>{% endblock %}
+<script>
+(function(){
+ function syncTheme(){
+   var b=document.body,r=document.documentElement;
+   var t=(r.getAttribute('data-theme')||b.getAttribute('data-theme')||'').toLowerCase();
+   if(t==='dark') b.classList.add('cl-dark');
+   else if(t==='light') b.classList.remove('cl-dark');
+ }
+ syncTheme();
+ new MutationObserver(syncTheme).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+})();
+</script>

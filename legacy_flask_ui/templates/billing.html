@@ -1,0 +1,194 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="billing-page">
+  <div class="billing-hero">
+    <div class="billing-title-wrap">
+      <div class="billing-icon">▤</div>
+      <div>
+        <div class="eyebrow">MANAGEMENT</div>
+        <h1>Billing Management</h1>
+        <p class="subtitle">Manage condo dues, payments and SOA.</p>
+      </div>
+    </div>
+    <form method="post" class="generate-form">
+      <input type="hidden" name="month" value="{{month}}">
+      <button class="btn primary generate-btn" type="submit">⚡ Generate Bills</button>
+    </form>
+  </div>
+
+  <div class="billing-tabs">
+    <a href="{{url_for('units')}}">▥ Unit Directory</a>
+    <a class="active" href="{{url_for('billing', month=month)}}">▤ Billing Management</a>
+    <a href="{{url_for('advance_payments')}}">💳 Advance Payments</a>
+    <a href="{{url_for('water')}}">♨ Water Readings</a><a href="{{url_for('billing_email',month=month)}}">✉ SOA Email</a>
+  </div>
+
+  <div class="billing-kpis">
+    <a class="billing-kpi kpi-link {% if not status_filter %}selected{% endif %}" href="{{url_for('billing',month=month,q=q,unit_type=unit_type_filter)}}">
+      <span class="kpi-icon blue">▤</span><div><span>Total Bills</span><strong>{{kpi_paid + kpi_pending + kpi_overdue}}</strong><small>Show all bills</small></div>
+    </a>
+    <a class="billing-kpi kpi-link {% if status_filter=='Paid' %}selected{% endif %}" href="{{url_for('billing',month=month,q=q,unit_type=unit_type_filter,status='Paid')}}">
+      <span class="kpi-icon green">✓</span><div><span>Paid Bills</span><strong>{{kpi_paid}}</strong><small>Fully settled</small></div>
+    </a>
+    <a class="billing-kpi kpi-link {% if status_filter=='Pending' %}selected{% endif %}" href="{{url_for('billing',month=month,q=q,unit_type=unit_type_filter,status='Pending')}}">
+      <span class="kpi-icon amber">◷</span><div><span>Pending Bills</span><strong>{{kpi_pending}}</strong><small>Unpaid or partial</small></div>
+    </a>
+    <a class="billing-kpi kpi-link {% if status_filter=='Overdue' %}selected{% endif %}" href="{{url_for('billing',month=month,q=q,unit_type=unit_type_filter,status='Overdue')}}">
+      <span class="kpi-icon red">!</span><div><span>Overdue Bills</span><strong>{{kpi_overdue}}</strong><small>Past due date</small></div>
+    </a>
+  </div>
+
+  <div class="billing-filter-card">
+    <div class="filter-heading">⌕ <strong>Search &amp; Filter</strong></div>
+    <form method="get" class="billing-filter-grid">
+      <label>Search
+        <input name="q" value="{{q or ''}}" placeholder="Search unit number, owner, tenant, or invoice no...">
+      </label>
+      <label>Billing Period
+        <input type="month" name="month" value="{{month}}">
+      </label>
+      <label>Status
+        <select name="status">
+          <option value="">All Status</option>
+          {% for s in ['Paid','Pending','Partially Paid','Unpaid','Overdue'] %}<option value="{{s}}" {% if status_filter==s %}selected{% endif %}>{{s}}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Unit Type
+        <select name="unit_type">
+          <option value="">All Types</option>
+          {% for t in ['STUDIO TYPE','1 BEDROOM','2 BEDROOM','3 BEDROOM'] %}<option value="{{t}}" {% if unit_type_filter==t %}selected{% endif %}>{{t}}</option>{% endfor %}
+        </select>
+      </label>
+      <div class="billing-filter-actions">
+        <a class="btn" href="{{url_for('billing', month=month)}}">↻ Reset</a>
+        <button class="btn primary" type="submit">⚑ Apply</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="billing-list-card">
+    <div class="billing-list-head">
+      <div><h2>▤ Bills <span class="count-pill">{{total_count}}</span></h2></div>
+      <div class="billing-page-tools">
+        <span>Showing {% if total_count %}{{start if start is defined else ((page-1)*per_page)+1}}–{{[page*per_page,total_count]|min}}{% else %}0{% endif %} of {{total_count}} bills</span>
+        <form method="get">
+          <input type="hidden" name="q" value="{{q}}"><input type="hidden" name="month" value="{{month}}"><input type="hidden" name="status" value="{{status_filter}}"><input type="hidden" name="unit_type" value="{{unit_type_filter}}">
+          <select name="per_page" onchange="this.form.submit()"><option value="20" {% if per_page==20 %}selected{% endif %}>20 per page</option><option value="50" {% if per_page==50 %}selected{% endif %}>50 per page</option><option value="100" {% if per_page==100 %}selected{% endif %}>100 per page</option></select>
+        </form>
+        {% if total_pages>1 %}<div class="pager-top">{% for n in range(1,total_pages+1) %}{% if n<=5 or n==total_pages %}<a class="page-btn {% if n==page %}active{% endif %}" href="{{url_for('billing',month=month,q=q,status=status_filter,unit_type=unit_type_filter,page=n,per_page=per_page)}}">{{n}}</a>{% elif n==6 %}<span>…</span>{% endif %}{% endfor %}</div>{% endif %}
+      </div>
+    </div>
+
+    <div class="billing-table-scroll">
+      <table class="billing-modern-table">
+        <thead><tr>
+          <th>UNIT</th><th>OWNER / TENANT</th><th>BILLING PERIOD</th><th>TOTAL DUE</th><th>UNPAID</th><th>ADVANCE</th><th>STATUS</th><th>ACTIONS</th>
+        </tr></thead>
+        <tbody>
+        {% for b in bills %}{% set st=bill_status_label(b) %}
+          <tr>
+            <td><a class="unit-link" href="{{url_for('unit_detail',uid=b.unit.id)}}">▥ {{b.unit.unit_no}}</a><br><a class="muted small" href="{{url_for('billing_detail',bid=b.id)}}">View details</a></td>
+            <td><strong>{{b.unit.owner_name or '—'}}</strong><br><span class="muted small">{{b.unit.tenants|selectattr('status','equalto','Current')|map(attribute='tenant_name')|join(', ') or 'No current tenant'}}</span></td>
+            <td><strong>{{b.billing_month}}</strong><br><span class="muted small">Due: {{b.due_date.strftime('%b %d, %Y') if b.due_date else '—'}}</span></td>
+            <td><strong class="total-due">{{bill_total(b)|currency}}</strong><br><span class="muted tiny">Paid: {{b.amount_paid|currency}}</span></td>
+            <td><strong class="unpaid-amount">{{[bill_balance(b), 0]|max|currency}}</strong></td>
+            <td><strong class="advance-amount">{{advance_for_bill(b)|currency}}</strong></td>
+            <td><span class="billing-status {{st|lower|replace(' ','-')}}">{% if st=='Paid' %}✓{% elif st=='Overdue' %}⚠{% elif st=='Partially Paid' %}◐{% else %}○{% endif %} {{st}}</span></td>
+            <td class="action-cell"><a class="btn small primary view-print-btn" target="_blank" href="{{url_for('billing_detail',bid=b.id)}}">◉ View / Print</a>
+              {% if bill_balance(b) > 0 %}<button type="button" class="btn small payment-btn" data-bid="{{b.id}}" data-unit="{{b.unit.unit_no}}" data-balance="{{bill_balance(b)}}" data-month="{{b.billing_month}}">✓ Paid</button>{% endif %}
+              {% if current_user and current_user.role in ["super_admin", "admin"] %}<a class="btn small" href="{{url_for('billing_detail',bid=b.id)}}#edit-soa">✎ Edit SOA</a>{% endif %}</td>
+          </tr>
+        {% else %}<tr><td colspan="8" class="empty">No bills found for {{month}}. Generate bills or change your filters.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    {% if total_pages>1 %}<div class="billing-pagination"><span>Page {{page}} of {{total_pages}}</span><div><a class="page-btn" href="{{url_for('billing',month=month,q=q,status=status_filter,unit_type=unit_type_filter,page=1,per_page=per_page)}}">‹</a>{% for n in range(1,total_pages+1) %}{% if n<=5 or n==total_pages %}<a class="page-btn {% if n==page %}active{% endif %}" href="{{url_for('billing',month=month,q=q,status=status_filter,unit_type=unit_type_filter,page=n,per_page=per_page)}}">{{n}}</a>{% elif n==6 %}<span>…</span>{% endif %}{% endfor %}<a class="page-btn" href="{{url_for('billing',month=month,q=q,status=status_filter,unit_type=unit_type_filter,page=total_pages,per_page=per_page)}}">›</a></div></div>{% endif %}
+  </div>
+</div>
+
+
+<div id="paymentModal" class="modal-overlay" style="display:none;">
+  <div class="modal-card">
+    <div class="section-head"><h2>✓ Record Payment</h2><button type="button" class="btn small" id="closePaymentModal">✕</button></div>
+    <p class="muted" id="paymentBillLabel"></p>
+    <form method="post" id="paymentForm">
+      <label>Amount
+        <input type="number" name="amount" id="paymentAmount" min="0.01" step="0.01" required>
+      </label>
+      <label>Payment Date
+        <input type="date" name="payment_date" value="{{today if today is defined else ''}}" required>
+      </label>
+      <label>Payment Method
+        <select name="payment_method" id="paymentMethod" required>
+          <option value="CASH">CASH</option><option value="CHECK">CHECK</option><option value="ONLINE">ONLINE</option>
+        </select>
+      </label>
+      <label>Payment Type
+        <select name="payment_type" id="paymentType" required>
+          <option value="FULL">FULL</option><option value="PARTIAL">PARTIAL</option>
+        </select>
+      </label>
+      <label id="paymentReferenceWrap" style="display:none;">Reference Number
+        <input type="text" name="reference" id="paymentReference" maxlength="100">
+      </label>
+      <label>Remarks
+        <input type="text" name="remarks" maxlength="300">
+      </label>
+      <div class="form-actions">
+        <button type="submit" class="btn primary">Save Payment</button>
+        <button type="button" class="btn" id="cancelPayment">Cancel</button>
+      </div>
+    </form>
+  </div>
+</div>
+<script>
+(function(){
+  const table=document.querySelector('.billing-list-card');
+  document.querySelectorAll('.kpi-link').forEach(function(link){
+    link.addEventListener('click',function(){
+      if(table){ table.classList.add('billing-transition-out'); }
+    });
+  });
+})();
+</script>
+<script>
+(function(){
+ const modal=document.getElementById('paymentModal'), form=document.getElementById('paymentForm');
+ const amount=document.getElementById('paymentAmount'), method=document.getElementById('paymentMethod');
+ const type=document.getElementById('paymentType'), refWrap=document.getElementById('paymentReferenceWrap');
+ function toggleRef(){ refWrap.style.display=(method.value==='CHECK'||method.value==='ONLINE')?'block':'none'; document.getElementById('paymentReference').required=(method.value==='CHECK'||method.value==='ONLINE'); }
+ function close(){modal.style.display='none';}
+ document.querySelectorAll('.payment-btn').forEach(btn=>btn.addEventListener('click',function(){
+   const balance=parseFloat(this.dataset.balance||'0');
+   form.action='/billing/'+this.dataset.bid+'/pay';
+   document.getElementById('paymentBillLabel').textContent='Unit '+this.dataset.unit+' • '+this.dataset.month+' • Remaining balance: ₱'+balance.toFixed(2);
+   amount.dataset.balance=balance.toFixed(2); amount.value=balance.toFixed(2); amount.removeAttribute('max');
+   type.value='FULL'; method.value='CASH'; document.getElementById('paymentReference').value=''; toggleRef(); modal.style.display='flex';
+ }));
+ method.addEventListener('change',toggleRef);
+ type.addEventListener('change',function(){
+   if(type.value==='FULL') amount.value=(parseFloat(amount.dataset.balance||'0')||0).toFixed(2);
+ });
+ document.getElementById('closePaymentModal').onclick=close;
+ document.getElementById('cancelPayment').onclick=close;
+ form.addEventListener('submit',function(e){
+   if(!confirm('Save Changes?\n\nYes = Save payment\nNo = Cancel')) e.preventDefault();
+ });
+ modal.addEventListener('click',function(e){if(e.target===modal)close();});
+})();
+</script>
+
+{% endblock %}
+<script>
+(function(){
+ function syncTheme(){
+   var b=document.body,r=document.documentElement;
+   var t=(r.getAttribute('data-theme')||b.getAttribute('data-theme')||'').toLowerCase();
+   if(t==='dark') b.classList.add('cl-dark');
+   else if(t==='light') b.classList.remove('cl-dark');
+ }
+ syncTheme();
+ new MutationObserver(syncTheme).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+})();
+</script>

@@ -1,0 +1,33 @@
+# Secrets / local configuration (never commit real credentials)
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Client data — databases and their automatic backups stay on the client's machine only
+*.db
+*.db.*
+*.sqlite
+*.sqlite3
+cityland_condo_web_before_import_*
+*.before_v10_cleanup.bak
+*.sql.gz
+database/backups/
+
+# Uploaded files (future local document storage)
+backend/instance/
+uploads/
+
+# Frontend (future React/Vite app)
+node_modules/
+frontend/dist/
+
+# OS / editor noise
+Thumbs.db
+Desktop.ini
+.DS_Store

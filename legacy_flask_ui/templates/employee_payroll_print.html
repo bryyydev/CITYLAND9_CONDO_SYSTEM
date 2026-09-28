@@ -1,0 +1,28 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Employee Payslip - {{employee.full_name if employee.full_name is defined else employee.name}}</title>
+<style>
+body{font-family:Arial,sans-serif;margin:25px;font-size:12px;color:#111}.payslip{max-width:800px;margin:auto;border:1px solid #555;padding:22px}.head{text-align:center;border-bottom:2px solid #111;padding-bottom:12px;margin-bottom:15px}.head h2{margin:0 0 5px}.head h3{margin:5px 0}.meta{width:100%;border-collapse:collapse;margin-bottom:15px}.meta td{padding:5px;border-bottom:1px solid #ddd}.section{font-weight:bold;background:#eee;padding:7px;margin-top:10px}.lines{width:100%;border-collapse:collapse}.lines td{padding:6px;border-bottom:1px solid #ddd}.lines td:last-child{text-align:right}.total{font-size:16px;font-weight:bold}.net{font-size:20px;font-weight:bold;border-top:2px solid #111;border-bottom:2px solid #111;padding:10px}.actions{text-align:right;margin-bottom:12px}.note{font-size:10px;color:#555;margin-top:18px}.signatures{display:flex;gap:50px;margin-top:45px}.sig{flex:1;border-top:1px solid #555;text-align:center;padding-top:5px}
+@media print{.actions{display:none}.payslip{border:0;padding:0;max-width:none}body{margin:8mm}@page{size:A4;margin:8mm}}
+</style></head><body>
+<div class="actions"><button onclick="window.print()">PRINT PAYSLIP</button> <button onclick="window.close()">CLOSE</button></div>
+<div class="payslip">
+<div class="head"><h2>CITYLAND 9 CONDOMINIUM CORPORATION</h2><h3>EMPLOYEE PAYSLIP</h3><div>{{p.period_start}} to {{p.period_end}}</div></div>
+<table class="meta"><tr><td><strong>Employee:</strong> {{employee.full_name if employee.full_name is defined else employee.name}}</td><td><strong>Employee No.:</strong> {{employee.employee_no if employee.employee_no is defined else employee.id}}</td></tr><tr><td><strong>Position:</strong> {{employee.position or '—'}}</td><td><strong>Status:</strong> {{p.status}}</td></tr></table>
+<div class="section">EARNINGS</div><table class="lines"><tr><td>Basic Salary</td><td>₱{{"%.2f"|format(p.basic_salary or 0)}}</td></tr><tr><td>Overtime Pay</td><td>₱{{"%.2f"|format(p.overtime_pay or 0)}}</td></tr><tr><td>Allowances</td><td>₱{{"%.2f"|format(p.allowances or 0)}}</td></tr><tr><td class="total">GROSS PAY</td><td class="total">₱{{"%.2f"|format(statutory.gross_pay or 0)}}</td></tr></table>
+<div class="section">DEDUCTIONS</div><table class="lines"><tr><td>Absence</td><td>₱{{"%.2f"|format(p.absences or 0)}}</td></tr><tr><td>Late / Undertime</td><td>₱{{"%.2f"|format(p.late_undertime or 0)}}</td></tr><tr><td>Other / Loan Deductions</td><td>₱{{"%.2f"|format(p.deductions or 0)}}</td></tr><tr><td>SSS Employee</td><td>₱{{"%.2f"|format(statutory.sss_employee or 0)}}</td></tr><tr><td>PhilHealth Employee</td><td>₱{{"%.2f"|format(statutory.philhealth_employee or 0)}}</td></tr><tr><td>Pag-IBIG Employee</td><td>₱{{"%.2f"|format(statutory.pagibig_employee or 0)}}</td></tr><tr><td>BIR Withholding Tax</td><td>₱{{"%.2f"|format(statutory.withholding_tax or 0)}}</td></tr><tr><td class="total">TOTAL EMPLOYEE DEDUCTIONS</td><td class="total">₱{{"%.2f"|format(statutory.total_employee_deductions or 0)}}</td></tr></table>
+<div class="net">NET PAY <span style="float:right">₱{{"%.2f"|format(p.net_pay or statutory.net_pay_after_statutory or 0)}}</span></div>
+<div class="section">EMPLOYER CONTRIBUTIONS — FOR REFERENCE</div><table class="lines"><tr><td>SSS Employer</td><td>₱{{"%.2f"|format(statutory.sss_employer or 0)}}</td></tr><tr><td>SSS EC / ECP</td><td>₱{{"%.2f"|format(statutory.sss_ec_employer or 0)}}</td></tr><tr><td>PhilHealth Employer</td><td>₱{{"%.2f"|format(statutory.philhealth_employer or 0)}}</td></tr><tr><td>Pag-IBIG Employer</td><td>₱{{"%.2f"|format(statutory.pagibig_employer or 0)}}</td></tr><tr><td class="total">TOTAL EMPLOYER STATUTORY COST</td><td class="total">₱{{"%.2f"|format(statutory.total_employer_cost or 0)}}</td></tr></table>
+<p class="note">This payslip is generated from the payroll record in the CityLand 9 Condo System. Government contribution rates and tax rules should be reviewed against the latest official schedules before payroll remittance.</p>
+<div class="signatures"><div class="sig">Prepared by</div><div class="sig">Checked / Approved by</div><div class="sig">Employee Signature</div></div>
+</div><script>
+(function(){
+ function syncTheme(){
+   var b=document.body,r=document.documentElement;
+   var t=(r.getAttribute('data-theme')||b.getAttribute('data-theme')||'').toLowerCase();
+   if(t==='dark') b.classList.add('cl-dark');
+   else if(t==='light') b.classList.remove('cl-dark');
+ }
+ syncTheme();
+ new MutationObserver(syncTheme).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+})();
+</script></body></html>

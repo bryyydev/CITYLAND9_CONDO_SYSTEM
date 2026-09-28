@@ -1,0 +1,12 @@
+{% extends "base.html" %}{% block content %}<h1>13th Month Pay Report</h1><p>Year: {{year}}</p><table class="modern-table"><thead><tr><th>EMPLOYEE</th><th>MONTHLY BASIC</th><th>ESTIMATED 13TH MONTH</th></tr></thead><tbody>{% for e,sal in rows %}<tr><td>{{e.name if e.name is defined else ('Employee #'~e.id)}}</td><td>₱{{'%.2f'|format(sal)}}</td><td>₱{{'%.2f'|format(sal)}}</td></tr>{% else %}<tr><td colspan="3">No employees found.</td></tr>{% endfor %}</tbody></table><p class="muted tiny">Estimate uses the current monthly basic salary. Final 13th-month computation should use actual basic salary earned during the year.</p>{% endblock %}<script>
+(function(){
+ function syncTheme(){
+   var b=document.body,r=document.documentElement;
+   var t=(r.getAttribute('data-theme')||b.getAttribute('data-theme')||'').toLowerCase();
+   if(t==='dark') b.classList.add('cl-dark');
+   else if(t==='light') b.classList.remove('cl-dark');
+ }
+ syncTheme();
+ new MutationObserver(syncTheme).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+})();
+</script>

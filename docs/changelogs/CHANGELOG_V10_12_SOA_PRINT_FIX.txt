@@ -1,0 +1,7 @@
+V10.12 — SOA SCREEN/PRINT CONSISTENCY FIX
+
+- Updated SOA print CSS so printing uses the same SOA typography, spacing, colors, tables and information as the on-screen SOA.
+- Only navigation, toolbars and interactive controls are hidden during printing.
+- Payment History is now included in the printed SOA.
+- Water Reading History remains visible in the printed SOA, including Previous, Current, Consumption, Amount and Status.
+- Print layout is constrained to A4 portrait paper without applying the previous compressed print-only layout.

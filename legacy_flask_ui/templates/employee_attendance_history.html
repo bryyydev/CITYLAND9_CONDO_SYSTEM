@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="eyebrow">ADMIN / HR / ATTENDANCE</div>
+<div class="page-header">
+  <div>
+    <h1>Employee Attendance History</h1>
+    <p class="subtitle"><strong>{{employee.full_name if employee.full_name is defined else employee.name}}</strong> — {{employee.employee_no if employee.employee_no is defined else ('Employee #' ~ employee.id)}}</p>
+  </div>
+  <a class="btn" href="{{url_for('employee_attendance')}}">← Daily Attendance</a>
+</div>
+<div class="card">
+  <form method="get" class="form-grid">
+    <label>Start Date<input type="date" name="start" value="{{start}}"></label>
+    <label>End Date<input type="date" name="end" value="{{end}}"></label>
+    <div><button class="btn primary">Load Attendance</button></div>
+  </form>
+</div>
+<div class="card">
+  <strong>Summary</strong>
+  <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:10px">
+    {% for k,v in counts.items() %}<span class="badge">{{k}}: {{v}}</span>{% endfor %}
+    {% if not counts %}<span class="muted">No attendance records for this period.</span>{% endif %}
+  </div>
+</div>
+<div class="table-wrap">
+<table class="modern-table">
+<thead><tr><th>DATE</th><th>STATUS</th><th>TIME IN</th><th>TIME OUT</th><th>REMARKS</th></tr></thead>
+<tbody>
+{% for r in rows %}
+<tr><td>{{r.attendance_date}}</td><td><strong>{{r.status}}</strong></td><td>{{r.time_in.strftime('%I:%M %p') if r.time_in else '—'}}</td><td>{{r.time_out.strftime('%I:%M %p') if r.time_out else '—'}}</td><td>{{r.remarks or '—'}}</td></tr>
+{% else %}<tr><td colspan="5" class="empty">No attendance records found.</td></tr>{% endfor %}
+</tbody></table></div>
+{% endblock %}
+<script>
+(function(){
+ function syncTheme(){
+   var b=document.body,r=document.documentElement;
+   var t=(r.getAttribute('data-theme')||b.getAttribute('data-theme')||'').toLowerCase();
+   if(t==='dark') b.classList.add('cl-dark');
+   else if(t==='light') b.classList.remove('cl-dark');
+ }
+ syncTheme();
+ new MutationObserver(syncTheme).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+})();
+</script>

@@ -1,0 +1,40 @@
+CITYLAND 9 SYSTEM V10.58 - BASELINE NAVIGATION
+
+This release is designated as the baseline for future CITYLAND 9 system updates.
+
+Sidebar/navigation order:
+WORKSPACE
+  Dashboard
+
+CONDO MANAGEMENT
+  Units
+    - Unit Directory
+  Billing & SOA
+    - Billing Management
+    - Advance Payments
+    - SOA Email
+  Water Readings
+
+OPERATIONS
+  Move In / Out
+  Gate Pass
+  Expenses
+
+EMPLOYEES & PAYROLL
+  Employees
+    - Attendance
+    - Leave
+    - Overtime
+    - Payroll
+    - Loans & Deductions
+    - 13th Month
+  Payroll Rules
+  Payroll Reports
+
+ADMINISTRATION
+  Condo Reports
+  Users & Access
+  Audit Logs
+  Rates & Rules
+
+Future revisions should use this V10.58 codebase as the starting baseline unless explicitly superseded.

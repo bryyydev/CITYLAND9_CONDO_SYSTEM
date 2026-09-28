@@ -1,0 +1,136 @@
+{% extends "base.html" %}{% block content %}
+<div class="units-vA">
+  <div class="units-hero">
+    <div class="units-hero-title">
+      <div class="units-building">▦</div>
+      <div><div class="eyebrow">MANAGEMENT</div><h1>Units</h1><p class="subtitle">Unit directory, owners, tenants, parking/storage and SOA status</p></div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center"><button type="button" class="btn" onclick="toggleLight()">☼ Light</button><a class="btn primary" href="#add-unit">＋ Add Unit</a></div>
+  </div>
+
+  <div class="units-navtabs">
+    <a class="active" href="{{url_for('units')}}">▦ Unit Directory</a>
+    <a href="{{url_for('billing')}}">▤ Billing / SOA</a>
+    <a href="{{url_for('water')}}">♨ Water Readings</a>
+  </div>
+
+  <div class="units-filter">
+    <div class="filter-title">▽ <strong>Search &amp; Filter</strong></div>
+    <form method="get" class="filter-grid">
+      <div class="search-box">⌕<input name="q" value="{{q}}" placeholder="Search by Unit Number, Owner, Tenant, or LRD-06..."></div>
+      <label>Floor<select name="floor"><option value="">Select Floor</option>{% for f in floors %}<option value="{{f}}" {{'selected' if selected_floor==f else ''}}>{{f}}</option>{% endfor %}</select></label>
+      <label>Type<select name="unit_type"><option value="">Select Type</option>{% for x in ['PARKING','STORAGE','STUDIO TYPE','1 BEDROOM','2 BEDROOM','3 BEDROOM'] %}<option value="{{x}}" {{'selected' if selected_type==x else ''}}>{{x}}</option>{% endfor %}</select></label>
+      <label>Status<select name="status"><option value="">Select Status</option><option {{'selected' if selected_status=='Occupied' else ''}}>Occupied</option><option {{'selected' if selected_status=='Vacant' else ''}}>Vacant</option></select></label>
+      <div class="filter-buttons"><a class="btn" href="{{url_for('units')}}">↻ Reset</a><button class="btn primary" type="submit">⌕ Apply</button></div>
+    </form>
+  </div>
+
+  <div class="units-directory-card">
+    <div class="directory-head">
+      <div><h2>▦ Units <span class="count-pill">{{units|length}}</span></h2><p class="muted">Showing {{units|length}} of {{pagination.total}} matching active units</p></div>
+      <div class="directory-tools"><button class="btn small" type="button" onclick="selectAllUnits()">☑ Select</button><button class="btn small" type="button" onclick="window.print()">⎙ Print</button></div>
+    </div>
+    <div class="table-scroll">
+      <table class="units-modern-table" id="unitsTable">
+        <thead><tr><th><input type="checkbox" id="checkAll" onclick="toggleAll(this)"></th><th>UNIT NO.</th><th>FLOOR</th><th>TYPE</th><th>STATUS</th><th>OWNER</th><th>TENANT</th><th>PARKING</th><th>STORAGE</th><th>SOA</th><th>TOTAL BALANCE</th><th>ACTIONS</th></tr></thead>
+        <tbody>
+        {% for u in units %}
+          {% set current_tenants=u.tenants|selectattr('status','equalto','Current')|list %}
+          {% set ap=assigned_asset(u,'assigned_parking_unit_id') %}
+          {% set ast=assigned_asset(u,'assigned_storage_unit_id') %}
+          {% set b=latest_bills.get(u.id) %}
+          {% set bal=bill_balance(b) if b else 0 %}
+          <tr>
+            <td><input class="row-check" type="checkbox"></td>
+            <td><a class="unit-link" href="{{url_for('unit_detail',uid=u.id)}}">{{u.unit_no}}</a></td>
+            <td>{{u.floor or '—'}}</td><td>{{u.unit_type}}</td>
+            <td><span class="status-chip {{'occupied' if u.status=='Occupied' else 'vacant'}}">{{u.status}}</span></td>
+            <td>{{u.owner_name or '—'}}</td><td>{{current_tenants[0].tenant_name if current_tenants else '—'}}</td>
+            <td>{% if ap %}<span class="asset-chip parking">▰ {{ap.unit_no}}</span>{% else %}—{% endif %}</td>
+            <td>{% if ast %}<span class="asset-chip storage">◆ {{ast.unit_no}}</span>{% else %}—{% endif %}</td>
+            <td>{% if b %}<span class="soa-chip {{b.status|lower|replace(' ','-')}}">{{b.status}}</span>{% else %}<span class="soa-chip unbilled">Unbilled</span>{% endif %}</td>
+            <td class="balance {{'clear' if bal<=0 else ('danger' if b and b.status=='Overdue' else 'warn')}}">₱ {{'{:,.2f}'.format(bal|float)}}</td>
+            <td><a class="action-btn" href="{{url_for('unit_detail',uid=u.id)}}" title="View">◉</a><a class="action-btn" href="{{url_for('unit_detail',uid=u.id)}}#edit-unit" title="Edit">✎</a></td>
+          </tr>
+        {% else %}<tr><td colspan="12" class="empty">No units found.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if pagination.pages > 1 %}
+    <div class="units-pagination">
+      <span>Page {{pagination.page}} of {{pagination.pages}}</span>
+      <div>
+        {% if pagination.has_prev %}<a class="btn small" href="{{url_for('units', page=pagination.prev_num, q=q, floor=selected_floor, unit_type=selected_type, status=selected_status)}}">‹</a>{% endif %}
+        {% for pg in range(1, pagination.pages + 1) if pg <= 3 or pg > pagination.pages - 2 or (pg >= pagination.page - 1 and pg <= pagination.page + 1) %}
+          <a class="btn small {{'primary' if pg==pagination.page else ''}}" href="{{url_for('units', page=pg, q=q, floor=selected_floor, unit_type=selected_type, status=selected_status)}}">{{pg}}</a>
+        {% endfor %}
+        {% if pagination.has_next %}<a class="btn small" href="{{url_for('units', page=pagination.next_num, q=q, floor=selected_floor, unit_type=selected_type, status=selected_status)}}">›</a>{% endif %}
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+  <div id="add-unit" class="card form-card">
+    <div class="card-head"><div><h2>Add Unit</h2><p class="muted">Create residential, parking, or storage units.</p></div></div>
+    <form method="post" class="form-grid" id="addUnitForm">
+      <label>Unit No *<input name="unit_no" required></label><label>Floor<input name="floor"></label>
+      <label>Unit Type<select name="unit_type" id="addUnitType">{% for x in ['PARKING','STORAGE','STUDIO TYPE','1 BEDROOM','2 BEDROOM','3 BEDROOM'] %}<option>{{x}}</option>{% endfor %}</select></label>
+      <label>Area (sqm)<input type="number" step="0.01" name="area_sqm"></label>
+      <label>Status<select name="status"><option>Occupied</option><option>Vacant</option></select></label>
+      <label>Occupancy / Responsible Party<select name="occupancy_type" id="occupancyType"><option value="Owner">Owner</option><option value="Tenant">Tenant</option></select></label>
+      <div id="ownerFields" class="field-group"><h3>Owner</h3><div class="form-grid"><label>Owner Name<input name="owner_name"></label><label>Owner Contact<input name="contact_no"></label><label>Owner Email<input name="email" type="email"></label><label class="check"><input type="checkbox" name="owner_receive_soa_email"> Receive SOA by Email</label></div></div>
+      <div id="tenantFields" class="field-group hidden"><h3>Tenant</h3><div class="form-grid"><label>Tenant Name<input name="tenant_name"></label><label>Tenant Contact<input name="tenant_contact"></label><label>Tenant Email<input name="tenant_email" type="email"></label><label class="check"><input type="checkbox" name="tenant_receive_soa_email"> Receive SOA by Email</label><label>Move In<input type="date" name="tenant_move_in"></label></div></div>
+      <label>Dues Method<select name="dues_mode"><option value="per_sqm">Calculate per sqm</option><option value="manual">Manual monthly price</option></select></label><label>Rate / sqm<input type="number" step="0.01" name="unit_rate_per_sqm"></label><label>Manual Monthly Due<input type="number" step="0.01" name="manual_monthly_dues"></label><label class="check"><input type="checkbox" name="auto_rate" checked> Use Rates &amp; Rules</label>
+      <div class="field-group assignment-box">
+        <h3>Additional Unit Assignment</h3>
+        <p class="muted">Tick an option to assign an available Parking or Storage unit.</p>
+        <div class="assignment-stack">
+          <div class="assignment-option">
+            <label class="check assignment-check"><input type="checkbox" name="include_parking" id="includeParking"> <span>With Parking</span></label>
+            <div id="parkingAssignment" class="assignment-select hidden">
+              <label>Parking Unit
+                <select name="assigned_parking_unit_id" id="assignedParkingUnit">
+                  <option value="">Select Parking Unit</option>
+                  {% for x in parking_units %}<option value="{{x.id}}">{{x.unit_no}}{% if x.floor %} — {{x.floor}}{% endif %}</option>{% endfor %}
+                </select>
+              </label>
+            </div>
+          </div>
+          <div class="assignment-option">
+            <label class="check assignment-check"><input type="checkbox" name="include_storage" id="includeStorage"> <span>With Storage</span></label>
+            <div id="storageAssignment" class="assignment-select hidden">
+              <label>Storage Unit
+                <select name="assigned_storage_unit_id" id="assignedStorageUnit">
+                  <option value="">Select Storage Unit</option>
+                  {% for x in storage_units %}<option value="{{x.id}}">{{x.unit_no}}{% if x.floor %} — {{x.floor}}{% endif %}</option>{% endfor %}
+                </select>
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div></div><div class="form-actions"><button class="btn primary">Save Unit</button></div>
+    </form>
+  </div>
+</div>
+<script>
+const occ=document.getElementById('occupancyType'),owner=document.getElementById('ownerFields'),tenant=document.getElementById('tenantFields'),park=document.getElementById('includeParking'),stor=document.getElementById('includeStorage'),parkBox=document.getElementById('parkingAssignment'),storBox=document.getElementById('storageAssignment');
+function toggle(){if(!occ)return;owner.classList.toggle('hidden',occ.value!=='Owner');tenant.classList.toggle('hidden',occ.value!=='Tenant');parkBox.classList.toggle('hidden',!park.checked);storBox.classList.toggle('hidden',!stor.checked)}
+occ.addEventListener('change',toggle);park.addEventListener('change',toggle);stor.addEventListener('change',toggle);toggle();
+function toggleAll(c){document.querySelectorAll('.row-check').forEach(x=>x.checked=c.checked)}
+function selectAllUnits(){document.querySelectorAll('.row-check').forEach(x=>x.checked=true);document.getElementById('checkAll').checked=true}
+function toggleLight(){document.body.classList.toggle('light-mode');localStorage.setItem('cityland9-light',document.body.classList.contains('light-mode')?'1':'0')}
+if(localStorage.getItem('cityland9-light')==='1')document.body.classList.add('light-mode')
+</script>
+{% endblock %}<script>
+(function(){
+ function syncTheme(){
+   var b=document.body,r=document.documentElement;
+   var t=(r.getAttribute('data-theme')||b.getAttribute('data-theme')||'').toLowerCase();
+   if(t==='dark') b.classList.add('cl-dark');
+   else if(t==='light') b.classList.remove('cl-dark');
+ }
+ syncTheme();
+ new MutationObserver(syncTheme).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+})();
+</script>

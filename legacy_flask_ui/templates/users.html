@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="eyebrow">ADMIN</div><h1>User Management</h1>
+<p class="muted">Create and manage system accounts. User deletion is restricted to Superadmin and protected by confirmation checks.</p>
+<div class="card form-card"><form method="post" class="form-grid">
+<label>Username<input name="username" required></label>
+<label>Password<input type="password" name="password" minlength="8" required></label>
+<label>Role<select name="role"><option>resident</option><option>staff</option><option>admin</option><option>manager</option><option>accounting</option><option>super_admin</option></select></label>
+<div class="form-actions"><button class="btn primary">Create User</button></div></form></div>
+<div class="table-wrap"><table><thead><tr><th>Username</th><th>Role</th><th>Active</th><th>Created</th><th>Actions</th></tr></thead><tbody>
+{% for u in users %}<tr><td><strong>{{ u.username }}</strong>{% if current_user and u.id == current_user.id %}<small class="muted" style="display:block">Currently logged in</small>{% endif %}</td><td>{{ u.role }}</td><td>{{ 'Yes' if u.active else 'No' }}</td><td>{{ u.created_at }}</td><td>
+<div class="user-actions">
+{% if current_user and current_user.role == 'super_admin' and u.role != 'super_admin' %}
+<details><summary class="btn small">Change Password</summary><form method="post" action="{{ url_for('reset_user_password', user_id=u.id) }}" class="form-grid compact-form user-reset-form">
+<label>New Password<input type="password" name="new_password" minlength="8" required></label>
+<label>Confirm Password<input type="password" name="confirm_password" minlength="8" required></label>
+<button class="btn primary small" type="submit">Change Password</button></form></details>
+{% endif %}
+{% if current_user and current_user.role == 'super_admin' %}
+  {% if u.id == current_user.id %}
+    <button class="btn danger small" type="button" disabled title="The currently logged-in Superadmin cannot be deleted.">Delete User</button>
+  {% else %}
+    <form method="post" action="{{ url_for('delete_user', user_id=u.id) }}" class="inline-form delete-user-form" data-confirmed="yes" data-username="{{ u.username|e }}" data-role="{{ u.role|e }}" onsubmit="return confirmUserDeletion(this);">
+      <button class="btn danger small" type="submit">Delete User</button>
+    </form>
+  {% endif %}
+{% endif %}
+</div>
+</td></tr>{% endfor %}
+</tbody></table></div>
+<script>
+function confirmUserDeletion(form){
+  const username = form.dataset.username || 'this account';
+  const role = form.dataset.role || 'user';
+  const message = 'Delete user "' + username + '" (' + role + ')?\n\nThis removes the login account and cannot be undone. Audit records are retained. Select OK only if you are sure.';
+  if(!window.confirm(message)) return false;
+  form.dataset.confirmed = 'yes';
+  return true;
+}
+</script>
+{% endblock %}
+<script>
+(function(){
+ function syncTheme(){
+   var b=document.body,r=document.documentElement;
+   var t=(r.getAttribute('data-theme')||b.getAttribute('data-theme')||'').toLowerCase();
+   if(t==='dark') b.classList.add('cl-dark');
+   else if(t==='light') b.classList.remove('cl-dark');
+ }
+ syncTheme();
+ new MutationObserver(syncTheme).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+})();
+</script>

@@ -1,0 +1,36 @@
+CITYLAND 9 CONDO SYSTEM - V10.52 PROFESSIONAL ACCESSIBLE THEME
+
+User interface refinements
+- Added a unified professional office visual theme with cleaner surfaces,
+  restrained shadows, and consistent borders.
+- Improved readability of headings, form labels, table data, links, buttons,
+  navigation, and supporting text.
+- Refined the authenticated background so it supports content instead of
+  competing with it.
+
+Dark-mode accessibility
+- The Appearance panel now detects when the selected background is dark and
+  applies a full dark-mode treatment automatically.
+- Dark surfaces now receive light primary text, high-visibility muted text,
+  readable input fields, legible table headers/data, and clear button labels.
+- Switching back to a light background restores dark text on light surfaces.
+
+Files changed
+- templates/base.html
+- static/professional-theme.css (new)
+
+V10.53 spacing and futuristic polish
+- Kept forms and selection controls within a readable content width, so the
+  right-side controls no longer drift across wide panels.
+- Rebuilt the right-side Appearance selector as a compact, aligned two-column
+  panel positioned close to its floating trigger.
+- Added subtle luminous panel edges, refined focus rings, lifted primary
+  actions, and cleaner visual hierarchy for a futuristic office aesthetic.
+
+V10.54 sidebar/content alignment
+- Removed the duplicate left offset applied to the main workspace. Content now
+  begins directly beside the sidebar, eliminating the large blank column.
+
+V10.55 account navigation
+- Redesigned the top-right account area with a clear user identifier, compact
+  role badge, and separate visual actions for password settings and logout.

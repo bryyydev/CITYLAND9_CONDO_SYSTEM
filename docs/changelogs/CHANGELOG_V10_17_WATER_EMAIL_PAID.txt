@@ -1,0 +1,27 @@
+CityLand 9 Condo Web System V10.17
+
+New features:
+1. Rates & Rules
+   - Added Automatic Water Computation setting (enabled by default).
+   - Water charge is automatically calculated from cubic-meter consumption x configurable Water Rate / m³.
+   - Water rate remains user-editable globally and per individual water reading.
+
+2. Billing / SOA
+   - Added Send Email action beside View SOA and Print.
+   - Email is sent to the current tenant representative when available, otherwise the current owner/unit email.
+   - Added SMTP Host, Port, Sender Email, Username and Password fields under Rates & Rules.
+   - Email sends an HTML summary of the SOA.
+
+3. Water Readings
+   - Added Paid action beside Edit.
+   - Paid status is stored independently on each water reading with paid date.
+   - Water history filter now uses the water reading's own Paid/Unpaid status.
+
+4. Database
+   - Added safe schema upgrade for water_reading.paid and water_reading.paid_date for existing SQLite, SQL Server and PostgreSQL databases.
+   - Excel database export/import now includes water paid fields.
+   - Excel water reading dates are parsed into Python date objects.
+
+5. Print SOA
+   - Water Reading History remains without Status in print output.
+   - Print-only controls remain hidden.

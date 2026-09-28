@@ -1,0 +1,24 @@
+{% extends "base.html" %}{% block content %}
+<div class="eyebrow">ADMIN / HR</div><h1>Edit Employee</h1><p class="subtitle">Employee master record. Saving requires confirmation.</p>
+<div class="card form-card"><form method="post" class="form-grid">
+<label>Employee No.<input value="{{employee.employee_no}}" readonly></label>
+<label>Full Name *<input name="full_name" value="{{employee.full_name}}" required></label>
+<label>Position<input name="position" value="{{employee.position or ''}}"></label><label>Department<input name="department" value="{{employee.department or ''}}"></label>
+<label>Status<select name="employment_status">{% for x in ['Active','Inactive','On Leave','Separated'] %}<option {% if employee.employment_status==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label>
+<label>Monthly Salary<input type="number" step="0.01" name="monthly_salary" value="{{employee.monthly_salary or 0}}"></label>
+<label>Contact<input name="contact_no" value="{{employee.contact_no or ''}}"></label><label>Email<input type="email" name="email" value="{{employee.email or ''}}"></label>
+<label>Date Hired<input type="date" name="date_hired" value="{{employee.date_hired or ''}}"></label><label>Notes<input name="notes" value="{{employee.notes or ''}}"></label>
+<div class="form-actions"><a class="btn" href="{{url_for('employees')}}">Cancel</a><button class="btn primary" type="submit">Save Changes</button></div>
+</form></div>{% endblock %}
+<script>
+(function(){
+ function syncTheme(){
+   var b=document.body,r=document.documentElement;
+   var t=(r.getAttribute('data-theme')||b.getAttribute('data-theme')||'').toLowerCase();
+   if(t==='dark') b.classList.add('cl-dark');
+   else if(t==='light') b.classList.remove('cl-dark');
+ }
+ syncTheme();
+ new MutationObserver(syncTheme).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+})();
+</script>

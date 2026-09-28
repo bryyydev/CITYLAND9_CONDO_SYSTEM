@@ -1,0 +1,9 @@
+CITYLAND 9 SYSTEM V10.64 – LAYOUT / SKY-BLUE FORM UPDATE
+
+Changes based on the supplied UI annotation image:
+1. Removed the large empty horizontal gutter caused by the centered/max-width content wrapper.
+2. Main content now starts close to the fixed sidebar and uses the available workspace width.
+3. Removed the legacy extra topbar margin so the header aligns with the main workspace.
+4. Changed the dark navy unit-edit/assignment panels to a light sky-blue surface with dark readable text.
+5. Kept the V10.61/V10.62 generated-reference color language, navigation hierarchy, and existing functionality.
+6. This release is the new baseline for subsequent UI changes.

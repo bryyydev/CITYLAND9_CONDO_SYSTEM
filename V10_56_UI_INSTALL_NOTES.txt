@@ -1,0 +1,8 @@
+Based on uploaded V10.55.
+
+1. Back up the current CityLand folder/database.
+2. Extract this version to a test folder.
+3. Run START_WINDOWS.bat.
+4. Review Dashboard, Units, Billing/SOA, Water, Reports, HR and Settings.
+5. Test desktop and Android/iOS browsers.
+6. If approved, deploy the V10.57 folder.

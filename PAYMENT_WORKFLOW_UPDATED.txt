@@ -1,0 +1,5 @@
+Payment workflow added:
+Billing Management has a Paid tab/filter and a Paid action that opens a payment dialog.
+The dialog collects Amount, Payment Date, Payment Method (CASH/CHECK/ONLINE), Payment Type (FULL/PARTIAL), and Reference Number for CHECK/ONLINE.
+Water Reading has the same payment dialog and stores water payment details, including partial payments.
+Payment submissions use the existing Save Changes confirmation.

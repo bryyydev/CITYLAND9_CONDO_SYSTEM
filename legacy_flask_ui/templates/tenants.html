@@ -1,0 +1,19 @@
+{% extends "base.html" %}{% block content %}
+<div class="eyebrow">MANAGEMENT</div><h1>Tenants Database</h1><p class="subtitle">Multiple tenants per unit, with history retained for future reference</p>
+<div class="tabs"><a class="tab" href="{{url_for('units')}}">▥ Units</a><a class="tab active" href="{{url_for('tenants')}}">♙ Tenants</a><a class="tab" href="{{url_for('billing')}}">▤ Billing / SOA</a></div>
+<div class="toolbar"><form class="search" method="get"><input name="q" value="{{q}}" placeholder="Search tenant, unit, contact, email..."><select name="status"><option value="Current" {{'selected' if status=='Current' else ''}}>Current</option><option value="Past" {{'selected' if status=='Past' else ''}}>Past</option><option value="All" {{'selected' if status=='All' else ''}}>All</option></select><button class="btn">Filter</button></form></div>
+<div class="table-wrap"><table><thead><tr><th>Tenant</th><th>Unit</th><th>Contact</th><th>Email</th><th>Move In</th><th>Move Out</th><th>Status</th><th>Action</th></tr></thead><tbody>
+{% for t in tenants %}<tr><td><strong>{{t.tenant_name}}</strong></td><td><a href="{{url_for('unit_detail',uid=t.unit_id)}}">{{t.unit.unit_no}}</a></td><td>{{t.contact_no or '—'}}</td><td>{{t.email or '—'}}</td><td>{{t.move_in or '—'}}</td><td>{{t.move_out or '—'}}</td><td><span class="badge">{{t.status}}</span></td><td><a class="btn small" href="{{url_for('unit_detail',uid=t.unit_id)}}">Manage</a></td></tr>{% else %}<tr><td colspan="8" class="empty">No tenants found.</td></tr>{% endfor %}</tbody></table></div>
+{% endblock %}
+<script>
+(function(){
+ function syncTheme(){
+   var b=document.body,r=document.documentElement;
+   var t=(r.getAttribute('data-theme')||b.getAttribute('data-theme')||'').toLowerCase();
+   if(t==='dark') b.classList.add('cl-dark');
+   else if(t==='light') b.classList.remove('cl-dark');
+ }
+ syncTheme();
+ new MutationObserver(syncTheme).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+})();
+</script>

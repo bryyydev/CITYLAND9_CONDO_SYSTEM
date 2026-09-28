@@ -1,0 +1,14 @@
+V10.3 FEATURE UPDATE
+
+Implemented requested condominium management features:
+- Statement of Account (SOA) can be viewed and printed from Billing.
+- SOA includes owner/tenant details, unit overdue months, parking details, parking overdue months, charges, balances, and payment history.
+- Unit creation now has an Owner/Tenant occupancy dropdown.
+- Multiple tenants are retained in the Tenants database with history/status for future references.
+- Email fields are optional everywhere; blank email is accepted.
+- “With Parking” reveals parking assignment controls on Add Unit.
+- Parking supports Owner/Tenant assignment and per-square-meter fees.
+- Added dedicated Parking tab/page with unit, owner/tenant, slot, sqm, rate, monthly fee, and overdue-month tracking.
+- Monthly billing creates per-parking billing records for future parking-specific tracking.
+- Water page now shows historical readings and payment status filters: Paid, Unpaid, Partially Paid.
+- Existing database is preserved; schema migration adds the new occupancy and parking-billing structures.

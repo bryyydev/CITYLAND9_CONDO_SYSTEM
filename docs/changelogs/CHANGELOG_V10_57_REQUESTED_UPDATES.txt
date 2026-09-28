@@ -1,0 +1,18 @@
+CITYLAND 9 SYSTEM V10.57 — Requested UI and Payment Updates
+
+1. SOA print preview:
+   - DESCRIPTION header now includes the billing month/year in parentheses.
+2. SOA header:
+   - Removed the CITYLAND 9 line above the unit number.
+   - Increased the unit-number font size.
+3. Navigation/layout:
+   - Reduced spacing between menus, sections, and page details.
+4. Billing payment:
+   - Payment amount is no longer capped at the current SOA balance.
+   - Amount up to the SOA balance is applied to the bill.
+   - Any excess is automatically recorded as an Advance Payment for the same unit.
+5. Dark detail surfaces:
+   - Dark themed detail panels/tabs/functions use a 50% background-opacity treatment
+     while preserving readable text and primary action buttons.
+6. Dashboard:
+   - Monetary totals now use comma-separated formatting.

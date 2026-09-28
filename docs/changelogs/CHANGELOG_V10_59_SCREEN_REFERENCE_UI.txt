@@ -1,0 +1,8 @@
+V10.59 UI UPDATE
+
+1. Matched the supplied dashboard screenshot palette: deep teal sidebar, white topbar, light cool-gray workspace and teal primary actions.
+2. Increased/standardized readable typography across common content, forms and tables.
+3. Reduced vertical spacing between function tabs and detail content.
+4. Tightened section/toolbars/cards without reducing readability.
+5. Versioned the browser theme storage key so older saved themes do not override the new baseline on first load.
+6. Retained the V10.58 navigation hierarchy as the starting point for future revisions.

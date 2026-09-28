@@ -1,0 +1,31 @@
+@echo off
+setlocal
+cd /d "%~dp0"
+if not exist ".venv\Scripts\python.exe" (
+    echo Creating virtual environment...
+    py -m venv .venv
+    if errorlevel 1 goto :error
+)
+echo Installing/updating dependencies...
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+if errorlevel 1 goto :error
+
+echo.
+echo Starting CityLand 9 Condo Web System for LAN use...
+echo.
+for /f "tokens=2 delims=:" %%A in ('ipconfig ^| findstr /R /C:"IPv4 Address"') do echo Server IP: %%A
+echo.
+echo Other PCs can open: http://SERVER-IP:5000
+echo Example: http://192.168.1.25:5000
+echo.
+if exist ".venv\Scripts\waitress-serve.exe" (
+    .venv\Scripts\waitress-serve.exe --host=0.0.0.0 --port=5000 --threads=8 app:app
+) else (
+    .venv\Scripts\python.exe app.py
+)
+exit /b %errorlevel%
+:error
+echo.
+echo Setup failed. Check that Python is installed and internet access is available for pip.
+pause
+exit /b 1

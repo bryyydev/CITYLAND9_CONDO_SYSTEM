@@ -1,0 +1,10 @@
+CityLand 9 Condo Web System V10.25
+
+Water Readings – Outstanding Water Summary Actions
+
+Changes:
+- Added Edit action to the Outstanding Water Readings summary shown when searching a unit.
+- Added Paid action to each unpaid/partially paid/overdue water reading in the summary.
+- Marking a water reading Paid uses the same existing paid workflow and sync behavior as the main Water Readings table.
+- Paid readings continue to be excluded from the outstanding summary.
+- Updated table column span for the new Actions column.

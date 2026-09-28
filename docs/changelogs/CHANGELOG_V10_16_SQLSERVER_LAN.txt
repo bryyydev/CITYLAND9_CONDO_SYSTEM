@@ -1,0 +1,11 @@
+CITYLAND 9 CONDO WEB SYSTEM — V10.16 SQL SERVER + LAN
+
+- Added SQL Server support through SQLAlchemy + pyodbc.
+- Added .env configuration support.
+- Changed Flask startup to listen on 0.0.0.0 for LAN access.
+- Added FLASK_HOST, FLASK_PORT, and FLASK_DEBUG configuration.
+- Added SQLite-to-SQL Server migration utility preserving primary-key IDs.
+- Added SQL Server/LAN setup guide.
+- Updated Windows startup script for LAN use.
+- Added ODBC Driver 18 and python-dotenv dependencies.
+- Existing SQLite fallback remains available when DATABASE_URL is not set.

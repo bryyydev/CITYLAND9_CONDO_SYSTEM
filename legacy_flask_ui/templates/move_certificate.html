@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="eyebrow">OPERATIONS</div>
+<h1>Move In / Out Certificate</h1>
+<p class="subtitle">Generate a printable certificate for an owner or tenant moving into or out of a unit.</p>
+
+<div class="card form-card no-print">
+  <form method="post" class="form-grid" id="certificateForm">
+    <label>Certificate Type
+      <select name="move_type" id="moveType">
+        <option value="Move In">Move In</option>
+        <option value="Move Out">Move Out</option>
+      </select>
+    </label>
+    <label>Unit
+      <select name="unit_id" id="unitSelect" required>
+        <option value="">Select Unit</option>
+        {% for u in units %}<option value="{{u.id}}" {{'selected' if selected_unit and selected_unit.id==u.id else ''}}>{{u.unit_no}} — {{u.unit_type}}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Person Type
+      <select name="person_type" id="personType">
+        <option value="Tenant">Tenant</option>
+        <option value="Owner">Owner</option>
+      </select>
+    </label>
+    <label>Person
+      <select name="person_id" id="personSelect" required>
+        <option value="">Select Unit first</option>
+        {% for p in people %}<option value="{{p.id}}">{{p.tenant_name if person_type|default('Tenant')=='Tenant' else p.owner_name}}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Certificate Date<input type="date" name="certificate_date" value="{{today}}" required></label>
+    <div class="form-actions"><button class="btn primary">Generate Certificate</button></div>
+  </form>
+</div>
+
+{% if certificate %}
+<div class="certificate card" id="certificate">
+  <div class="certificate-head">
+    <div class="eyebrow">CITYLAND 9 CONDOMINIUM</div>
+    <div class="certificate-number">Certificate No.: <strong>{{certificate.certificate_no}}</strong></div>
+    <h2>{{certificate.move_type|upper}} CERTIFICATE</h2>
+    <p>Official Unit Occupancy / Turnover Record</p>
+  </div>
+  <div class="certificate-body">
+    <p>This is to certify that <strong>{{certificate.person.tenant_name if certificate.person_type=='Tenant' else certificate.person.owner_name}}</strong>, identified as the <strong>{{certificate.person_type}}</strong> of Unit <strong>{{certificate.unit.unit_no}}</strong>, {{certificate.unit.unit_type}}, is recorded by the Property Management Office as follows:</p>
+    <table class="certificate-table">
+      <tr><th>Unit Number</th><td>{{certificate.unit.unit_no}}</td><th>Type of Unit</th><td>{{certificate.unit.unit_type}}</td></tr>
+      <tr><th>Area</th><td>{{certificate.unit.area_sqm|num}} sqm</td><th>Person Type</th><td>{{certificate.person_type}}</td></tr>
+      <tr><th>Name</th><td colspan="3">{{certificate.person.tenant_name if certificate.person_type=='Tenant' else certificate.person.owner_name}}</td></tr>
+      <tr><th>Contact</th><td>{{certificate.person.contact_no or '—'}}</td><th>Email</th><td>{{certificate.person.email or '—'}}</td></tr>
+      <tr><th>{{certificate.move_type}} Date</th><td>{{certificate.move_date or 'Not specified'}}</td><th>Certificate Date</th><td>{{certificate.certificate_date}}</td></tr>
+      <tr><th>Issued By</th><td colspan="3">{{certificate.issued_by or '—'}}</td></tr>
+    </table>
+    {% if certificate.person_type=='Tenant' and certificate.person.representative %}<p><strong>Representative:</strong> Yes</p>{% endif %}
+    <p>This certificate is issued upon request for property management and administrative purposes.</p>
+    <div class="signature-grid"><div><div class="signature-line"></div><strong>Property Management Representative</strong></div><div><div class="signature-line"></div><strong>{{certificate.person_type}}</strong></div></div>
+  </div>
+  <div class="certificate-actions no-print"><button class="btn primary" onclick="window.print()">Print Certificate</button></div>
+</div>
+{% endif %}
+
+<style>
+.certificate{max-width:900px;margin:24px auto;background:#fff}.certificate-head{text-align:center;border-bottom:2px solid #222;padding:12px 20px 16px}.certificate-number{text-align:right;font-size:12px;margin-bottom:2px}.certificate-head h2{margin:6px 0;font-size:28px}.certificate-head p{margin:0}.certificate-body{padding:24px 30px;line-height:1.65}.certificate-table{width:100%;border-collapse:collapse;margin:20px 0}.certificate-table th,.certificate-table td{border:1px solid #aaa;padding:9px;text-align:left}.certificate-table th{width:18%}.signature-grid{display:grid;grid-template-columns:1fr 1fr;gap:70px;margin-top:70px;text-align:center}.signature-line{border-top:1px solid #222;margin-bottom:8px}.certificate-actions{text-align:right;padding:0 30px 25px}
+@media print{.no-print,.sidebar,.topbar{display:none!important}.main{margin:0!important}.content{padding:0!important}.certificate{box-shadow:none;border:0;margin:0;max-width:none}.certificate-body{padding:18px 28px}.certificate-head{padding-top:0}}
+</style>
+{% endblock %}
+<script>
+(function(){
+ function syncTheme(){
+   var b=document.body,r=document.documentElement;
+   var t=(r.getAttribute('data-theme')||b.getAttribute('data-theme')||'').toLowerCase();
+   if(t==='dark') b.classList.add('cl-dark');
+   else if(t==='light') b.classList.remove('cl-dark');
+ }
+ syncTheme();
+ new MutationObserver(syncTheme).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+})();
+</script>

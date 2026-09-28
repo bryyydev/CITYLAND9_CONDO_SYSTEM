@@ -1,0 +1,27 @@
+FINAL 5.1 – Requested feature specification
+===============================================
+
+1. USER HIERARCHY / PASSWORD RESET
+- Super Admin can reset Admin and Staff accounts.
+- Admin can reset Staff accounts.
+- Staff cannot reset other accounts.
+- A user may always change their own password.
+- Reset/change password must use the application's existing secure password hashing.
+- The UI should only display reset actions allowed by the logged-in user's hierarchy.
+
+2. REPORTS
+Under Report, add Financial Report tabs/views:
+- Daily
+- Weekly
+- Monthly
+- Yearly
+
+Each period should provide financial totals and transaction/billing detail using the application's existing financial/billing data.
+
+3. SOA EMAIL OPT-IN / NAME DISPLAY
+- Add a checkbox beside the email opt-in setting for each owner/tenant contact:
+  [ ] Include name in SOA
+- If checked: the person's name is included on the generated/printed SOA.
+- If unchecked: the person's name is NOT included on the SOA.
+- Email opt-in and SOA-name inclusion are separate settings; changing email opt-in must not automatically change SOA-name inclusion.
+- The SOA generator/printer must honor the setting consistently for screen preview, print, and PDF output.

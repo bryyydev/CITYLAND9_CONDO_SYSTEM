@@ -1,0 +1,11 @@
+CITYLAND 9 SYSTEM V10.59 - SCREEN REFERENCE UI BASELINE
+
+Visual baseline requested from the supplied dashboard screenshot.
+- Deep teal left sidebar (#173840)
+- White top header
+- Very light cool-gray workspace (#f0f4f4)
+- Teal primary/active controls (#2d7b86)
+- Readable 15-16px body/table typography
+- Compact spacing between function tabs and their detail panels
+- Navigation hierarchy inherited from V10.58
+- This version is the baseline for future CITYLAND 9 system revisions.

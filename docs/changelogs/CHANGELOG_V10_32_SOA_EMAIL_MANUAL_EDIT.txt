@@ -1,0 +1,12 @@
+V10.32 – SOA Email Center and Manual SOA Corrections
+
+- Generate Bills now opens the SOA Email Center.
+- Added per-unit email selection and Send All Opted-In.
+- Owner and current tenants can independently opt in to receive SOA by email.
+- Added safe schema migrations for receive_soa_email and soa_note.
+- Added owner editing with SOA email preference.
+- Added Super Admin/Admin manual SOA correction for charges, balances, penalty, adjustment, due date and correction note.
+- Manual corrections are recorded in Audit Logs.
+- Added admin role to user creation and Billing/Email access.
+- Existing data is preserved.
+- Added a manual-override flag so corrected SOA charge values are retained instead of being recalculated on the next view.

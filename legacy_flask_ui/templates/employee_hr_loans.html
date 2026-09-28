@@ -1,0 +1,15 @@
+{% extends "base.html" %}{% block content %}<div class="eyebrow">HR / PAYROLL</div><h1>Loans & Recurring Deductions</h1><p class="subtitle">Track SSS, Pag-IBIG and other employee loans for payroll deductions.</p>
+<div class="card form-card"><form method="post" class="form-grid"><label>Employee<select name="employee_id" required>{% for e in employees %}<option value="{{e.id}}">{{e.full_name}}</option>{% endfor %}</select></label><label>Loan Type<select name="loan_type"><option>SSS</option><option>PAG-IBIG</option><option>COMPANY</option><option>OTHER</option></select></label><label>Reference No.<input name="reference_no"></label><label>Original Amount<input type="number" step="0.01" name="original_amount"></label><label>Balance<input type="number" step="0.01" name="balance"></label><label>Monthly Deduction<input type="number" step="0.01" name="monthly_deduction"></label><label>Status<select name="status"><option>ACTIVE</option><option>PAID</option><option>HOLD</option></select></label><label>Notes<input name="notes"></label><div><button class="btn primary">Save Loan</button></div></form></div>
+<div class="table-wrap"><table><thead><tr><th>EMPLOYEE</th><th>TYPE</th><th>REFERENCE</th><th>ORIGINAL</th><th>BALANCE</th><th>MONTHLY</th><th>STATUS</th></tr></thead><tbody>{% for r in rows %}<tr><td>{{employees|selectattr('id','equalto',r.employee_id)|map(attribute='full_name')|first}}</td><td>{{r.loan_type}}</td><td>{{r.reference_no or '—'}}</td><td>₱{{"%.2f"|format(r.original_amount or 0)}}</td><td>₱{{"%.2f"|format(r.balance or 0)}}</td><td>₱{{"%.2f"|format(r.monthly_deduction or 0)}}</td><td>{{r.status}}</td></tr>{% else %}<tr><td colspan="7" class="empty">No loans.</td></tr>{% endfor %}</tbody></table></div>{% endblock %}
+<script>
+(function(){
+ function syncTheme(){
+   var b=document.body,r=document.documentElement;
+   var t=(r.getAttribute('data-theme')||b.getAttribute('data-theme')||'').toLowerCase();
+   if(t==='dark') b.classList.add('cl-dark');
+   else if(t==='light') b.classList.remove('cl-dark');
+ }
+ syncTheme();
+ new MutationObserver(syncTheme).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+})();
+</script>

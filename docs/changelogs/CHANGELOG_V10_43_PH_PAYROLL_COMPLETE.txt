@@ -1,0 +1,32 @@
+CITYLAND 9 CONDO SYSTEM 2026
+V10.43 - Philippine Payroll & HR Enhancement
+
+Based on V10.42 PENALTY SELECTION FIXED2.
+
+Added:
+1. Employee Attendance remains included.
+2. Payroll remains included.
+3. Automatic approved overtime inclusion when OT Pay is left blank.
+4. Automatic recurring loan/deduction inclusion from active HR loans.
+5. Automatic attendance absence deduction using configurable working-day divisor.
+6. Automatic late/undertime deduction using recorded time-in/time-out, configurable grace period,
+   and the standard 8:00 AM / 5:00 PM schedule used by this build.
+7. Configurable Philippine statutory payroll rules page: Employees / HR -> Payroll Rules.
+8. SSS employee/employer rates, maximum MSC, EC thresholds and EC amounts are configurable.
+9. PhilHealth rate, contribution floor/ceiling and employee share are configurable.
+10. Pag-IBIG contribution base and employee/employer rates are configurable.
+11. BIR monthly withholding-tax thresholds and rates are configurable.
+12. 13th-month tax-free ceiling setting is included for payroll policy configuration.
+13. Payroll printout now shows SSS, PhilHealth, Pag-IBIG, BIR withholding tax and employer statutory cost.
+14. Government statutory breakdown remains available per payroll record.
+15. Existing V10.42 penalty-selection feature is retained.
+16. Existing startup-order fix is retained.
+
+Important payroll note:
+The system provides a configurable payroll computation framework. Government schedules can change.
+Payroll/accounting staff must verify the applicable official SSS, PhilHealth, Pag-IBIG and BIR
+rules before finalizing payroll and remittances.
+
+Database:
+No existing business tables are intentionally deleted. New HR settings are stored in the existing
+EmployeeHRSetting table and are created automatically if missing.

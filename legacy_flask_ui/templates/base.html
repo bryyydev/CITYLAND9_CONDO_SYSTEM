@@ -1,0 +1,415 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CITYLAND 9 CONDO SYSTEM 2026</title><link rel="stylesheet" href="{{ url_for('static',filename='style.css') }}">
+<style id="cityland-theme-vars">
+:root {
+  --cl-bg: #f3f7f7;
+  --cl-surface: #fbfdfd;
+  --cl-sidebar: #264f5a;
+  --cl-sidebar-text: #f4f8f8;
+  --cl-primary: #3d7780;
+  --cl-primary-hover: #315f67;
+  --cl-text: #26363b;
+  --cl-muted: #667b80;
+  --cl-border: #cfdddd;
+  --cl-card: #fbfdfd;
+}
+html, body { background: var(--cl-bg) !important; color: var(--cl-text); }
+body { transition: background-color .2s ease, color .2s ease; }
+.card, .panel, .content-card, .table-container, .modal-content,
+.bg-white, .bg-light, .form-container { background-color: var(--cl-card) !important; }
+.sidebar, .side-bar, aside, .navbar, .topbar {
+  background-color: var(--cl-sidebar) !important;
+  color: var(--cl-sidebar-text) !important;
+}
+a, .text-primary { color: var(--cl-primary) !important; }
+.btn-primary, button.btn-primary, .primary-btn {
+  background-color: var(--cl-primary) !important;
+  border-color: var(--cl-primary) !important;
+}
+.btn-primary:hover, button.btn-primary:hover, .primary-btn:hover {
+  background-color: var(--cl-primary-hover) !important;
+}
+input:focus, select:focus, textarea:focus {
+  border-color: var(--cl-primary) !important;
+  box-shadow: 0 0 0 .15rem color-mix(in srgb, var(--cl-primary) 18%, transparent) !important;
+}
+table thead th { background-color: color-mix(in srgb, var(--cl-primary) 10%, var(--cl-card)) !important; }
+/* Eye-comfort overrides: softer surfaces and muted blue/teal accents for long office use. */
+.layout { background-color: var(--cl-bg) !important; background-image: linear-gradient(rgba(70,105,110,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(70,105,110,.035) 1px,transparent 1px) !important; }
+.main, .content { color: var(--cl-text) !important; }
+.topbar { border-bottom-color: var(--cl-border) !important; }
+.card, .table-wrap, .form-card, .notice { border-color: var(--cl-border) !important; color: var(--cl-text) !important; }
+.muted, .subtitle, .cityland-theme-small { color: var(--cl-muted) !important; }
+.btn { border-color: color-mix(in srgb, var(--cl-primary) 58%, var(--cl-border)) !important; background: color-mix(in srgb, var(--cl-primary) 7%, var(--cl-card)) !important; color: var(--cl-text) !important; }
+.btn.primary { background: var(--cl-primary) !important; border-color: var(--cl-primary) !important; color: #fff !important; }
+.btn.primary:hover { background: var(--cl-primary-hover) !important; }
+.btn.danger { background:#fff6f6 !important; border-color:#d7a7a7 !important; color:#9a3f45 !important; }
+.nav { color: color-mix(in srgb, var(--cl-sidebar-text) 78%, var(--cl-sidebar)) !important; }
+.nav:hover, .nav.active { color: var(--cl-sidebar-text) !important; background: color-mix(in srgb, var(--cl-primary) 28%, var(--cl-sidebar)) !important; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cl-primary) 58%, transparent) !important; }
+.eyebrow, .brand { color: color-mix(in srgb, var(--cl-primary) 60%, #ffffff) !important; }
+input, select, textarea { background: var(--cl-card) !important; color: var(--cl-text) !important; border-color: var(--cl-border) !important; }
+table { color: var(--cl-text) !important; }
+table td { border-color: var(--cl-border) !important; }
+.user { color: var(--cl-sidebar-text) !important; border-color: color-mix(in srgb, var(--cl-sidebar-text) 24%, transparent) !important; }
+.user small { color: color-mix(in srgb, var(--cl-primary) 45%, #ffffff) !important; }
+.cityland-theme-panel {
+  position: fixed; right: 18px; top: 72px; z-index: 9999; width: 310px;
+  background: var(--cl-card); color: var(--cl-text); border: 1px solid var(--cl-border);
+  border-radius: 12px; box-shadow: 0 12px 35px rgba(0,0,0,.18); padding: 16px;
+  display: none;
+}
+.cityland-theme-panel.open { display: block; }
+.cityland-theme-panel h3 { margin: 0 0 12px; font-size: 16px; }
+.cityland-theme-grid { display: grid; grid-template-columns: repeat(2,1fr); gap: 8px; }
+.cityland-theme-option {
+  border: 1px solid var(--cl-border); border-radius: 9px; padding: 8px;
+  cursor: pointer; background: transparent; text-align: left;
+}
+.cityland-theme-option:hover { border-color: var(--cl-primary); }
+.cityland-swatch { height: 22px; border-radius: 6px; margin-bottom: 5px; }
+.cityland-theme-small { font-size: 11px; color: var(--cl-muted); }
+.cityland-appearance-btn {
+  position: fixed; right: 18px; bottom: 18px; z-index: 10000;
+  border: 0; border-radius: 50%; width: 46px; height: 46px; cursor: pointer;
+  background: var(--cl-primary); color: white; box-shadow: 0 5px 18px rgba(0,0,0,.22);
+  font-size: 20px;
+}
+.cityland-theme-row { margin-top: 12px; }
+.cityland-theme-row label { display:block; font-size:12px; margin-bottom:5px; font-weight:600; }
+.cityland-theme-row select, .cityland-theme-row input[type=color] {
+  width:100%; box-sizing:border-box; min-height:34px;
+}
+@media (max-width: 700px) {
+  .cityland-theme-panel { right: 10px; left: 10px; width: auto; }
+}
+</style><link rel="stylesheet" href="{{ url_for('static',filename='professional-theme.css') }}">
+
+
+<style id="v1056-professional-readable-ui">
+:root{--ui-bg:#f5f7f8;--ui-surface:#fff;--ui-soft:#edf2f3;--ui-border:#d4dee1;--ui-text:#243238;--ui-muted:#65757a;--ui-primary:#4b7078;--ui-primary-dark:#395b63;--ui-primary-soft:#e5eff0}
+html{font-size:16px;-webkit-text-size-adjust:100%}
+body{background:var(--ui-bg)!important;color:var(--ui-text)!important;font-size:16px!important;line-height:1.55!important}
+h1,h2,h3,h4,h5,h6{color:var(--ui-text)!important;font-weight:650!important;line-height:1.3!important}
+h1{font-size:1.65rem!important}h2{font-size:1.35rem!important}h3{font-size:1.15rem!important}
+label{color:var(--ui-text)!important;font-weight:600}
+small,.text-muted,.muted{color:var(--ui-muted)!important}
+.card,.panel,.content-card,.table-container,.modal-content,.dropdown-menu,.form-card,.dashboard-card{background:#fff!important;color:var(--ui-text)!important;border-color:var(--ui-border)!important;box-shadow:0 2px 10px rgba(34,51,57,.07)!important}
+.sidebar,.side-nav,.left-sidebar,nav.sidebar{background:#e8eff0!important;color:var(--ui-text)!important;border-right:1px solid var(--ui-border)!important}
+.sidebar a,.side-nav a,.left-sidebar a{color:#31484e!important;font-size:15px!important;font-weight:600!important}
+.sidebar a:hover,.side-nav a:hover,.left-sidebar a:hover{background:#dce8ea!important;color:#213b42!important}
+.sidebar .active,.side-nav .active,.left-sidebar .active{background:var(--ui-primary-soft)!important;color:var(--ui-primary-dark)!important;font-weight:700!important}
+table{color:var(--ui-text)!important;font-size:15px!important;background:#fff!important}
+thead th,table th{background:#eaf0f1!important;color:#293c42!important;font-weight:700!important;border-color:var(--ui-border)!important}
+tbody td{background:#fff!important;color:#2d3b40!important;border-color:#e1e7e9!important}
+tbody tr:hover td{background:#f2f6f7!important}
+input,select,textarea{background:#fff!important;color:#26363b!important;border:1px solid #c4d0d4!important;border-radius:6px!important;min-height:42px;font-size:15px!important}
+textarea{min-height:90px}
+input::placeholder,textarea::placeholder{color:#78878c!important;opacity:1!important}
+input:focus,select:focus,textarea:focus{border-color:var(--ui-primary)!important;box-shadow:0 0 0 3px rgba(75,112,120,.12)!important;outline:none!important}
+button,.btn,a.btn,input[type=submit]{font-size:15px!important;font-weight:650!important;border-radius:6px!important;min-height:42px}
+.btn-primary,button.primary,.primary-btn{background:var(--ui-primary)!important;border-color:var(--ui-primary)!important;color:#fff!important}
+.btn-primary:hover,button.primary:hover,.primary-btn:hover{background:var(--ui-primary-dark)!important;border-color:var(--ui-primary-dark)!important}
+.btn-secondary,.btn-light{background:#edf2f3!important;color:#34484e!important;border-color:var(--ui-border)!important}
+a{color:var(--ui-primary-dark)}
+.bg-dark,.dark-bg,.sidebar-dark,.header-dark{background:#e9eff0!important;color:var(--ui-text)!important}
+.appearance-panel{background:#fff!important;color:var(--ui-text)!important;border:1px solid var(--ui-border)!important}
+@media(max-width:768px){
+ body{font-size:16px!important;overflow-x:hidden}
+ h1{font-size:1.45rem!important}h2{font-size:1.25rem!important}h3{font-size:1.08rem!important}
+ input,select,textarea{font-size:16px!important;min-height:44px}
+ button,.btn,a.btn{min-height:44px}
+ .table-responsive,.responsive-table,.overflow-auto{overflow-x:auto;-webkit-overflow-scrolling:touch}
+}
+@media print{
+ body{background:#fff!important;color:#000!important;font-size:11pt!important}
+ .sidebar,.side-nav,.left-sidebar,.appearance-panel,button,.btn{display:none!important}
+}
+</style>
+<link rel="stylesheet" href="{{ url_for('static',filename='readable-v1057.css') }}">
+
+
+<style id="v1060-units-layout-status-ui">
+html,body{min-height:100%;overflow-x:hidden}
+body{background:#f4f8f9!important;color:#24383f!important}
+.sidebar,.side-nav,.left-sidebar,nav.sidebar,aside.sidebar{
+position:fixed!important;left:0!important;top:0!important;bottom:0!important;
+width:232px!important;height:100vh!important;min-height:100vh!important;
+overflow-y:auto!important;overflow-x:hidden!important;z-index:1000!important;
+background:#e7f1f3!important;color:#28464f!important;
+border-right:1px solid #cfdee2!important;
+box-shadow:2px 0 8px rgba(39,64,72,.06)!important}
+main,.main,.main-content,.content,.page-content,.content-wrapper,.app-content{
+margin-left:232px!important;width:calc(100% - 232px)!important;
+max-width:none!important;min-width:0!important}
+.topbar,.top-header,.header,header.main-header,.app-header{
+margin-left:232px!important;width:calc(100% - 232px)!important}
+.container,.container-fluid,.page-container{max-width:none!important}
+.main-content,.content,.page-content,.content-wrapper,.app-content{
+min-height:100vh;overflow-x:auto}
+.card,.panel,.content-card,.table-container,.dashboard-card,.modal-content{
+background:#fff!important;color:#273b42!important;border-color:#d6e2e5!important;
+box-shadow:0 2px 10px rgba(36,56,63,.06)!important}
+table{background:#fff!important;color:#2a3d43!important}
+table th,thead th{background:#e7f0f2!important;color:#29434b!important;font-weight:700!important}
+table td,tbody td{background:#fff!important;color:#2e4147!important;border-color:#e1e9eb!important}
+tbody tr:hover td{background:#f3f8f9!important}
+
+/* Light status pills: approximately 10% tinted background */
+.status,.status-badge,.badge-status,.unit-status,.billing-status,.status-pill,.badge{
+border-radius:999px!important;font-size:12px!important;font-weight:700!important;
+line-height:1.2!important;min-height:26px!important;padding:5px 10px!important;
+display:inline-flex!important;align-items:center!important;justify-content:center!important;
+white-space:nowrap!important;border:1px solid transparent!important;text-shadow:none!important}
+.status-paid,.badge-paid,.status-success,.status-current,.unit-active,.status-active{
+background:rgba(48,145,101,.10)!important;color:#236346!important;border-color:rgba(48,145,101,.20)!important}
+.status-pending,.badge-pending,.status-partial,.status-partially-paid,.unit-pending{
+background:rgba(211,145,45,.10)!important;color:#76531d!important;border-color:rgba(211,145,45,.20)!important}
+.status-unpaid,.badge-unpaid,.unit-unpaid{
+background:rgba(207,78,78,.10)!important;color:#873636!important;border-color:rgba(207,78,78,.20)!important}
+.status-overdue,.badge-overdue,.unit-overdue{
+background:rgba(192,57,57,.10)!important;color:#812f2f!important;border-color:rgba(192,57,57,.20)!important}
+.status-vacant,.badge-vacant,.unit-vacant,.status-available,.badge-available,.unit-available{
+background:rgba(58,137,190,.10)!important;color:#2d5f7c!important;border-color:rgba(58,137,190,.20)!important}
+.status-occupied,.badge-occupied,.unit-occupied{
+background:rgba(52,132,104,.10)!important;color:#28624e!important;border-color:rgba(52,132,104,.20)!important}
+.status-inactive,.badge-inactive,.unit-inactive{
+background:rgba(100,113,119,.10)!important;color:#4d5c62!important;border-color:rgba(100,113,119,.20)!important}
+.status-parking,.badge-parking,.with-parking{
+background:rgba(55,126,180,.10)!important;color:#2d5f7b!important;border-color:rgba(55,126,180,.20)!important}
+.status-storage,.badge-storage,.with-storage{
+background:rgba(117,83,173,.10)!important;color:#5b4380!important;border-color:rgba(117,83,173,.20)!important}
+.badge.bg-success{background:rgba(48,145,101,.10)!important;color:#236346!important}
+.badge.bg-warning{background:rgba(211,145,45,.10)!important;color:#76531d!important}
+.badge.bg-danger{background:rgba(192,57,57,.10)!important;color:#812f2f!important}
+.badge.bg-info,.badge.bg-primary{background:rgba(58,137,190,.10)!important;color:#2d5f7c!important}
+.badge.bg-dark,.badge.bg-secondary{background:rgba(100,113,119,.10)!important;color:#4d5c62!important}
+
+.btn-primary,button.primary,.primary-btn{
+background:#4c8792!important;border-color:#4c8792!important;color:#fff!important}
+.btn-primary:hover,button.primary:hover,.primary-btn:hover{
+background:#376b75!important;border-color:#376b75!important}
+body{font-size:16px!important;line-height:1.55!important}
+label{font-weight:600!important;color:#24383f!important}
+@media(max-width:768px){
+.sidebar,.side-nav,.left-sidebar,nav.sidebar,aside.sidebar{width:min(82vw,300px)!important}
+main,.main,.main-content,.content,.page-content,.content-wrapper,.app-content,
+.topbar,.top-header,.header,header.main-header,.app-header{
+margin-left:0!important;width:100%!important}
+table{min-width:850px}
+.table-responsive,.responsive-table,.overflow-auto{overflow-x:auto!important;-webkit-overflow-scrolling:touch}
+input,select,textarea{font-size:16px!important;min-height:44px!important}
+button,.btn,a.btn{min-height:44px!important}
+}
+</style>
+
+<style id="v1064-layout-and-skyblue-fix">
+/* V10.64: remove the centered content gutter and soften dark navy form sections. */
+.content{
+  max-width:none!important;
+  width:100%!important;
+  margin:0!important;
+  padding:18px 18px 34px!important;
+}
+.main{
+  min-width:0!important;
+}
+/* Keep the main workspace immediately beside the fixed sidebar. */
+main.main{
+  width:calc(100% - 240px)!important;
+  margin-left:240px!important;
+}
+.topbar{
+  margin-left:0!important;
+  width:100%!important;
+}
+/* Replace legacy dark navy unit-edit panels with a light sky-blue surface. */
+.field-group,
+.assignment-box,
+.assignment-option,
+.unit-owner-section,
+.additional-unit-assignment{
+  background:#dff2f7!important;
+  color:#173f4a!important;
+  border-color:#b9dfe8!important;
+  box-shadow:0 1px 4px rgba(45,93,104,.06)!important;
+}
+.field-group h3,
+.assignment-box h3,
+.assignment-option h3{color:#174554!important}
+.field-group .muted,
+.assignment-box .muted,
+.assignment-option .muted{color:#58727a!important}
+.field-group label,
+.assignment-box label,
+.assignment-option label{color:#294f58!important}
+.assignment-option{border-radius:10px!important}
+.assignment-option input,.assignment-option select{background:#f9fdfe!important;color:#183e48!important}
+/* Remove legacy dark surfaces from unit assignment controls while retaining readable borders. */
+.field-group input,.field-group select,.field-group textarea{background:#fff!important;color:#203f47!important;border-color:#a9cdd6!important}
+@media(max-width:1100px){
+  .content{padding:18px 16px 30px!important}
+}
+@media(max-width:800px){
+  main.main{width:calc(100% - 74px)!important;margin-left:74px!important}
+  .content{padding:16px 14px 28px!important}
+}
+</style>
+</head><body>{% if current_user %}<div class="layout"><aside class="sidebar">
+  <div class="brand"><div class="brand-mark" aria-hidden="true">▥</div><span><strong>CITYLAND 9</strong><small>CONDO SYSTEM 2026</small></span></div>
+
+  {% if can_access('dashboard') %}  <a class="nav {{'active' if request.endpoint=='dashboard' else ''}}" href="{{url_for('dashboard')}}"><span class="nav-icon">⌂</span><span>Dashboard</span></a>{% endif %}
+
+  {% if can_access('units') or can_access('billing') or can_access('advance_payments') or can_access('water') %}<div class="side-label">CONDO MANAGEMENT</div>
+
+  {% if can_access('units') %}
+  <div class="nav-group nav-tree">
+    <div class="nav nav-parent {{'active' if request.endpoint in ['units','unit_detail','edit_unit'] else ''}}"><span class="nav-icon">▦</span><span>Units</span><b>{{units_count()}}</b></div>
+    <a class="nav sub {{'active' if request.endpoint in ['units','unit_detail','edit_unit'] else ''}}" href="{{url_for('units')}}"><span class="nav-icon">›</span><span>Unit Directory</span></a>
+  </div>
+  {% endif %}
+
+  {% if can_access('billing') or can_access('advance_payments') %}
+  <div class="nav-group nav-tree">
+    <div class="nav nav-parent {{'active' if request.endpoint in ['billing','billing_detail','mark_bill_paid','billing_qr','advance_payments','billing_email'] else ''}}"><span class="nav-icon">▤</span><span>Billing &amp; SOA</span></div>
+    {% if can_access('billing') %}<a class="nav sub {{'active' if request.endpoint in ['billing','billing_detail','mark_bill_paid','billing_qr'] else ''}}" href="{{url_for('billing')}}"><span class="nav-icon">›</span><span>Billing Management</span></a>{% endif %}
+    {% if can_access('advance_payments') %}<a class="nav sub {{'active' if request.endpoint=='advance_payments' else ''}}" href="{{url_for('advance_payments')}}"><span class="nav-icon">›</span><span>Advance Payments</span></a>{% endif %}
+    {% if can_access('billing') %}<a class="nav sub {{'active' if request.endpoint=='billing_email' else ''}}" href="{{url_for('billing_email')}}"><span class="nav-icon">›</span><span>SOA Email</span></a>{% endif %}
+  </div>
+  {% endif %}
+
+  {% if can_access('water') %}<a class="nav {{'active' if request.endpoint in ['water','water_edit'] else ''}}" href="{{url_for('water')}}"><span class="nav-icon">≈</span><span>Water Readings</span></a>{% endif %}
+  {% endif %}
+
+  {% if can_access('move_certificate') or can_access('gate_pass') or can_access('expenses') %}<div class="side-label">OPERATIONS</div>
+  {% if can_access('move_certificate') %}<a class="nav {{'active' if request.endpoint in ['move_certificate','move_certificates'] else ''}}" href="{{url_for('move_certificate')}}"><span class="nav-icon">⇄</span><span>Move In / Out</span></a>{% endif %}
+  {% if can_access('gate_pass') %}<a class="nav {{'active' if request.endpoint=='gate_pass' else ''}}" href="{{url_for('gate_pass')}}"><span class="nav-icon">▣</span><span>Gate Pass</span></a>{% endif %}
+  {% if can_access('expenses') %}<a class="nav {{'active' if request.endpoint=='expenses' else ''}}" href="{{url_for('expenses')}}"><span class="nav-icon">▥</span><span>Expenses</span></a>{% endif %}
+  {% endif %}
+
+  {% if can_access('employees') or can_access('employee_attendance') or can_access('employee_leave') or can_access('employee_overtime') or can_access('employee_payroll') or can_access('employee_hr_loans') or can_access('employee_13th_month_full') or can_access('employee_hr_settings') or can_access('employee_payroll_reports') %}<div class="side-label">EMPLOYEE MANAGEMENT</div>
+  <div class="nav-group nav-tree">
+    {% if can_access('employees') %}<a class="nav nav-parent-link {{'active' if request.endpoint in ['employees','employee_edit'] else ''}}" href="{{url_for('employees')}}"><span class="nav-icon">♙</span><span>Employees</span></a>{% endif %}
+    {% if can_access('employee_attendance') %}<a class="nav sub {{'active' if request.endpoint in ['employee_attendance','employee_attendance_history'] else ''}}" href="{{url_for('employee_attendance')}}"><span class="nav-icon">›</span><span>Attendance</span></a>{% endif %}
+    {% if can_access('employee_leave') %}<a class="nav sub {{'active' if request.endpoint=='employee_leave' else ''}}" href="{{url_for('employee_leave')}}"><span class="nav-icon">›</span><span>Leave</span></a>{% endif %}
+    {% if can_access('employee_overtime') %}<a class="nav sub {{'active' if request.endpoint=='employee_overtime' else ''}}" href="{{url_for('employee_overtime')}}"><span class="nav-icon">›</span><span>Overtime</span></a>{% endif %}
+    {% if can_access('employee_payroll') %}<a class="nav sub {{'active' if request.endpoint in ['employee_payroll','employee_payroll_print','employee_payroll_statutory','employee_payroll_statutory_print'] else ''}}" href="{{url_for('employee_payroll')}}"><span class="nav-icon">›</span><span>Payroll</span></a>{% endif %}
+    {% if can_access('employee_hr_loans') %}<a class="nav sub {{'active' if request.endpoint=='employee_hr_loans' else ''}}" href="{{url_for('employee_hr_loans')}}"><span class="nav-icon">›</span><span>Loans &amp; Deductions</span></a>{% endif %}
+    {% if can_access('employee_13th_month_full') %}<a class="nav sub {{'active' if request.endpoint in ['employee_13th_month','employee_13th_month_full'] else ''}}" href="{{url_for('employee_13th_month_full')}}"><span class="nav-icon">›</span><span>13th Month</span></a>{% endif %}
+  </div>
+  {% if can_access('employee_hr_settings') %}<a class="nav {{'active' if request.endpoint=='employee_hr_settings' else ''}}" href="{{url_for('employee_hr_settings')}}"><span class="nav-icon">⚙</span><span>Payroll Rules</span></a>{% endif %}
+  {% if can_access('employee_payroll_reports') %}<a class="nav {{'active' if request.endpoint=='employee_payroll_reports' else ''}}" href="{{url_for('employee_payroll_reports')}}"><span class="nav-icon">▥</span><span>Payroll Reports</span></a>{% endif %}
+  {% endif %}
+
+  {% if can_access('announcements') or can_access('maintenance') or can_access('vendors') or can_access('documents') or can_access('resident_portal') %}<div class="side-label">COMMUNITY SERVICES</div>
+  {% if can_access('resident_portal') %}<a class="nav {{'active' if request.endpoint=='resident_portal' else ''}}" href="{{url_for('resident_portal')}}"><span class="nav-icon">⌂</span><span>Resident Portal</span></a>{% endif %}
+  {% if current_user.role in ['super_admin','admin'] %}<a class="nav {{'active' if request.endpoint=='resident_users' else ''}}" href="{{url_for('resident_users')}}"><span class="nav-icon">♙</span><span>Resident Accounts</span></a>{% endif %}
+  {% if can_access('announcements') %}<a class="nav {{'active' if request.endpoint=='announcements' else ''}}" href="{{url_for('announcements')}}"><span class="nav-icon">▤</span><span>Announcements</span></a>{% endif %}
+  {% if can_access('maintenance') %}<a class="nav {{'active' if request.endpoint=='maintenance' else ''}}" href="{{url_for('maintenance')}}"><span class="nav-icon">⚒</span><span>Maintenance</span></a>{% endif %}
+  {% if can_access('vendors') %}<a class="nav {{'active' if request.endpoint=='vendors' else ''}}" href="{{url_for('vendors')}}"><span class="nav-icon">▦</span><span>Vendors</span></a>{% endif %}
+  {% if can_access('documents') %}<a class="nav {{'active' if request.endpoint=='documents' else ''}}" href="{{url_for('documents')}}"><span class="nav-icon">▱</span><span>Documents</span></a>{% endif %}
+  {% endif %}
+
+  {% if can_access('reports') or can_access('users') or can_access('audit_logs') or can_access('settings') %}<div class="side-label">ADMINISTRATION</div>
+  {% if can_access('reports') %}<a class="nav {{'active' if request.endpoint=='reports' else ''}}" href="{{url_for('reports')}}"><span class="nav-icon">▤</span><span>Condo Reports</span></a>{% endif %}
+  {% if current_user.role=='super_admin' %}<a class="nav {{'active' if request.endpoint=='users' else ''}}" href="{{url_for('users')}}"><span class="nav-icon">♙</span><span>Users &amp; Access</span></a>{% endif %}
+  {% if can_access('audit_logs') %}<a class="nav {{'active' if request.endpoint=='audit_logs' else ''}}" href="{{url_for('audit_logs')}}"><span class="nav-icon">☷</span><span>Audit Logs</span></a>{% endif %}
+  {% if can_access('settings') %}<a class="nav {{'active' if request.endpoint=='settings' else ''}}" href="{{url_for('settings')}}"><span class="nav-icon">⚙</span><span>Rates &amp; Rules</span></a>{% endif %}
+  {% endif %}
+  <div class="sidebar-footer"><span>LAN SYSTEM</span><span class="online-dot"></span></div>
+</aside><main class="main"><header class="topbar"><div class="mobile-title">CITYLAND 9</div><div class="topbar-identity"><div class="muted">{{corporation_name}}</div><strong><span class="location-pin">●</span>{{address}}</strong></div><div class="user"><span class="user-account"><span class="user-icon">●</span>{{current_user.username}}</span><small>{{ 'Super Admin' if current_user.role == 'super_admin' else current_user.role|replace('_', ' ')|title }}</small><a href="{{url_for('change_password')}}" class="top-action"><span>⚒</span> Change Password</a><a href="{{url_for('logout')}}" class="logout-action"><span>⇥</span> Logout</a></div></header><div class="content">
+{% with messages=get_flashed_messages(with_categories=true) %}{% for category,message in messages %}<div class="alert {{category}}">{{message}}</div>{% endfor %}{% endwith %}{% block content %}{% endblock %}</div></main></div>{% else %}{% block auth %}{% endblock %}{% endif %}
+<script>
+(function () {
+  function isChangeForm(form) {
+    if ((form.method || '').toLowerCase() !== 'post') return false;
+    const action = (form.getAttribute('action') || '').toLowerCase();
+    // Exclude authentication, email sending, file/database import and other non-save actions.
+    if (/login|logout|send|database_import|email\/send/.test(action)) return false;
+    const submit = form.querySelector('button[type="submit"], input[type="submit"], button:not([type])');
+    if (!submit) return false;
+    const text = (submit.innerText || submit.value || '').trim().toLowerCase();
+    return /save|update|add|edit|activate|deactivate|reset password|change password|record payment|mark paid|generate|remove|delete/.test(text)
+      || /\/(edit|add|remove|reset-password|status|pay|settings|parking|tenant|owner|unit)/.test(action);
+  }
+
+  document.addEventListener('submit', function (event) {
+    const form = event.target;
+    if (!isChangeForm(form)) return;
+    if (form.dataset.confirmed === 'yes') return;
+    const ok = window.confirm('Save Changes?\n\nSelect OK for Yes or Cancel for No.');
+    if (!ok) {
+      event.preventDefault();
+      return;
+    }
+    form.dataset.confirmed = 'yes';
+  }, true);
+})();
+</script>
+<script id="cityland-theme-script">
+(function(){
+  const KEY = "cityland9_ui_theme_v2";
+  const presets = {
+    "Comfort Teal": {bg:"#f0f4f4", sidebar:"#173840", primary:"#2d7b86", hover:"#246873", card:"#ffffff", text:"#152b33", muted:"#5b7078", border:"#d0dcdf"},
+    "Soft Blue": {bg:"#f3f6f9", sidebar:"#324f69", primary:"#527a98", hover:"#41657f", card:"#fcfdfe", text:"#293842", muted:"#6c7d87", border:"#d5dfe5"},
+    "Classic Blue": {bg:"#f5f7fb", sidebar:"#123b63", primary:"#1f6feb", hover:"#185abc", card:"#ffffff", text:"#1f2937", muted:"#6b7280", border:"#d9e0e8"},
+    "Professional Navy": {bg:"#eef2f7", sidebar:"#172554", primary:"#456a9c", hover:"#36557f", card:"#ffffff", text:"#253247", muted:"#6d7888", border:"#d7dee8"},
+    "Forest Green": {bg:"#f1f7f3", sidebar:"#285642", primary:"#4f8068", hover:"#3e6955", card:"#fbfdfb", text:"#263a31", muted:"#687c72", border:"#d2dfd8"},
+    "Warm Sand": {bg:"#f8f5ef", sidebar:"#665744", primary:"#927954", hover:"#766143", card:"#fffdf9", text:"#3d372f", muted:"#7b7267", border:"#e2dacf"},
+    "Slate Gray": {bg:"#f1f3f5", sidebar:"#45525f", primary:"#667887", hover:"#52626f", card:"#fcfcfd", text:"#303942", muted:"#707b84", border:"#d8dde1"},
+    "Dark Mode": {bg:"#182126", sidebar:"#11191d", primary:"#6fa1aa", hover:"#84b2ba", card:"#222d32", text:"#e5ecee", muted:"#aab8bc", border:"#3b4a50"}
+  };
+  function apply(t){
+    const normalized=Object.assign({},presets["Comfort Teal"],t||{});
+    const r=document.documentElement;
+    r.style.setProperty("--cl-bg",normalized.bg); r.style.setProperty("--cl-sidebar",normalized.sidebar);
+    r.style.setProperty("--cl-primary",normalized.primary); r.style.setProperty("--cl-primary-hover",normalized.hover || normalized.primary);
+    r.style.setProperty("--cl-card",normalized.card); r.style.setProperty("--cl-surface",normalized.card);
+    r.style.setProperty("--cl-text",normalized.text); r.style.setProperty("--cl-muted",normalized.muted); r.style.setProperty("--cl-border",normalized.border);
+    const hex = (normalized.bg || "#f3f7f7").replace('#','');
+    const red=parseInt(hex.substring(0,2),16), green=parseInt(hex.substring(2,4),16), blue=parseInt(hex.substring(4,6),16);
+    document.body.classList.toggle("cl-dark", ((red * 299 + green * 587 + blue * 114) / 1000) < 145);
+    localStorage.setItem(KEY, JSON.stringify(normalized));
+  }
+  function load(){
+    try { const x=JSON.parse(localStorage.getItem(KEY)||"null"); apply(x || presets["Comfort Teal"]); } catch(e){ apply(presets["Comfort Teal"]); }
+  }
+  function makePanel(){
+    if(document.getElementById("cityland-theme-panel")) return;
+    const panel=document.createElement("div"); panel.id="cityland-theme-panel"; panel.className="cityland-theme-panel";
+    panel.innerHTML='<h3>Appearance</h3><div class="cityland-theme-small">Choose a background and color scheme for this browser.</div><div class="cityland-theme-grid" id="cityland-theme-grid"></div><div class="cityland-theme-row"><label>Custom background</label><input id="cl-bg-picker" type="color" value="#f3f7f7"></div><div class="cityland-theme-row"><label>Custom primary color</label><input id="cl-primary-picker" type="color" value="#3d7780"></div><div class="cityland-theme-row"><button id="cl-reset-theme" type="button" class="btn btn-secondary">Reset to Comfort Teal</button></div>';
+    document.body.appendChild(panel);
+    const grid=panel.querySelector("#cityland-theme-grid");
+    Object.keys(presets).forEach(name=>{
+      const t=presets[name], b=document.createElement("button"); b.type="button"; b.className="cityland-theme-option";
+      b.innerHTML='<div class="cityland-swatch" style="background:'+t.sidebar+'"></div><strong>'+name+'</strong>';
+      b.onclick=()=>apply(t); grid.appendChild(b);
+    });
+    panel.querySelector("#cl-bg-picker").oninput=e=>{
+      const cur=JSON.parse(localStorage.getItem(KEY)||"{}"); cur.bg=e.target.value||"#f3f7f7"; apply(Object.assign({},presets["Comfort Teal"],cur));
+    };
+    panel.querySelector("#cl-primary-picker").oninput=e=>{
+      const cur=JSON.parse(localStorage.getItem(KEY)||"{}"); cur.primary=e.target.value||"#3d7780"; apply(Object.assign({},presets["Comfort Teal"],cur));
+    };
+    panel.querySelector("#cl-reset-theme").onclick=()=>apply(presets["Comfort Teal"]);
+  }
+  function init(){
+    load(); makePanel();
+    const btn=document.createElement("button"); btn.type="button"; btn.className="cityland-appearance-btn"; btn.title="Appearance"; btn.setAttribute("aria-label","Appearance"); btn.innerHTML="🎨";
+    btn.onclick=()=>document.getElementById("cityland-theme-panel").classList.toggle("open");
+    document.body.appendChild(btn);
+  }
+  if(document.readyState==="loading") document.addEventListener("DOMContentLoaded",init); else init();
+})();
+</script>
+
+<script>
+(function(){
+ function syncTheme(){
+   var b=document.body,r=document.documentElement;
+   var t=(r.getAttribute('data-theme')||b.getAttribute('data-theme')||'').toLowerCase();
+   if(t==='dark') b.classList.add('cl-dark');
+   else if(t==='light') b.classList.remove('cl-dark');
+ }
+ syncTheme();
+ new MutationObserver(syncTheme).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+})();
+</script></body></html>

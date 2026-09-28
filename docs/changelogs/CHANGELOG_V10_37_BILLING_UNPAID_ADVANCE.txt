@@ -1,0 +1,6 @@
+V10.37
+- Billing table now shows TOTAL DUE, UNPAID, ADVANCE, STATUS, ACTIONS.
+- UNPAID uses remaining bill balance after payments/advance credit.
+- ADVANCE shows advance credit applied to the bill.
+- Billing table widths adjusted to fit the 8 columns.
+- Preserves V10.36 SOA close X button.

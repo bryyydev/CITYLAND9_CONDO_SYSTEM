@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-header">
+  <h1>Employee Attendance</h1><a class="btn" href="{{url_for('employees')}}">Employees</a>
+  <form method="get"><label>Date <input type="date" name="date" value="{{selected_date}}"></label> <button class="btn">Load</button></form>
+</div>
+<form method="post">
+  <input type="hidden" name="date" value="{{selected_date}}">
+  <div class="table-wrap">
+  <table class="modern-table">
+    <thead><tr><th>EMPLOYEE</th><th>STATUS</th><th>TIME IN</th><th>TIME OUT</th><th>REMARKS</th></tr></thead>
+    <tbody>
+    {% for e in employees %}
+      {% set r = records.get(e.id) %}
+      <tr>
+        <td><strong>{{ e.full_name if e.full_name is defined else e.name }}</strong><br><a class="btn small" href="{{url_for('employee_attendance_history',eid=e.id)}}">View History</a></td>
+        <td><select name="status_{{e.id}}">{% for s in ['PRESENT','ABSENT','LATE','UNDERTIME','LATE/UNDERTIME','LEAVE','REST DAY'] %}<option value="{{s}}" {% if r and r.status==s %}selected{% endif %}>{{s}}</option>{% endfor %}</select></td>
+        <td><input type="time" name="time_in_{{e.id}}" value="{{r.time_in.strftime('%H:%M') if r and r.time_in else ''}}"></td>
+        <td><input type="time" name="time_out_{{e.id}}" value="{{r.time_out.strftime('%H:%M') if r and r.time_out else ''}}"></td>
+        <td><input type="text" name="remarks_{{e.id}}" value="{{r.remarks if r else ''}}" placeholder="Optional"></td>
+      </tr>
+    {% else %}
+      <tr><td colspan="5" class="empty">No employees found.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  <button class="btn btn-primary" type="submit">Save Attendance</button>
+</form>
+{% endblock %}
+<script>
+(function(){
+ function syncTheme(){
+   var b=document.body,r=document.documentElement;
+   var t=(r.getAttribute('data-theme')||b.getAttribute('data-theme')||'').toLowerCase();
+   if(t==='dark') b.classList.add('cl-dark');
+   else if(t==='light') b.classList.remove('cl-dark');
+ }
+ syncTheme();
+ new MutationObserver(syncTheme).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+})();
+</script>

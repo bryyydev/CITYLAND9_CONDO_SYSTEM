@@ -1,0 +1,10 @@
+V10.26 - Detailed SOA Charges, Water-Paid Exclusion, and Penalty Recalculation
+
+Changes:
+- SOA DESCRIPTION now shows billing month/year for condo dues, e.g. SEPTEMBER 2026 DUES.
+- SOA water description now shows month, consumption, and rate, e.g. SEPTEMBER 2026 WATER — 12.00 m³ × ₱50.00/m³.
+- A water reading explicitly marked Paid is omitted from the SOA charges and from the displayed SOA total.
+- SOA penalty is recalculated using the latest prior outstanding monthly balance (including remaining water and other charges), plus the current bill balance only when the current bill is overdue.
+- Penalty description shows the computation: Total Month Balance × configured penalty rate (default 10%).
+- SOA total is recalculated using the effective charges after excluding paid water and applying the recalculated penalty.
+- Existing Water Reading paid/edit behavior is retained.

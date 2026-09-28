@@ -1,0 +1,13 @@
+CityLand 9 Condo Web System - V10.24
+
+Water Reading Unit Search - Outstanding Months
+
+Changes:
+- On the Water Readings tab, searching by Unit Number now shows a separate Outstanding Water Readings section below the normal search results.
+- The outstanding section includes historical water-reading months that are Unpaid, Partially Paid, or Overdue.
+- The outstanding-month search is based on the searched Unit Number and intentionally ignores the selected Billing Month filter so older unpaid/overdue months are not missed.
+- Paid water readings remain excluded from the outstanding section.
+- Existing Water Reading search/filter behavior remains unchanged.
+
+Tested:
+- app.py passes Python syntax compilation with python -m py_compile.
