@@ -86,7 +86,9 @@ Items 1–11 are **done for all 29 modules** (2026-09-29). They were identified 
 | 26 | Users & Access | ✅ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
 | 27 | Audit Logs | ✅ | ☐ | ☐ | ☐ | n/a | ☐ | ☐ | ☐ | n/a | ☐ | n/a | ☐ |
 | 28 | Rates & Rules (+ Excel import/export) | ✅ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
-| 29 | Authentication & account | ✅ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
+| 29 | Authentication & account ² | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | n/a | ✅ | ✅ | ☐ |
+
+² 2026-09-29: sign-in, sign-out and the session are done in React + `/api/auth`, and the session is shared with the legacy pages. Evidence: `tests/test_api_auth.py` (CSRF, bad and inactive logins, per-role permissions, audit entries, shared session) and a 25-check headless-browser run (all roles, mobile drawer, dark theme, server-side refusal of forbidden legacy URLs). **Not complete yet:** Change Password still opens the legacy page; login throttling and CSRF protection on the legacy Jinja forms are still to do. Every other module (1–28) is reachable from the React menu but opens its **legacy** page. None is migrated.
 
 ¹ The legacy system writes **no** audit entry for this module's main action (§3.5). Item 21 means "an entry is added and approved" or "no entry is kept, as a documented decision".
 

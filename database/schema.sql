@@ -21,7 +21,7 @@ CREATE TABLE announcement (
 	created_by VARCHAR(80), 
 	created_at DATETIME(6), 
 	PRIMARY KEY (id)
-)ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 -- audit_log
 CREATE TABLE audit_log (
@@ -30,7 +30,7 @@ CREATE TABLE audit_log (
 	action VARCHAR(255), 
 	created_at DATETIME(6), 
 	PRIMARY KEY (id)
-)ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 -- employee
 CREATE TABLE employee (
@@ -48,7 +48,7 @@ CREATE TABLE employee (
 	created_at DATETIME(6), 
 	PRIMARY KEY (id), 
 	UNIQUE (employee_no)
-)ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 -- employee_holiday
 CREATE TABLE employee_holiday (
@@ -59,7 +59,7 @@ CREATE TABLE employee_holiday (
 	active BOOL, 
 	PRIMARY KEY (id), 
 	UNIQUE (holiday_date)
-)ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 -- employee_hr_setting
 CREATE TABLE employee_hr_setting (
@@ -68,7 +68,7 @@ CREATE TABLE employee_hr_setting (
 	value VARCHAR(255), 
 	PRIMARY KEY (id), 
 	UNIQUE (`key`)
-)ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 -- expense
 CREATE TABLE expense (
@@ -78,7 +78,7 @@ CREATE TABLE expense (
 	description VARCHAR(300), 
 	amount NUMERIC(12, 2), 
 	PRIMARY KEY (id)
-)ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 -- gate_pass
 CREATE TABLE gate_pass (
@@ -89,7 +89,7 @@ CREATE TABLE gate_pass (
 	purpose VARCHAR(300), 
 	status VARCHAR(30), 
 	PRIMARY KEY (id)
-)ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 -- setting
 CREATE TABLE setting (
@@ -98,7 +98,7 @@ CREATE TABLE setting (
 	value VARCHAR(255), 
 	PRIMARY KEY (id), 
 	UNIQUE (`key`)
-)ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 -- unit
 CREATE TABLE unit (
@@ -130,7 +130,7 @@ CREATE TABLE unit (
 	UNIQUE (unit_no), 
 	FOREIGN KEY(assigned_parking_unit_id) REFERENCES unit (id), 
 	FOREIGN KEY(assigned_storage_unit_id) REFERENCES unit (id)
-)ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 -- user
 CREATE TABLE user (
@@ -142,7 +142,7 @@ CREATE TABLE user (
 	created_at DATETIME(6), 
 	PRIMARY KEY (id), 
 	UNIQUE (username)
-)ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 -- vendor
 CREATE TABLE vendor (
@@ -157,7 +157,7 @@ CREATE TABLE vendor (
 	notes TEXT, 
 	created_at DATETIME(6), 
 	PRIMARY KEY (id)
-)ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 -- advance_payment
 CREATE TABLE advance_payment (
@@ -173,7 +173,7 @@ CREATE TABLE advance_payment (
 	remarks VARCHAR(300), 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(unit_id) REFERENCES unit (id)
-)ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 -- billing
 CREATE TABLE billing (
@@ -197,7 +197,7 @@ CREATE TABLE billing (
 	created_at DATETIME(6), 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(unit_id) REFERENCES unit (id)
-)ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 CREATE INDEX ix_billing_month ON billing (billing_month);
 CREATE INDEX ix_billing_unit_month ON billing (unit_id, billing_month);
 
@@ -216,7 +216,7 @@ CREATE TABLE document_record (
 	created_at DATETIME(6), 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(unit_id) REFERENCES unit (id)
-)ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 -- employee_attendance
 CREATE TABLE employee_attendance (
@@ -230,7 +230,7 @@ CREATE TABLE employee_attendance (
 	created_at DATETIME(6), 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(employee_id) REFERENCES employee (id)
-)ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 CREATE INDEX ix_employee_attendance_attendance_date ON employee_attendance (attendance_date);
 CREATE INDEX ix_employee_attendance_employee_id ON employee_attendance (employee_id);
 
@@ -247,7 +247,7 @@ CREATE TABLE employee_hr_loan (
 	notes VARCHAR(300), 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(employee_id) REFERENCES employee (id)
-)ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 CREATE INDEX ix_employee_hr_loan_employee_id ON employee_hr_loan (employee_id);
 
 -- employee_leave
@@ -264,7 +264,7 @@ CREATE TABLE employee_leave (
 	created_at DATETIME(6), 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(employee_id) REFERENCES employee (id)
-)ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 CREATE INDEX ix_employee_leave_employee_id ON employee_leave (employee_id);
 
 -- employee_overtime
@@ -281,7 +281,7 @@ CREATE TABLE employee_overtime (
 	created_at DATETIME(6), 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(employee_id) REFERENCES employee (id)
-)ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 CREATE INDEX ix_employee_overtime_employee_id ON employee_overtime (employee_id);
 CREATE INDEX ix_employee_overtime_ot_date ON employee_overtime (ot_date);
 
@@ -303,7 +303,7 @@ CREATE TABLE employee_payroll (
 	created_at DATETIME(6), 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(employee_id) REFERENCES employee (id)
-)ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 CREATE INDEX ix_employee_payroll_employee_id ON employee_payroll (employee_id);
 CREATE INDEX ix_employee_payroll_period_end ON employee_payroll (period_end);
 CREATE INDEX ix_employee_payroll_period_start ON employee_payroll (period_start);
@@ -324,7 +324,7 @@ CREATE TABLE move_certificate (
 	PRIMARY KEY (id), 
 	UNIQUE (certificate_no), 
 	FOREIGN KEY(unit_id) REFERENCES unit (id)
-)ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 -- owner
 CREATE TABLE owner (
@@ -342,7 +342,7 @@ CREATE TABLE owner (
 	created_at DATETIME(6), 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(unit_id) REFERENCES unit (id)
-)ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 -- parking_lot
 CREATE TABLE parking_lot (
@@ -361,7 +361,7 @@ CREATE TABLE parking_lot (
 	created_at DATETIME(6), 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(unit_id) REFERENCES unit (id)
-)ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 -- resident_profile
 CREATE TABLE resident_profile (
@@ -377,7 +377,7 @@ CREATE TABLE resident_profile (
 	UNIQUE (user_id), 
 	FOREIGN KEY(user_id) REFERENCES user (id), 
 	FOREIGN KEY(unit_id) REFERENCES unit (id)
-)ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 -- tenant
 CREATE TABLE tenant (
@@ -396,7 +396,7 @@ CREATE TABLE tenant (
 	created_at DATETIME(6), 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(unit_id) REFERENCES unit (id)
-)ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 -- water_reading
 CREATE TABLE water_reading (
@@ -415,7 +415,7 @@ CREATE TABLE water_reading (
 	paid_date DATE, 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(unit_id) REFERENCES unit (id)
-)ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 CREATE INDEX ix_water_month ON water_reading (reading_month);
 CREATE INDEX ix_water_unit_month ON water_reading (unit_id, reading_month);
 
@@ -430,7 +430,7 @@ CREATE TABLE advance_application (
 	PRIMARY KEY (id), 
 	FOREIGN KEY(advance_payment_id) REFERENCES advance_payment (id), 
 	FOREIGN KEY(billing_id) REFERENCES billing (id)
-)ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 CREATE INDEX ix_advance_application_advance ON advance_application (advance_payment_id);
 CREATE INDEX ix_advance_application_billing ON advance_application (billing_id);
 
@@ -453,7 +453,7 @@ CREATE TABLE employee_payroll_statutory (
 	net_pay_after_statutory NUMERIC(12, 2), 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(payroll_id) REFERENCES employee_payroll (id)
-)ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 CREATE UNIQUE INDEX ix_employee_payroll_statutory_payroll_id ON employee_payroll_statutory (payroll_id);
 
 -- employee_payslip_item
@@ -465,7 +465,7 @@ CREATE TABLE employee_payslip_item (
 	amount NUMERIC(12, 2), 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(payroll_id) REFERENCES employee_payroll (id)
-)ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 CREATE INDEX ix_employee_payslip_item_payroll_id ON employee_payslip_item (payroll_id);
 
 -- maintenance_ticket
@@ -489,7 +489,7 @@ CREATE TABLE maintenance_ticket (
 	FOREIGN KEY(unit_id) REFERENCES unit (id), 
 	FOREIGN KEY(resident_profile_id) REFERENCES resident_profile (id), 
 	FOREIGN KEY(vendor_id) REFERENCES vendor (id)
-)ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 -- parking_billing
 CREATE TABLE parking_billing (
@@ -503,7 +503,7 @@ CREATE TABLE parking_billing (
 	created_at DATETIME(6), 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(parking_lot_id) REFERENCES parking_lot (id)
-)ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 CREATE INDEX ix_parking_billing_lot_month ON parking_billing (parking_lot_id, billing_month);
 
 -- payment
@@ -518,7 +518,7 @@ CREATE TABLE payment (
 	remarks VARCHAR(300), 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(billing_id) REFERENCES billing (id)
-)ENGINE=InnoDB CHARSET=utf8mb4 COLLATE utf8mb4_bin;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 CREATE INDEX ix_payment_billing ON payment (billing_id);
 
 -- Indexes created at runtime by init_db() (not declared on the models)

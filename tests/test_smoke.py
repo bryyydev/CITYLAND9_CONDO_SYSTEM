@@ -12,10 +12,14 @@ from conftest import PASSWORD, ROLES, login
 
 
 def static_get_pages(app_module):
-    """All GET routes that take no URL parameters (except login/logout/static)."""
+    """All legacy GET pages that take no URL parameters (except login/logout/static).
+
+    The JSON API and the React app route have their own tests (test_api_auth.py).
+    """
     return sorted(
         r.rule for r in app_module.app.url_map.iter_rules()
         if "GET" in r.methods and not r.arguments and r.endpoint not in ("static", "login", "logout")
+        and not r.endpoint.startswith(("api_auth.", "react_app."))
     )
 
 

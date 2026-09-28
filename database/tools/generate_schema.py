@@ -33,7 +33,9 @@ from sqlalchemy.dialects import mysql  # noqa: E402
 from sqlalchemy.ext.compiler import compiles  # noqa: E402
 from sqlalchemy.schema import CreateIndex, CreateTable  # noqa: E402
 
-TABLE_OPTIONS = {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_bin"}
+# Written by hand in a fixed order: SQLAlchemy emits dialect table options in set order,
+# which changes between runs and would make schema.sql non-reproducible.
+TABLE_OPTIONS = "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin"
 
 # Indexes that init_db() creates with raw SQL instead of declaring them on the models.
 RUNTIME_INDEXES = [
@@ -74,10 +76,8 @@ def build_schema():
         "",
     ]
     for table in metadata.sorted_tables:
-        for key, value in TABLE_OPTIONS.items():
-            table.dialect_kwargs[key] = value
         out.append(f"-- {table.name}")
-        out.append(str(CreateTable(table).compile(dialect=dialect)).strip() + ";")
+        out.append(str(CreateTable(table).compile(dialect=dialect)).strip() + " " + TABLE_OPTIONS + ";")
         for index in sorted(table.indexes, key=lambda i: i.name):
             out.append(str(CreateIndex(index).compile(dialect=dialect)).strip() + ";")
         out.append("")

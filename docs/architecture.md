@@ -32,6 +32,32 @@ Firebase, Supabase, AWS/GCP/Azure databases or storage, MongoDB Atlas, PlanetSca
 
 ---
 
+## 1a. What is implemented now (2026-09-29)
+
+| Part | State |
+|---|---|
+| React app | `frontend/` (React 19 + Vite 8, React Router). Built into `frontend/dist`, served by Flask at **`/app/`**. |
+| Screens | Sign-in, the full navigation for all 29 modules (role-based, collapsible, mobile drawer, light/dark), and one **bridge page per module** with an *Open in current system* button. No module has been rebuilt in React yet. |
+| API | `/api/auth/csrf`, `/api/auth/login`, `/api/auth/logout`, `/api/auth/me` (`backend/app/routes/auth.py`). Unknown `/api/...` paths return JSON 404. |
+| Legacy system | Unchanged at `/`. Same session cookie, so React sign-in also signs in the legacy pages, and the other way round. |
+
+### Running it
+
+```powershell
+# one time, and after every frontend change (needs Node.js 20.19+):
+cd frontend
+npm install
+npm run build
+cd ..
+python backend/run.py --lan        # http://127.0.0.1:5000/app/   (legacy UI still at http://127.0.0.1:5000/)
+
+# while developing the frontend (hot reload), with the Flask server also running:
+cd frontend
+npm run dev                        # http://127.0.0.1:5173/app/  (proxies /api to :5000)
+```
+
+Packages: `react-router-dom` (29 modules with deep links, so justified). `sweetalert2` is used for confirmations. `@tanstack/react-table`, `chart.js`/`react-chartjs-2` and `html2pdf.js` are installed for the module pages and not used yet. Not added: axios (a small `fetch` wrapper is enough), a state library (React context is enough), or a date library (`Intl` is enough).
+
 ## 2. Backend layout (target)
 
 ```

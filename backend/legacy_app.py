@@ -4450,6 +4450,28 @@ try:
 except Exception: pass
 
 # ============================================================
+# REST API + React frontend (migration in progress, docs/migration.md)
+# Additive only: the legacy pages above keep working unchanged.
+# ============================================================
+from app.routes.auth import make_auth_blueprint  # noqa: E402
+from app.routes.spa import make_spa_blueprint  # noqa: E402
+
+# Menu visibility for React = the same ENDPOINT_ROLES the legacy sidebar uses.
+# base.html hard-codes Resident Accounts to super_admin/admin, so mirror that here.
+NAV_ROLES = {**ENDPOINT_ROLES, "resident_users": {"super_admin", "admin"}}
+
+
+def permissions_for(user):
+    return {endpoint for endpoint, allowed in NAV_ROLES.items() if user.role in allowed}
+
+
+app.register_blueprint(make_auth_blueprint(
+    db=db, User=User, audit=audit, check_password_hash=check_password_hash,
+    current_user=current_user, home_endpoint=home_endpoint, permissions_for=permissions_for,
+))
+app.register_blueprint(make_spa_blueprint(os.path.join(BASE_DIR, "frontend", "dist")))
+
+# ============================================================
 # APPLICATION STARTUP
 # Keep this block at the very end so all routes (including HR)
 # are registered before Flask starts when this file is run directly.
