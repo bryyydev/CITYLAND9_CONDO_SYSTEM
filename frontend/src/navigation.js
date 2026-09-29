@@ -26,6 +26,7 @@ export const NAV = [
         children: [
           { key: "billing", label: "Billing Management", path: "/billing" },
           { key: "advance_payments", label: "Advance Payments", path: "/billing/advance" },
+          { key: "receipts", label: "Official Receipts", path: "/receipts" },
           { key: "billing_email", label: "SOA Email", path: "/billing/email" },
         ],
       },

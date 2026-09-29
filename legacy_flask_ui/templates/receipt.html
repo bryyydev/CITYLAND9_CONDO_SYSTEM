@@ -1,0 +1,28 @@
+{% extends "base.html" %}{% block content %}
+<div class="toolbar no-print"><a class="btn" href="{{url_for('receipts')}}">← Official Receipts</a> <button class="btn primary" onclick="window.print()">🖨 Print receipt</button></div>
+<div class="card" style="max-width:760px;margin:16px auto;padding:28px 32px">
+  <div style="display:flex;justify-content:space-between;gap:16px;border-bottom:3px solid #2f7888;padding-bottom:12px">
+    <div><h2 style="margin:0">{{corporation_name}}</h2><div class="muted">{{address}}</div></div>
+    <div style="text-align:right"><div class="eyebrow">OFFICIAL RECEIPT</div><h2 style="margin:4px 0 0">{{r.receipt_no}}</h2><div class="muted">{{r.received_date}}</div></div>
+  </div>
+  <table style="margin-top:16px">
+    <tbody>
+      <tr><td style="width:190px">Received from</td><td><strong>{{received_from or '—'}}</strong> · Unit {{r.unit.unit_no}}</td></tr>
+      <tr><td>Amount</td><td><strong style="font-size:1.2em">{{r.amount|currency}}</strong></td></tr>
+      <tr><td>Payment method</td><td>{{r.payment_method}}{% if r.reference %} · Ref. {{r.reference}}{% endif %}</td></tr>
+      {% if r.remarks %}<tr><td>Remarks</td><td>{{r.remarks}}</td></tr>{% endif %}
+    </tbody>
+  </table>
+  <h3 style="margin:18px 0 6px">In payment of</h3>
+  <table>
+    <thead><tr><th>Description</th><th>Amount</th></tr></thead>
+    <tbody>
+    {% for a in r.allocations %}
+      <tr><td>{% if a.kind == 'bill' %}Statement of Account — {{a.payment.billing.billing_month|month_year}}{% elif a.kind == 'water' %}Water — {{a.water_reading.reading_month|month_year}}{% else %}Advance condo dues from {{a.advance_payment.start_month|month_year}}{% endif %}</td><td>{{a.amount|currency}}</td></tr>
+    {% endfor %}
+      <tr><td><strong>TOTAL</strong></td><td><strong>{{r.amount|currency}}</strong></td></tr>
+    </tbody>
+  </table>
+  <p class="muted" style="margin-top:22px">Received by: {{r.received_by or '—'}}{% if r.source == 'backfill' %} · Receipt created for a payment recorded before official receipts were introduced.{% endif %}</p>
+</div>
+{% endblock %}

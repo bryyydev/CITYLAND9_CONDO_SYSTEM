@@ -50,6 +50,8 @@ PERMISSIONS = {
     "edit_soa": BILLING_RW,           # CHANGED: + accounting
     "billing_qr": BILLING_RW,         # CHANGED: + accounting
     "recalculate_soa": BILLING_RW,    # NEW (Phase B1): re-price an issued bill from current rates
+    "receipts": BILLING_RW,           # NEW (Phase B2): official receipts ledger
+    "receipt_detail": BILLING_RW,     # NEW (Phase B2): printable official receipt
     "advance_payments": BILLING_RW,   # CHANGED: + accounting
     "billing_email": PROPERTY, "send_billing_emails": PROPERTY, "email_bill": PROPERTY,  # CONFIRM: SOA email not given to accounting
 

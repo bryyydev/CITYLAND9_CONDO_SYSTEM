@@ -272,6 +272,7 @@ main.main{
     <div class="nav nav-parent {{'active' if request.endpoint in ['billing','billing_detail','mark_bill_paid','billing_qr','advance_payments','billing_email'] else ''}}"><span class="nav-icon">▤</span><span>Billing &amp; SOA</span></div>
     {% if can_access('billing') %}<a class="nav sub {{'active' if request.endpoint in ['billing','billing_detail','mark_bill_paid','billing_qr'] else ''}}" href="{{url_for('billing')}}"><span class="nav-icon">›</span><span>Billing Management</span></a>{% endif %}
     {% if can_access('advance_payments') %}<a class="nav sub {{'active' if request.endpoint=='advance_payments' else ''}}" href="{{url_for('advance_payments')}}"><span class="nav-icon">›</span><span>Advance Payments</span></a>{% endif %}
+    {% if can_access('receipts') %}<a class="nav sub {{'active' if request.endpoint in ['receipts','receipt_detail'] else ''}}" href="{{url_for('receipts')}}"><span class="nav-icon">›</span><span>Official Receipts</span></a>{% endif %}
     {% if can_access('billing_email') %}<a class="nav sub {{'active' if request.endpoint=='billing_email' else ''}}" href="{{url_for('billing_email')}}"><span class="nav-icon">›</span><span>SOA Email</span></a>{% endif %}
   </div>
   {% endif %}

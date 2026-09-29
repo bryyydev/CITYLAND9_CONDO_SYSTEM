@@ -77,6 +77,7 @@ def make_resident_blueprint(legacy):
             "note": bill.soa_note or "",
             "payments": [
                 {"date": p.payment_date.isoformat() if p.payment_date else None, "amount": money(p.amount),
+                 "receiptNo": legacy.receipt_no_for("bill", p.id) or None,
                  "method": p.payment_method, "type": p.payment_type, "reference": p.reference or ""}
                 for p in sorted(bill.payments, key=lambda p: (p.payment_date or datetime.min.date(), p.id))
             ],

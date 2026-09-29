@@ -6,7 +6,7 @@
 --   CREATE DATABASE cityland9 CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 --   mysql -u <user> -p cityland9 < database/schema.sql
 --
--- Tables: 29 (ordered so foreign-key targets are created first)
+-- Tables: 31 (ordered so foreign-key targets are created first)
 
 SET NAMES utf8mb4;
 
@@ -385,6 +385,29 @@ CREATE TABLE parking_lot (
 	FOREIGN KEY(unit_id) REFERENCES unit (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
+-- receipt
+CREATE TABLE receipt (
+	id INTEGER NOT NULL AUTO_INCREMENT, 
+	receipt_year INTEGER NOT NULL, 
+	receipt_seq INTEGER NOT NULL, 
+	receipt_no VARCHAR(20) NOT NULL, 
+	unit_id INTEGER NOT NULL, 
+	received_date DATE NOT NULL, 
+	amount NUMERIC(12, 2) NOT NULL, 
+	payment_method VARCHAR(20) NOT NULL, 
+	reference VARCHAR(100), 
+	remarks VARCHAR(300), 
+	received_by VARCHAR(80), 
+	source VARCHAR(20) NOT NULL, 
+	created_at DATETIME(6), 
+	PRIMARY KEY (id), 
+	CONSTRAINT uq_receipt_year_seq UNIQUE (receipt_year, receipt_seq), 
+	CONSTRAINT ck_receipt_amount_positive CHECK (amount > 0), 
+	UNIQUE (receipt_no), 
+	FOREIGN KEY(unit_id) REFERENCES unit (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE INDEX ix_receipt_unit_id ON receipt (unit_id);
+
 -- resident_profile
 CREATE TABLE resident_profile (
 	id INTEGER NOT NULL AUTO_INCREMENT, 
@@ -546,6 +569,29 @@ CREATE TABLE payment (
 	FOREIGN KEY(billing_id) REFERENCES billing (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 CREATE INDEX ix_payment_billing ON payment (billing_id);
+
+-- receipt_allocation
+CREATE TABLE receipt_allocation (
+	id INTEGER NOT NULL AUTO_INCREMENT, 
+	receipt_id INTEGER NOT NULL, 
+	kind VARCHAR(10) NOT NULL, 
+	payment_id INTEGER, 
+	water_reading_id INTEGER, 
+	advance_payment_id INTEGER, 
+	amount NUMERIC(12, 2) NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT ck_receipt_allocation_kind CHECK (kind IN ('bill', 'water', 'advance')), 
+	CONSTRAINT ck_receipt_allocation_amount_positive CHECK (amount > 0), 
+	CONSTRAINT ck_receipt_allocation_target CHECK ((kind = 'bill' AND payment_id IS NOT NULL) OR (kind = 'water' AND water_reading_id IS NOT NULL) OR (kind = 'advance' AND advance_payment_id IS NOT NULL)), 
+	FOREIGN KEY(receipt_id) REFERENCES receipt (id), 
+	FOREIGN KEY(payment_id) REFERENCES payment (id), 
+	FOREIGN KEY(water_reading_id) REFERENCES water_reading (id), 
+	FOREIGN KEY(advance_payment_id) REFERENCES advance_payment (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE INDEX ix_receipt_allocation_advance_payment_id ON receipt_allocation (advance_payment_id);
+CREATE INDEX ix_receipt_allocation_payment_id ON receipt_allocation (payment_id);
+CREATE INDEX ix_receipt_allocation_receipt_id ON receipt_allocation (receipt_id);
+CREATE INDEX ix_receipt_allocation_water_reading_id ON receipt_allocation (water_reading_id);
 
 -- Indexes created at runtime by init_db() (not declared on the models)
 CREATE INDEX `ix_owner_unit_id` ON `owner` (`unit_id`);

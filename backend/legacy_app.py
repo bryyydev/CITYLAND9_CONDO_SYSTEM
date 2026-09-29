@@ -1122,6 +1122,81 @@ class WaterReading(ChangeTracked, db.Model):
         return round(self.usage * float(self.rate or 0), 2)
 
 
+class Receipt(db.Model):
+    """Official receipt: one per payment received at the office (Phase B2).
+    Numbers run per year without gaps: OR-2026-000001, OR-2026-000002, ..."""
+    __tablename__ = "receipt"
+    __table_args__ = (db.UniqueConstraint("receipt_year", "receipt_seq", name="uq_receipt_year_seq"),
+                      db.CheckConstraint("amount > 0", name="ck_receipt_amount_positive"))
+    id = db.Column(db.Integer, primary_key=True)
+    receipt_year = db.Column(db.Integer, nullable=False)
+    receipt_seq = db.Column(db.Integer, nullable=False)
+    receipt_no = db.Column(db.String(20), unique=True, nullable=False)
+    unit_id = db.Column(db.Integer, db.ForeignKey("unit.id"), nullable=False, index=True)
+    received_date = db.Column(db.Date, nullable=False)
+    amount = db.Column(db.Numeric(12, 2), nullable=False)
+    payment_method = db.Column(db.String(20), nullable=False, default="CASH")
+    reference = db.Column(db.String(100))
+    remarks = db.Column(db.String(300))
+    received_by = db.Column(db.String(80))
+    source = db.Column(db.String(20), nullable=False, default="cashier")  # cashier | backfill
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    unit = db.relationship("Unit")
+    allocations = db.relationship("ReceiptAllocation", back_populates="receipt", cascade="all, delete-orphan")
+
+
+class ReceiptAllocation(db.Model):
+    """What a receipt paid: a bill payment, a water charge or an advance payment."""
+    __tablename__ = "receipt_allocation"
+    __table_args__ = (
+        db.CheckConstraint("kind IN ('bill', 'water', 'advance')", name="ck_receipt_allocation_kind"),
+        db.CheckConstraint("amount > 0", name="ck_receipt_allocation_amount_positive"),
+        db.CheckConstraint("(kind = 'bill' AND payment_id IS NOT NULL) OR (kind = 'water' AND water_reading_id IS NOT NULL) "
+                           "OR (kind = 'advance' AND advance_payment_id IS NOT NULL)", name="ck_receipt_allocation_target"),
+    )
+    id = db.Column(db.Integer, primary_key=True)
+    receipt_id = db.Column(db.Integer, db.ForeignKey("receipt.id"), nullable=False, index=True)
+    kind = db.Column(db.String(10), nullable=False)
+    payment_id = db.Column(db.Integer, db.ForeignKey("payment.id"), index=True)
+    water_reading_id = db.Column(db.Integer, db.ForeignKey("water_reading.id"), index=True)
+    advance_payment_id = db.Column(db.Integer, db.ForeignKey("advance_payment.id"), index=True)
+    amount = db.Column(db.Numeric(12, 2), nullable=False)
+    receipt = db.relationship("Receipt", back_populates="allocations")
+    payment = db.relationship("Payment")
+    water_reading = db.relationship("WaterReading")
+    advance_payment = db.relationship("AdvancePayment")
+
+
+def issue_receipt(unit_id, received_date, method, reference, remarks, parts, source="cashier", received_by=None):
+    """Create the official receipt for money received, in the caller's transaction.
+
+    parts = [(kind, record, amount)] with kind 'bill' (Payment row), 'water' (WaterReading)
+    or 'advance' (AdvancePayment). The existing payment records are not changed; the
+    receipt only documents them, so balances are computed exactly as before."""
+    parts = [(k, r, money(a)) for k, r, a in parts if r is not None and money(a) > 0]
+    total = sum((a for _, _, a in parts), Decimal("0"))
+    if total <= 0:
+        return None
+    db.session.flush()  # the paid records need their ids
+    year = received_date.year
+    last = (db.session.query(func.max(Receipt.receipt_seq)).filter(Receipt.receipt_year == year)
+            .with_for_update().scalar()) or 0   # locks the year's numbers until commit (no duplicates)
+    receipt = Receipt(receipt_year=year, receipt_seq=last + 1, receipt_no=f"OR-{year}-{last + 1:06d}",
+                      unit_id=unit_id, received_date=received_date, amount=total,
+                      payment_method=(method or "CASH").upper(), reference=(reference or None),
+                      remarks=((remarks or "").strip()[:300] or None), source=source,
+                      received_by=received_by or ((session.get("username") if has_request_context() else None) or "system"))
+    db.session.add(receipt)
+    db.session.flush()
+    for kind, record, amount in parts:
+        db.session.add(ReceiptAllocation(
+            receipt_id=receipt.id, kind=kind, amount=amount,
+            payment_id=record.id if kind == "bill" else None,
+            water_reading_id=record.id if kind == "water" else None,
+            advance_payment_id=record.id if kind == "advance" else None))
+    return receipt
+
+
 class Employee(ChangeTracked, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     employee_no = db.Column(db.String(50), unique=True, nullable=False)
@@ -2095,9 +2170,11 @@ def advance_payments():
         db.session.add(adv)
         db.session.flush()
         allocate_advances_for_month(start_month, unit_id)
+        receipt = issue_receipt(unit_id, payment_date, method, reference, request.form.get("remarks", ""),
+                                [("advance", adv, amount)])
         db.session.commit()
-        audit(f"Recorded {months}-month advance condo dues payment for unit {adv.unit.unit_no}: {amount:,.2f}")
-        flash(f"Advance payment of ₱{amount:,.2f} recorded for {months} month(s).", "success")
+        audit(f"Issued {receipt.receipt_no} - Recorded {months}-month advance condo dues payment for unit {adv.unit.unit_no}: {amount:,.2f}")
+        flash(f"Advance payment of ₱{amount:,.2f} recorded for {months} month(s) (official receipt {receipt.receipt_no}).", "success")
         return redirect(url_for("advance_payments", unit_id=unit_id))
 
     units = Unit.query.filter(Unit.active.is_(True), ~Unit.unit_type.in_(["PARKING", "STORAGE"])).order_by(Unit.unit_no).all()
@@ -2212,8 +2289,9 @@ def mark_bill_paid(bid):
     # Keep the billing payment record limited to the amount actually applied
     # to this SOA. The excess is tracked separately as an advance so it can
     # be automatically applied to future condo dues.
+    bill_payment = excess_adv = None
     if amount_to_bill > 0:
-        db.session.add(Payment(
+        bill_payment = Payment(
             billing_id=b.id,
             amount=amount_to_bill,
             payment_date=payment_date,
@@ -2221,7 +2299,8 @@ def mark_bill_paid(bid):
             payment_type=payment_type,
             reference=reference,
             remarks=request.form.get("remarks", "")
-        ))
+        )
+        db.session.add(bill_payment)
 
     if excess_amount > 0:
         excess_adv = AdvancePayment(
@@ -2242,20 +2321,23 @@ def mark_bill_paid(bid):
         # for the next eligible billing month.
         allocate_advances_for_month(b.billing_month, b.unit_id)
 
+    receipt = issue_receipt(b.unit_id, payment_date, payment_method, reference, request.form.get("remarks", ""),
+                            [("bill", bill_payment, amount_to_bill), ("advance", excess_adv, excess_amount)])
     db.session.commit()
     audit(
+        f"Issued {receipt.receipt_no} - "
         f"Recorded {payment_type.lower()} {payment_method.lower()} payment for unit "
         f"{b.unit.unit_no}, billing {b.billing_month}: applied ₱{amount_to_bill:,.2f}"
         + (f", excess ₱{excess_amount:,.2f} moved to advance." if excess_amount > 0 else "")
     )
     if excess_amount > 0:
         flash(
-            f"Payment recorded. ₱{amount_to_bill:,.2f} applied to the SOA and "
+            f"Payment recorded (official receipt {receipt.receipt_no}). ₱{amount_to_bill:,.2f} applied to the SOA and "
             f"₱{excess_amount:,.2f} automatically added to Advance Payment.",
             "success"
         )
     else:
-        flash("Payment recorded.", "success")
+        flash(f"Payment recorded (official receipt {receipt.receipt_no}).", "success")
     return redirect(url_for("billing", month=b.billing_month, status="Paid" if b.status == "Paid" else "Partially Paid"))
 
 
@@ -2378,6 +2460,50 @@ def recalculate_soa(bid):
               f"storage {before[2]:,.2f}->{after[2]:,.2f}")
         flash("SOA recalculated from the current rates and recorded in the Audit Logs.", "success")
     return redirect(url_for("billing_detail", bid=bid))
+
+
+# -----------------------------
+# Official receipts (Phase B2)
+# -----------------------------
+@app.template_global()
+def receipt_no_for(kind, record_id):
+    """OR number of the receipt that paid a bill payment / water charge / advance, or ''."""
+    column = {"bill": ReceiptAllocation.payment_id, "water": ReceiptAllocation.water_reading_id,
+              "advance": ReceiptAllocation.advance_payment_id}[kind]
+    row = (db.session.query(Receipt.receipt_no).join(ReceiptAllocation)
+           .filter(column == record_id).order_by(Receipt.id).first())
+    return row[0] if row else ""
+
+
+@app.route("/receipts")
+@guarded
+def receipts():
+    q = request.args.get("q", "").strip()
+    start = parse_date(request.args.get("start")) or date.today().replace(day=1)
+    end = parse_date(request.args.get("end")) or date.today()
+    if end < start:
+        start, end = end, start
+    query = Receipt.query.join(Unit).filter(Receipt.received_date >= start, Receipt.received_date <= end)
+    if q:
+        query = query.filter(or_(Receipt.receipt_no.ilike(f"%{q}%"), Unit.unit_no.ilike(f"%{q}%"), Receipt.reference.ilike(f"%{q}%")))
+    rows = query.order_by(Receipt.receipt_year.desc(), Receipt.receipt_seq.desc()).limit(500).all()
+    total = sum((money(r.amount) for r in rows), Decimal("0"))
+    by_method = {}
+    for r in rows:
+        by_method[r.payment_method] = by_method.get(r.payment_method, Decimal("0")) + money(r.amount)
+    return render_template("receipts.html", rows=rows, q=q, start=start.isoformat(), end=end.isoformat(),
+                           total=total, by_method=by_method)
+
+
+@app.route("/receipts/<int:rid>")
+@guarded
+def receipt_detail(rid):
+    r = db.session.get(Receipt, rid)
+    if not r:
+        flash("Receipt not found.", "danger"); return redirect(url_for("receipts"))
+    contact = current_contact_for_unit(r.unit)
+    name = getattr(contact, "tenant_name", None) or getattr(contact, "owner_name", None) or r.unit.owner_name or ""
+    return render_template("receipt.html", r=r, received_from=name)
 
 
 @app.route("/billing/<int:bid>/qr")
@@ -2551,9 +2677,10 @@ def mark_water_paid(rid):
     reading.paid_date = paid_date
     reading.paid = money(reading.paid_amount) >= total
 
+    receipt = issue_receipt(reading.unit_id, paid_date, payment_method, reference, "", [("water", reading, amount)])
     db.session.commit()
-    audit(f"Recorded {payment_type.lower()} {payment_method.lower()} water payment for unit {reading.unit.unit_no} for {reading.reading_month}")
-    flash("Water payment recorded.", "success")
+    audit(f"Issued {receipt.receipt_no} - Recorded {payment_type.lower()} {payment_method.lower()} water payment for unit {reading.unit.unit_no} for {reading.reading_month}")
+    flash(f"Water payment recorded (official receipt {receipt.receipt_no}).", "success")
     return redirect(url_for("water", month=reading.reading_month))
 
 

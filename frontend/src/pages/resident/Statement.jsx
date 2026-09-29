@@ -111,10 +111,10 @@ export default function Statement() {
         <h3>PAYMENTS</h3>
         {s.payments.length === 0 ? <p className="muted">No payments recorded for this statement.</p> : (
           <table>
-            <thead><tr><th>Date</th><th>Reference</th><th>Type</th><th className="num">Amount</th></tr></thead>
+            <thead><tr><th>Date</th><th>OR No.</th><th>Reference</th><th>Type</th><th className="num">Amount</th></tr></thead>
             <tbody>
               {s.payments.map((p, i) => (
-                <tr key={i}><td>{dateLabel(p.date)}</td><td>{p.reference || "—"}</td><td>{p.type} · {p.method}</td><td className="num">{peso(p.amount)}</td></tr>
+                <tr key={i}><td>{dateLabel(p.date)}</td><td>{p.receiptNo || "—"}</td><td>{p.reference || "—"}</td><td>{p.type} · {p.method}</td><td className="num">{peso(p.amount)}</td></tr>
               ))}
             </tbody>
           </table>
