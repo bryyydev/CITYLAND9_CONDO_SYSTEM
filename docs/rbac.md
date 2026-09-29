@@ -40,6 +40,15 @@ Everyone can use Change Password.
 4. **Staff has no Leave or Overtime entry.** The spec says staff enters attendance only.
 5. **Vendors and Documents** are now Superadmin/Admin only. Residents lost Documents (the spec says "Resident Portal only").
 
+### When a resident's access ends (automatic)
+A resident account is linked to a unit and, optionally, to an owner or tenant record (Resident Accounts → person). Portal access ends **immediately and automatically** when:
+- the linked tenant or owner is set to **Inactive ("Past")** on the unit page, which is the normal move-out step, or is moved to another unit
+- the resident account or the unit is deactivated
+
+The resident is then signed out of both the React portal and the legacy pages, sees the reason on the login page, and gets 403 from the resident API. Setting the person back to Active restores access. It's one rule (`resident_access_problem()` in `backend/legacy_app.py`), tested in `tests/test_resident_access.py`.
+
+**Accounts not linked to a specific owner or tenant can't be checked this way** and keep access to their unit. Link every resident account to its person.
+
 ## 2. How it is enforced
 
 | Layer | Mechanism | File |

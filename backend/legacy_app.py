@@ -140,7 +140,14 @@ def current_user():
 def login_required(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        if not current_user():
+        u = current_user()
+        if not u:
+            return redirect(url_for("login"))
+        if u.role == RESIDENT and resident_access_problem(u):
+            # Same rule as @guarded: a resident whose access ended is signed out.
+            problem = resident_access_problem(u)
+            session.clear()
+            flash(problem, "warning")
             return redirect(url_for("login"))
         return fn(*args, **kwargs)
     return wrapper
@@ -193,6 +200,12 @@ def guarded(fn):
         u = current_user()
         if not u:
             return redirect(url_for("login"))
+        if u.role == RESIDENT:
+            problem = resident_access_problem(u)
+            if problem:
+                session.clear()
+                flash(problem, "warning")
+                return redirect(url_for("login"))
         if not _role_can(u.role, endpoint):
             flash("You do not have permission to access this function.", "danger")
             home = home_endpoint(u)
@@ -4440,16 +4453,41 @@ from app.routes.spa import make_spa_blueprint  # noqa: E402
 from app.utils.auth import init_auth  # noqa: E402
 
 
-def resident_unit_id(user):
-    """The unit a resident account is linked to (None when not linked or inactive)."""
+def resident_access_problem(user):
+    """Why a resident may NOT use the portal right now, or None when access is fine.
+
+    Access ends automatically when the owner/tenant record the account is linked to is
+    no longer "Current" (moved out) or has left the unit, or when the account or unit is
+    deactivated. Accounts not linked to a specific owner/tenant cannot be checked this
+    way and keep access to their unit (link them under Resident Accounts)."""
     profile = getattr(user, "resident_profile", None)
-    return profile.unit_id if profile and profile.active else None
+    if not profile:
+        return "Your resident account is not linked to a unit yet. Please contact the administrator."
+    if not profile.active:
+        return "Your resident portal access has been deactivated. Please contact the administrator."
+    unit = db.session.get(Unit, profile.unit_id)
+    if not unit or not unit.active:
+        return "Your unit is no longer active in the system. Please contact the administrator."
+    if profile.person_id:
+        model = Tenant if (profile.person_type or "").lower() == "tenant" else Owner
+        person = db.session.get(model, profile.person_id)
+        if not person or person.unit_id != profile.unit_id or person.status != "Current":
+            role_name = "tenant" if model is Tenant else "owner"
+            return (f"Your resident portal access has ended because you are no longer listed as a current "
+                    f"{role_name} of unit {unit.unit_no}. Please contact the administrator if this is a mistake.")
+    return None
 
 
-init_auth(app, current_user=current_user, resident_unit_id=resident_unit_id)
+def resident_unit_id(user):
+    """The resident's unit, or None when they currently have no portal access."""
+    return None if resident_access_problem(user) else user.resident_profile.unit_id
+
+
+init_auth(app, current_user=current_user, resident_unit_id=resident_unit_id,
+          resident_access_problem=resident_access_problem)
 app.register_blueprint(make_auth_blueprint(
     User=User, audit=audit, check_password_hash=check_password_hash,
-    home_endpoint=home_endpoint, resident_unit_id=resident_unit_id,
+    home_endpoint=home_endpoint, resident_access_problem=resident_access_problem,
 ))
 app.register_blueprint(make_resident_blueprint(sys.modules[__name__]))
 app.register_blueprint(make_spa_blueprint(os.path.join(BASE_DIR, "frontend", "dist")))

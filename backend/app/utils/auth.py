@@ -19,9 +19,11 @@ from ..core.roles import RESIDENT, normalize_role
 UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 
-def init_auth(app, *, current_user, resident_unit_id):
-    """current_user() -> User or None;  resident_unit_id(user) -> int or None."""
-    app.extensions["cityland9_auth"] = {"current_user": current_user, "resident_unit_id": resident_unit_id}
+def init_auth(app, *, current_user, resident_unit_id, resident_access_problem=None):
+    """current_user() -> User or None;  resident_unit_id(user) -> int or None (None = no access);
+    resident_access_problem(user) -> reason text or None."""
+    app.extensions["cityland9_auth"] = {"current_user": current_user, "resident_unit_id": resident_unit_id,
+                                        "resident_access_problem": resident_access_problem}
 
 
 def _hooks():
@@ -87,7 +89,10 @@ def require_unit_ownership(unit_param="unit_id"):
             if user.role == RESIDENT:
                 own_unit = _hooks()["resident_unit_id"](user)
                 requested = kwargs.get(unit_param)
-                if own_unit is None or requested is None or int(requested) != int(own_unit):
+                if own_unit is None:
+                    reason = _hooks()["resident_access_problem"]
+                    return json_error(403, (reason(user) if reason else None) or "Your resident portal access is not active.")
+                if requested is None or int(requested) != int(own_unit):
                     current_app.logger.warning("IDOR blocked: resident %s requested unit %s (own unit %s)", user.username, requested, own_unit)
                     return json_error(403, "You can only view your own unit.")
             return fn(*args, **kwargs)
