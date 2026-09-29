@@ -166,7 +166,8 @@ Tables with no relationships: `announcement`, `expense`, `gate_pass`, `audit_log
 3. Server-side defaults matching the app's defaults. `CHECK` constraints for `YYYY-MM` months and non-negative amounts. (S11)
 4. Drop the two unused HR tables, and the unused `hr_*` keys in `setting`. (S9, S13)
 
-**Phase B: needs business decisions**
+**Phase B: business decisions made 2026-09-30:** freeze issued bills · charge storage from the next billing month · one payments ledger with automatic OR numbers · assigned PARKING units only.
+- **B1 ✅ DONE** (migration `0003_freeze_bills`): the engine uses the amounts stored on each bill. At the switchover, every non-edited bill got the amounts it was displaying, and old-code vs new-code figures were identical on a rehearsal copy and on the real database. Storage counts from the month in Rates & Rules → Storage ("Include storage in SOA totals from", set to 2026-10). A logged **Recalculate from current rates** button is available to Admin/Accounting (`recalculate_soa`). The penalty *rate* still follows the current setting (step 10, dated rates, is not needed for frozen amounts).
 5. **Freeze issued bills (S1):** a bill's stored amounts become the truth once issued ("posted"). Recalculation happens only for draft bills or through an explicit "Recalculate SOA" action that's logged. This needs Q1 answered and D13 fixed first.
 6. **One payments ledger (S2):** a `receipt` table (OR number, date, method, reference, amount, unit, received_by) plus `receipt_allocation` rows that apply it to a bill, water charge, or advance. The existing three sources are migrated into it. Collections reports then read one table.
 7. **One parking model (S5):** keep assigned PARKING units (the V10.28 design), migrate the `parking_lot` rows, and retire `parking_lot`/`parking_billing`.

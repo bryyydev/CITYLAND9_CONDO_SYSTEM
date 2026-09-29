@@ -9,7 +9,7 @@ from datetime import datetime, date
 from decimal import Decimal, InvalidOperation
 from functools import wraps
 
-from flask import Flask, render_template, request, redirect, url_for, session, flash, send_file, g, jsonify, abort, has_request_context
+from flask import Flask, render_template, request, redirect, url_for, session, flash, send_file, g, jsonify, abort, has_request_context, has_app_context
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import or_, inspect, func, event as sa_event
 from sqlalchemy.orm import selectinload, validates, deferred, declared_attr
@@ -330,6 +330,21 @@ def storage_dues(unit):
     return asset_unit_charge(assigned, "storage_rate_per_sqm")
 
 
+def storage_cutoff():
+    """First billing month whose SOA total includes storage dues (Rates & Rules > Storage).
+    Earlier bills keep their original totals (decision on D13, 2026-09-30).
+    '9999-12' (never) when the setting is missing, i.e. the old behaviour."""
+    if has_app_context():
+        if "_storage_cutoff" not in g:
+            g._storage_cutoff = setting("storage_in_total_from", "9999-12")
+        return g._storage_cutoff
+    return setting("storage_in_total_from", "9999-12")
+
+
+def storage_charged(bill):
+    return bool(bill.billing_month) and bill.billing_month >= storage_cutoff()
+
+
 def water_amount_for_reading(reading):
     if not reading or setting("water_auto_compute", "1") != "1":
         return Decimal("0")
@@ -490,8 +505,11 @@ def _prepare_bill_calculation_cache():
                     penalty = money(bill.penalty)
                     previous = money(bill.previous_balance)
                 else:
-                    condo = money(unit_dues(bill.unit))
-                    parking = money(parking_dues(bill.unit))
+                    # Issued bills are frozen: condo dues and parking are the amounts stored
+                    # when the bill was generated (or last recalculated on purpose), not
+                    # today's rates. Water follows the month's reading, as before.
+                    condo = money(bill.assessment)
+                    parking = money(bill.parking_dues)
                     reading = water_map.get((bill.unit_id, bill.billing_month))
                     water = money(reading.bill_amount) if reading else money(bill.water)
                     penalty = (
@@ -500,7 +518,8 @@ def _prepare_bill_calculation_cache():
                     )
                     previous = running_previous
 
-                current = condo + parking + water
+                storage = money(bill.storage_dues) if storage_charged(bill) else Decimal("0.00")
+                current = condo + parking + storage + water
                 reading = water_map.get((bill.unit_id, bill.billing_month))
                 if reading and getattr(reading, "paid", False):
                     current -= water
@@ -515,6 +534,7 @@ def _prepare_bill_calculation_cache():
                 result[bill.id] = {
                     "condo": condo,
                     "parking": parking,
+                    "storage": storage,
                     "water": water,
                     "penalty": penalty,
                     "previous": previous,
@@ -538,7 +558,7 @@ def _prepare_bill_calculation_cache():
                 calc = result[bill.id]
                 condo_base = max(calc["condo"] - calc["advance"], Decimal("0"))
                 parking_base = max(calc["parking"], Decimal("0"))
-                storage_base = max(money(bill.storage_dues), Decimal("0"))
+                storage_base = max(calc["storage"], Decimal("0"))
                 water_base = max(calc["water"], Decimal("0"))
                 reading = calc.get("reading")
                 if reading and getattr(reading, "paid", False):
@@ -573,6 +593,7 @@ def _bill_calc(bill):
     return cache.get(bill.id, {
         "condo": Decimal("0.00"),
         "parking": Decimal("0.00"),
+        "storage": Decimal("0.00"),
         "water": money(bill.water),
         "penalty": money(bill.penalty),
         "previous": money(bill.previous_balance),
@@ -623,9 +644,9 @@ def selected_penalty_base_for_unit(unit_id, month):
     for prior in _billing_history_for_unit(unit_id):
         if prior.billing_month >= month:
             break
-        condo = money(unit_dues(prior.unit))
-        parking = money(parking_dues(prior.unit))
-        storage = max(money(prior.storage_dues), Decimal("0"))
+        condo = money(prior.assessment)
+        parking = money(prior.parking_dues)
+        storage = max(money(prior.storage_dues), Decimal("0")) if storage_charged(prior) else Decimal("0.00")
         water = money(prior.water)
         reading = _water_reading_for_bill(prior)
         if reading and getattr(reading, "paid", False):
@@ -676,10 +697,7 @@ def allocate_advances_for_month(month, unit_id=None):
 
     for bill in bills:
         # Advance payments apply to condo dues only.
-        if getattr(bill, "soa_manual_override", False):
-            condo = authoritative_bill_values(bill)[0]
-        else:
-            condo = Decimal(str(unit_dues(bill.unit)))
+        condo = money(bill.assessment)  # issued (frozen) condo dues
 
         already = money(advance_for_bill(bill))
         need = max(money(condo) - already, Decimal("0"))
@@ -804,7 +822,7 @@ def soa_bill_status(bill):
 
 def soa_bill_total(bill, include_paid_water=False, penalty_amount=None):
     condo, parking, water, penalty, previous = authoritative_bill_values(bill)
-    current = condo + parking + water
+    current = condo + parking + _bill_calc(bill)["storage"] + water
     reading = _water_reading_for_bill(bill)
     if reading and getattr(reading, "paid", False) and not include_paid_water:
         current -= water
@@ -1273,6 +1291,20 @@ app.template_global(name="advance_for_bill")(advance_for_bill)
 app.template_global(name="advance_balance")(advance_balance)
 app.template_global(name="month_shift")(month_shift)
 app.template_global(name="authoritative_bill_values")(authoritative_bill_values)
+app.template_global(name="storage_charged")(storage_charged)
+app.template_global(name="storage_cutoff")(storage_cutoff)
+
+
+@app.template_global()
+def condo_calc_text(bill):
+    """'50.00 sqm × ₱75.00/sqm' when it explains the issued amount; empty when the bill was
+    issued at a different rate (frozen) or edited by hand."""
+    unit = bill.unit
+    rate = float(unit.unit_rate_per_sqm or rate_for_type(unit.unit_type) or 0)
+    area = float(unit.area_sqm or 0)
+    if area and rate and abs(area * rate - float(money(bill.assessment))) < 0.005:
+        return f"{area:,.2f} sqm × ₱{rate:,.2f}/sqm"
+    return ""
 app.template_global(name="rate_for_type")(rate_for_type)
 app.template_global(name="water_payment_status")(water_payment_status)
 app.template_global(name="overdue_months_for_unit")(overdue_months_for_unit)
@@ -2317,6 +2349,35 @@ def edit_soa(bid):
     audit(f"Manual SOA correction for unit {b.unit.unit_no}, billing {b.billing_month}; fields changed: {', '.join(changes) if changes else 'none'}")
     flash("SOA corrections saved and recorded in Audit Logs.","success")
     return redirect(url_for("billing_detail",bid=bid))
+
+
+@app.route("/billing/<int:bid>/recalculate", methods=["POST"])
+@guarded
+def recalculate_soa(bid):
+    """Re-price an issued bill from the unit's CURRENT rates (condo dues, parking, storage).
+    Issued bills never change on their own; this is the explicit, audited way to correct one."""
+    b = db.session.get(Billing, bid)
+    if not b:
+        flash("Bill not found.", "danger"); return redirect(url_for("billing"))
+    if b.soa_manual_override:
+        flash("This SOA was corrected by hand. Use Edit SOA to change its amounts.", "warning")
+        return redirect(url_for("billing_detail", bid=bid))
+    before = (money(b.assessment), money(b.parking_dues), money(b.storage_dues))
+    b.assessment = Decimal(str(unit_dues(b.unit)))
+    b.parking_dues = Decimal(str(parking_dues(b.unit)))
+    b.storage_dues = Decimal(str(storage_dues(b.unit)))
+    after = (money(b.assessment), money(b.parking_dues), money(b.storage_dues))
+    g.pop("_bill_calc_cache", None)
+    b.status = bill_status(b)
+    db.session.commit()
+    if before == after:
+        flash("Recalculated: the current rates give the same amounts. Nothing changed.", "info")
+    else:
+        audit(f"Recalculated SOA for unit {b.unit.unit_no}, billing {b.billing_month} from current rates: "
+              f"condo {before[0]:,.2f}->{after[0]:,.2f}, parking {before[1]:,.2f}->{after[1]:,.2f}, "
+              f"storage {before[2]:,.2f}->{after[2]:,.2f}")
+        flash("SOA recalculated from the current rates and recorded in the Audit Logs.", "success")
+    return redirect(url_for("billing_detail", bid=bid))
 
 
 @app.route("/billing/<int:bid>/qr")
@@ -3419,6 +3480,7 @@ def settings():
         "three_bed_rate_per_sqm": "125",
         "parking_rate_per_sqm": "100",
         "storage_rate_per_sqm": "50",
+        "storage_in_total_from": setting("storage_in_total_from", "9999-12"),
         "penalty_rate": "10",
         "penalty_rate_per_sqm": "10",
         "penalty_day": "8",
@@ -3444,6 +3506,14 @@ def settings():
             row = Setting.query.filter_by(key=key).first() or Setting(key=key)
             if key in checkbox_keys:
                 row.value = "1" if request.form.get(key) == "1" else "0"
+            elif key == "storage_in_total_from":
+                value = (request.form.get(key) or "").strip()
+                if re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", value):
+                    row.value = value
+                else:
+                    if value:
+                        flash("Storage start month must look like 2026-10; the previous value was kept.", "warning")
+                    row.value = row.value or default
             else:
                 row.value = request.form.get(key, default)
             db.session.add(row)
@@ -3898,6 +3968,7 @@ def init_db():
             "three_bed_rate_per_sqm": "125",
             "parking_rate_per_sqm": "100",
             "storage_rate_per_sqm": "50",
+            "storage_in_total_from": month_shift(datetime.now().strftime("%Y-%m"), 1),
             "penalty_rate": "10",
             "penalty_day": "8",
             "online_payment_url": "",

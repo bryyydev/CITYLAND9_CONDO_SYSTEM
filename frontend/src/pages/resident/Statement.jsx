@@ -88,7 +88,10 @@ export default function Statement() {
           <tbody>
             <Line label={`${month} DUES`} amount={c.condoDues} />
             {Number(c.parking) > 0 && <Line label="Parking" amount={c.parking} />}
-            {Number(c.storage) > 0 && <Line label="Storage" amount={c.storage} />}
+            {Number(c.storage) > 0 && (
+              <Line label="Storage" amount={c.storage}
+                detail={c.storageIncluded ? undefined : `Not included in this total (storage is charged from ${monthLabel(c.storageFrom)})`} />
+            )}
             <Line
               label={`${month} WATER`}
               detail={c.waterPaidSeparately ? "Paid separately, not included in the total"

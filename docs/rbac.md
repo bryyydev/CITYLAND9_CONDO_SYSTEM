@@ -11,6 +11,7 @@
 | Dashboard | ✅ | ✅ | — | — | — | — |
 | Units, owners, tenants, parking | ✅ | ✅ (**edit units / add owners fixed, D3**) | — (**was edit-only**) | — (**was edit-only**) | — | — (**was any unit page, D2**) |
 | Billing Management, SOA, payments, QR | ✅ | ✅ | — | — | **✅ read/write** | own SOA only (portal) |
+| Recalculate an issued SOA from current rates (new, B1) | ✅ | ✅ | — | — | ✅ | — |
 | Advance Payments | ✅ | ✅ | — | — | **✅** | — |
 | SOA Email | ✅ | ✅ | — | — | — ❓ | — |
 | Water Readings (incl. water payments) | ✅ | ✅ | — | — | — ❓ | — |

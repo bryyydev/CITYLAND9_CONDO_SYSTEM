@@ -62,7 +62,9 @@ def make_resident_blueprint(legacy):
             "charges": {
                 "condoDues": money(calc["condo"]),
                 "parking": money(calc["parking"]),
-                "storage": money(bill.storage_dues),   # shown like the legacy SOA (see checklist D13)
+                "storage": money(bill.storage_dues),
+                "storageIncluded": legacy.storage_charged(bill),   # D13: only from the cut-off month
+                "storageFrom": legacy.storage_cutoff(),
                 "water": money(calc["water"]),
                 "waterUsage": round(reading.usage, 2) if reading else None,
                 "waterRate": money(reading.rate) if reading else None,
