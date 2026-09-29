@@ -85,6 +85,10 @@ def main():
     mst.compare_schema(target, metadata)
     if mst.FAILURES:
         sys.exit("Stopped: the created schema does not match the models.")
+    # schema.sql is always the latest schema: record that for future migrations.
+    from alembic import command
+    from alembic.config import Config
+    command.stamp(Config(os.path.join(ROOT, "database", "alembic.ini")), "head")
 
     step(4, "Copying rows (one transaction, foreign keys checked)")
     source = create_engine("sqlite:///file:" + os.path.abspath(backup).replace("\\", "/") + "?mode=ro&uri=True")

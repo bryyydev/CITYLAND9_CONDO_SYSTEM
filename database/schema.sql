@@ -6,7 +6,7 @@
 --   CREATE DATABASE cityland9 CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 --   mysql -u <user> -p cityland9 < database/schema.sql
 --
--- Tables: 31 (ordered so foreign-key targets are created first)
+-- Tables: 29 (ordered so foreign-key targets are created first)
 
 SET NAMES utf8mb4;
 
@@ -46,19 +46,10 @@ CREATE TABLE employee (
 	monthly_salary NUMERIC(12, 2), 
 	notes VARCHAR(500), 
 	created_at DATETIME(6), 
+	updated_at DATETIME(6), 
+	updated_by VARCHAR(80), 
 	PRIMARY KEY (id), 
 	UNIQUE (employee_no)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
-
--- employee_holiday
-CREATE TABLE employee_holiday (
-	id INTEGER NOT NULL AUTO_INCREMENT, 
-	holiday_date DATE NOT NULL, 
-	name VARCHAR(200) NOT NULL, 
-	holiday_type VARCHAR(30), 
-	active BOOL, 
-	PRIMARY KEY (id), 
-	UNIQUE (holiday_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 -- employee_hr_setting
@@ -66,6 +57,8 @@ CREATE TABLE employee_hr_setting (
 	id INTEGER NOT NULL AUTO_INCREMENT, 
 	`key` VARCHAR(80) NOT NULL, 
 	value VARCHAR(255), 
+	updated_at DATETIME(6), 
+	updated_by VARCHAR(80), 
 	PRIMARY KEY (id), 
 	UNIQUE (`key`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
@@ -77,6 +70,8 @@ CREATE TABLE expense (
 	category VARCHAR(100), 
 	description VARCHAR(300), 
 	amount NUMERIC(12, 2), 
+	updated_at DATETIME(6), 
+	updated_by VARCHAR(80), 
 	PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
@@ -96,6 +91,8 @@ CREATE TABLE setting (
 	id INTEGER NOT NULL AUTO_INCREMENT, 
 	`key` VARCHAR(80), 
 	value VARCHAR(255), 
+	updated_at DATETIME(6), 
+	updated_by VARCHAR(80), 
 	PRIMARY KEY (id), 
 	UNIQUE (`key`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
@@ -126,6 +123,8 @@ CREATE TABLE unit (
 	occupancy_type VARCHAR(20), 
 	status VARCHAR(30), 
 	active BOOL, 
+	updated_at DATETIME(6), 
+	updated_by VARCHAR(80), 
 	PRIMARY KEY (id), 
 	UNIQUE (unit_no), 
 	FOREIGN KEY(assigned_parking_unit_id) REFERENCES unit (id), 
@@ -140,6 +139,8 @@ CREATE TABLE user (
 	`role` ENUM('super_admin','admin','manager','staff','accounting','resident'), 
 	active BOOL, 
 	created_at DATETIME(6), 
+	updated_at DATETIME(6), 
+	updated_by VARCHAR(80), 
 	PRIMARY KEY (id), 
 	UNIQUE (username)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
@@ -171,7 +172,12 @@ CREATE TABLE advance_payment (
 	payment_method VARCHAR(20), 
 	reference VARCHAR(100), 
 	remarks VARCHAR(300), 
+	updated_at DATETIME(6), 
+	updated_by VARCHAR(80), 
 	PRIMARY KEY (id), 
+	CONSTRAINT ck_advance_payment_month_format CHECK (start_month LIKE '____-__' AND SUBSTR(start_month, 1, 4) BETWEEN '1900' AND '2999' AND SUBSTR(start_month, 6, 2) BETWEEN '01' AND '12'), 
+	CONSTRAINT ck_advance_payment_amount_nonneg CHECK (amount >= 0), 
+	CONSTRAINT ck_advance_payment_coverage_min CHECK (coverage_months >= 1), 
 	FOREIGN KEY(unit_id) REFERENCES unit (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
@@ -195,7 +201,13 @@ CREATE TABLE billing (
 	soa_note VARCHAR(1000), 
 	soa_manual_override BOOL, 
 	created_at DATETIME(6), 
+	updated_at DATETIME(6), 
+	updated_by VARCHAR(80), 
 	PRIMARY KEY (id), 
+	CONSTRAINT uq_billing_unit_month UNIQUE (unit_id, billing_month), 
+	CONSTRAINT ck_billing_month_format CHECK (billing_month LIKE '____-__' AND SUBSTR(billing_month, 1, 4) BETWEEN '1900' AND '2999' AND SUBSTR(billing_month, 6, 2) BETWEEN '01' AND '12'), 
+	CONSTRAINT ck_billing_amount_paid_nonneg CHECK (amount_paid >= 0), 
+	CONSTRAINT ck_billing_previous_balance_nonneg CHECK (previous_balance >= 0), 
 	FOREIGN KEY(unit_id) REFERENCES unit (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 CREATE INDEX ix_billing_month ON billing (billing_month);
@@ -229,6 +241,7 @@ CREATE TABLE employee_attendance (
 	remarks VARCHAR(255), 
 	created_at DATETIME(6), 
 	PRIMARY KEY (id), 
+	CONSTRAINT uq_employee_attendance_day UNIQUE (employee_id, attendance_date), 
 	FOREIGN KEY(employee_id) REFERENCES employee (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 CREATE INDEX ix_employee_attendance_attendance_date ON employee_attendance (attendance_date);
@@ -245,6 +258,8 @@ CREATE TABLE employee_hr_loan (
 	monthly_deduction NUMERIC(12, 2), 
 	status VARCHAR(20), 
 	notes VARCHAR(300), 
+	updated_at DATETIME(6), 
+	updated_by VARCHAR(80), 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(employee_id) REFERENCES employee (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
@@ -263,6 +278,7 @@ CREATE TABLE employee_leave (
 	approved_by VARCHAR(100), 
 	created_at DATETIME(6), 
 	PRIMARY KEY (id), 
+	CONSTRAINT ck_employee_leave_dates CHECK (end_date >= start_date), 
 	FOREIGN KEY(employee_id) REFERENCES employee (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 CREATE INDEX ix_employee_leave_employee_id ON employee_leave (employee_id);
@@ -301,6 +317,8 @@ CREATE TABLE employee_payroll (
 	status VARCHAR(20) NOT NULL, 
 	remarks VARCHAR(255), 
 	created_at DATETIME(6), 
+	updated_at DATETIME(6), 
+	updated_by VARCHAR(80), 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(employee_id) REFERENCES employee (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
@@ -340,6 +358,8 @@ CREATE TABLE owner (
 	receive_soa_email BOOL, 
 	include_in_soa BOOL, 
 	created_at DATETIME(6), 
+	updated_at DATETIME(6), 
+	updated_by VARCHAR(80), 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(unit_id) REFERENCES unit (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
@@ -359,6 +379,8 @@ CREATE TABLE parking_lot (
 	include_in_soa_owner BOOL, 
 	include_in_soa_tenant BOOL, 
 	created_at DATETIME(6), 
+	updated_at DATETIME(6), 
+	updated_by VARCHAR(80), 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(unit_id) REFERENCES unit (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
@@ -373,6 +395,8 @@ CREATE TABLE resident_profile (
 	display_name VARCHAR(200) NOT NULL, 
 	active BOOL, 
 	created_at DATETIME(6), 
+	updated_at DATETIME(6), 
+	updated_by VARCHAR(80), 
 	PRIMARY KEY (id), 
 	UNIQUE (user_id), 
 	FOREIGN KEY(user_id) REFERENCES user (id), 
@@ -394,6 +418,8 @@ CREATE TABLE tenant (
 	receive_soa_email BOOL, 
 	include_in_soa BOOL, 
 	created_at DATETIME(6), 
+	updated_at DATETIME(6), 
+	updated_by VARCHAR(80), 
 	PRIMARY KEY (id), 
 	FOREIGN KEY(unit_id) REFERENCES unit (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
@@ -413,7 +439,11 @@ CREATE TABLE water_reading (
 	payment_type VARCHAR(20), 
 	payment_reference VARCHAR(100), 
 	paid_date DATE, 
+	updated_at DATETIME(6), 
+	updated_by VARCHAR(80), 
 	PRIMARY KEY (id), 
+	CONSTRAINT uq_water_unit_month UNIQUE (unit_id, reading_month), 
+	CONSTRAINT ck_water_month_format CHECK (reading_month LIKE '____-__' AND SUBSTR(reading_month, 1, 4) BETWEEN '1900' AND '2999' AND SUBSTR(reading_month, 6, 2) BETWEEN '01' AND '12'), 
 	FOREIGN KEY(unit_id) REFERENCES unit (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 CREATE INDEX ix_water_month ON water_reading (reading_month);
@@ -428,6 +458,9 @@ CREATE TABLE advance_application (
 	amount NUMERIC(12, 2), 
 	applied_date DATE, 
 	PRIMARY KEY (id), 
+	CONSTRAINT uq_advance_application_advance_billing UNIQUE (advance_payment_id, billing_id), 
+	CONSTRAINT ck_advance_application_month_format CHECK (billing_month LIKE '____-__' AND SUBSTR(billing_month, 1, 4) BETWEEN '1900' AND '2999' AND SUBSTR(billing_month, 6, 2) BETWEEN '01' AND '12'), 
+	CONSTRAINT ck_advance_application_amount_nonneg CHECK (amount >= 0), 
 	FOREIGN KEY(advance_payment_id) REFERENCES advance_payment (id), 
 	FOREIGN KEY(billing_id) REFERENCES billing (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
@@ -455,18 +488,6 @@ CREATE TABLE employee_payroll_statutory (
 	FOREIGN KEY(payroll_id) REFERENCES employee_payroll (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 CREATE UNIQUE INDEX ix_employee_payroll_statutory_payroll_id ON employee_payroll_statutory (payroll_id);
-
--- employee_payslip_item
-CREATE TABLE employee_payslip_item (
-	id INTEGER NOT NULL AUTO_INCREMENT, 
-	payroll_id INTEGER NOT NULL, 
-	item_type VARCHAR(30) NOT NULL, 
-	description VARCHAR(150) NOT NULL, 
-	amount NUMERIC(12, 2), 
-	PRIMARY KEY (id), 
-	FOREIGN KEY(payroll_id) REFERENCES employee_payroll (id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
-CREATE INDEX ix_employee_payslip_item_payroll_id ON employee_payslip_item (payroll_id);
 
 -- maintenance_ticket
 CREATE TABLE maintenance_ticket (
@@ -502,6 +523,8 @@ CREATE TABLE parking_billing (
 	status VARCHAR(30), 
 	created_at DATETIME(6), 
 	PRIMARY KEY (id), 
+	CONSTRAINT uq_parking_billing_lot_month UNIQUE (parking_lot_id, billing_month), 
+	CONSTRAINT ck_parking_billing_month_format CHECK (billing_month LIKE '____-__' AND SUBSTR(billing_month, 1, 4) BETWEEN '1900' AND '2999' AND SUBSTR(billing_month, 6, 2) BETWEEN '01' AND '12'), 
 	FOREIGN KEY(parking_lot_id) REFERENCES parking_lot (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 CREATE INDEX ix_parking_billing_lot_month ON parking_billing (parking_lot_id, billing_month);
@@ -516,7 +539,10 @@ CREATE TABLE payment (
 	payment_type VARCHAR(20), 
 	reference VARCHAR(100), 
 	remarks VARCHAR(300), 
+	updated_at DATETIME(6), 
+	updated_by VARCHAR(80), 
 	PRIMARY KEY (id), 
+	CONSTRAINT ck_payment_amount_nonneg CHECK (amount >= 0), 
 	FOREIGN KEY(billing_id) REFERENCES billing (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 CREATE INDEX ix_payment_billing ON payment (billing_id);

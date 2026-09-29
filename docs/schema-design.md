@@ -157,7 +157,10 @@ Tables with no relationships: `announcement`, `expense`, `gate_pass`, `audit_log
 
 ## 4. Proposed improvements (in safe order; each step needs approval)
 
-**Phase A: integrity only, no behavior change** (Alembic migrations, reversible)
+**Phase A: integrity only, no behavior change. ✅ DONE 2026-09-30** (migration `0002_phase_a`, applied to the local MySQL database)
+- Done: steps 1 (5 UNIQUE constraints), 2 (`updated_at`/`updated_by` on 16 tables, stamped automatically on every save; the `audit_log` entity columns were **not** added, because filling them needs changes at ~60 call sites, so that moves to Phase B), 3 (12 CHECK constraints; server defaults were **deferred**: they only matter for inserts made outside the app), and 4.
+- Evidence: rehearsal on a copy (upgrade → invalid rows rejected → downgrade → upgrade), real upgrade with backup + schema check + identical bill figures, 70 pytest, 37/37 account checks, 42/42 legacy pages, and a SQLite rollback copy still opens.
+- How: `python database/db_migrate.py status | upgrade | downgrade 0001_baseline`. It backs up first and verifies afterwards.
 1. After checking existing data for duplicates: `UNIQUE (unit_id, billing_month)` on `billing`, `water_reading` and `parking_billing`; `UNIQUE (employee_id, attendance_date)`; `UNIQUE (advance_payment_id, billing_id)`. (S6)
 2. `updated_at` on the financial and master tables. Add `entity`/`entity_id` columns to `audit_log`. (S12)
 3. Server-side defaults matching the app's defaults. `CHECK` constraints for `YYYY-MM` months and non-negative amounts. (S11)

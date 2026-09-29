@@ -6,6 +6,7 @@
 - `.env` holds `DB_ENGINE=mysql`, the `MYSQL_*` settings with generated passwords, and a random `SECRET_KEY`. `backend/run.py` starts the database server automatically.
 - Tools: `database/local_mysql.py {init,start,stop,status,backup}`, `database/tools/migrate_sqlite_to_mysql.py --confirm`, `database/tools/bill_snapshot.py`.
 - On MySQL, the Excel import takes a `mysqldump` backup first and refuses to import if the backup fails (I6).
+- Schema changes: Alembic revisions in `database/migrations/versions/`, applied with `python database/db_migrate.py upgrade` (backup → migrate → schema check → bill golden master). Current revision: `0002_phase_a` (docs/schema-design.md Phase A).
 - **Rollback:** set `DB_ENGINE=sqlite` in `.env` and restart. The SQLite file hasn't been used since the switch, except for 6 test sign-in audit rows written by a stale server process during verification. Anything entered in MySQL after the switch won't be in SQLite.
 
 The original plan text follows.

@@ -9,10 +9,10 @@ from datetime import datetime, date
 from decimal import Decimal, InvalidOperation
 from functools import wraps
 
-from flask import Flask, render_template, request, redirect, url_for, session, flash, send_file, g, jsonify, abort
+from flask import Flask, render_template, request, redirect, url_for, session, flash, send_file, g, jsonify, abort, has_request_context
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import or_, inspect, func
-from sqlalchemy.orm import selectinload, validates
+from sqlalchemy import or_, inspect, func, event as sa_event
+from sqlalchemy.orm import selectinload, validates, deferred, declared_attr
 from sqlalchemy.dialects.mysql import ENUM as MYSQL_ENUM
 from werkzeug.security import generate_password_hash, check_password_hash
 from io import BytesIO
@@ -80,6 +80,41 @@ app.config.update(
     SESSION_COOKIE_SAMESITE="Lax",
 )
 db = SQLAlchemy(app)
+
+
+class ChangeTracked:
+    """Who last changed a row and when. Filled in automatically on every save
+    (schema Phase A, docs/schema-design.md S12).
+
+    The columns are deferred (loaded only when read), so normal queries do not depend
+    on them: reading still works against a database that has not been migrated yet
+    (e.g. the golden-master snapshot taken just before the migration)."""
+
+    @declared_attr
+    def updated_at(cls):
+        return deferred(db.Column(db.DateTime, nullable=True))
+
+    @declared_attr
+    def updated_by(cls):
+        return deferred(db.Column(db.String(80), nullable=True))
+
+
+def month_check(column, name):
+    """CHECK that a 'YYYY-MM' text column really holds a month (works on SQLite and MySQL)."""
+    return db.CheckConstraint(
+        f"{column} LIKE '____-__' AND SUBSTR({column}, 1, 4) BETWEEN '1900' AND '2999' "
+        f"AND SUBSTR({column}, 6, 2) BETWEEN '01' AND '12'", name=name)
+
+
+@sa_event.listens_for(db.session, "before_flush")
+def _stamp_changes(sess, flush_context, instances):
+    who = (session.get("username") if has_request_context() else None) or "system"
+    now = datetime.utcnow()
+    changed = list(sess.new) + [o for o in sess.dirty if sess.is_modified(o, include_collections=False)]
+    for obj in changed:
+        if isinstance(obj, ChangeTracked):
+            obj.updated_at = now
+            obj.updated_by = who
 
 
 # -----------------------------
@@ -826,7 +861,7 @@ def parking_charge_for_month(parking, month):
 # -----------------------------
 # Models
 # -----------------------------
-class User(db.Model):
+class User(ChangeTracked, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
@@ -843,7 +878,7 @@ class User(db.Model):
         return value
 
 
-class Unit(db.Model):
+class Unit(ChangeTracked, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     unit_no = db.Column(db.String(40), unique=True, nullable=False)
     floor = db.Column(db.String(20))
@@ -900,7 +935,7 @@ class Unit(db.Model):
     bills = db.relationship("Billing", back_populates="unit", lazy=True)
 
 
-class Owner(db.Model):
+class Owner(ChangeTracked, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     unit_id = db.Column(db.Integer, db.ForeignKey("unit.id"), nullable=False)
     owner_name = db.Column(db.String(200), nullable=False)
@@ -916,7 +951,7 @@ class Owner(db.Model):
     unit = db.relationship("Unit", back_populates="owners")
 
 
-class Tenant(db.Model):
+class Tenant(ChangeTracked, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     unit_id = db.Column(db.Integer, db.ForeignKey("unit.id"), nullable=False)
     tenant_name = db.Column(db.String(200), nullable=False)
@@ -933,7 +968,7 @@ class Tenant(db.Model):
     unit = db.relationship("Unit", back_populates="tenants")
 
 
-class ParkingLot(db.Model):
+class ParkingLot(ChangeTracked, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     unit_id = db.Column(db.Integer, db.ForeignKey("unit.id"), nullable=False)
     slot_no = db.Column(db.String(80), nullable=False)
@@ -952,7 +987,9 @@ class ParkingLot(db.Model):
 
 
 class ParkingBilling(db.Model):
-    __table_args__ = (db.Index("ix_parking_billing_lot_month", "parking_lot_id", "billing_month"),)
+    __table_args__ = (db.Index("ix_parking_billing_lot_month", "parking_lot_id", "billing_month"),
+                      db.UniqueConstraint("parking_lot_id", "billing_month", name="uq_parking_billing_lot_month"),
+                      month_check("billing_month", "ck_parking_billing_month_format"))
     id = db.Column(db.Integer, primary_key=True)
     parking_lot_id = db.Column(db.Integer, db.ForeignKey("parking_lot.id"), nullable=False)
     billing_month = db.Column(db.String(7), nullable=False)
@@ -964,8 +1001,12 @@ class ParkingBilling(db.Model):
     parking_lot = db.relationship("ParkingLot", back_populates="billing_records")
 
 
-class Billing(db.Model):
-    __table_args__ = (db.Index("ix_billing_unit_month", "unit_id", "billing_month"), db.Index("ix_billing_month", "billing_month"),)
+class Billing(ChangeTracked, db.Model):
+    __table_args__ = (db.Index("ix_billing_unit_month", "unit_id", "billing_month"), db.Index("ix_billing_month", "billing_month"),
+                      db.UniqueConstraint("unit_id", "billing_month", name="uq_billing_unit_month"),
+                      month_check("billing_month", "ck_billing_month_format"),
+                      db.CheckConstraint("amount_paid >= 0", name="ck_billing_amount_paid_nonneg"),
+                      db.CheckConstraint("previous_balance >= 0", name="ck_billing_previous_balance_nonneg"))
     id = db.Column(db.Integer, primary_key=True)
     unit_id = db.Column(db.Integer, db.ForeignKey("unit.id"), nullable=False)
     billing_month = db.Column(db.String(7), nullable=False)
@@ -988,8 +1029,8 @@ class Billing(db.Model):
     payments = db.relationship("Payment", back_populates="billing", lazy=True, cascade="all, delete-orphan")
 
 
-class Payment(db.Model):
-    __table_args__ = (db.Index("ix_payment_billing", "billing_id"),)
+class Payment(ChangeTracked, db.Model):
+    __table_args__ = (db.Index("ix_payment_billing", "billing_id"), db.CheckConstraint("amount >= 0", name="ck_payment_amount_nonneg"))
     id = db.Column(db.Integer, primary_key=True)
     billing_id = db.Column(db.Integer, db.ForeignKey("billing.id"), nullable=False)
     amount = db.Column(db.Numeric(12, 2), default=0)
@@ -1001,7 +1042,10 @@ class Payment(db.Model):
     billing = db.relationship("Billing", back_populates="payments")
 
 
-class AdvancePayment(db.Model):
+class AdvancePayment(ChangeTracked, db.Model):
+    __table_args__ = (month_check("start_month", "ck_advance_payment_month_format"),
+                      db.CheckConstraint("amount >= 0", name="ck_advance_payment_amount_nonneg"),
+                      db.CheckConstraint("coverage_months >= 1", name="ck_advance_payment_coverage_min"))
     id = db.Column(db.Integer, primary_key=True)
     unit_id = db.Column(db.Integer, db.ForeignKey("unit.id"), nullable=False)
     payment_date = db.Column(db.Date, default=date.today)
@@ -1017,7 +1061,10 @@ class AdvancePayment(db.Model):
 
 
 class AdvanceApplication(db.Model):
-    __table_args__ = (db.Index("ix_advance_application_advance", "advance_payment_id"), db.Index("ix_advance_application_billing", "billing_id"),)
+    __table_args__ = (db.Index("ix_advance_application_advance", "advance_payment_id"), db.Index("ix_advance_application_billing", "billing_id"),
+                      db.UniqueConstraint("advance_payment_id", "billing_id", name="uq_advance_application_advance_billing"),
+                      month_check("billing_month", "ck_advance_application_month_format"),
+                      db.CheckConstraint("amount >= 0", name="ck_advance_application_amount_nonneg"))
     id = db.Column(db.Integer, primary_key=True)
     advance_payment_id = db.Column(db.Integer, db.ForeignKey("advance_payment.id"), nullable=False)
     billing_id = db.Column(db.Integer, db.ForeignKey("billing.id"), nullable=False)
@@ -1028,8 +1075,10 @@ class AdvanceApplication(db.Model):
     billing = db.relationship("Billing")
 
 
-class WaterReading(db.Model):
-    __table_args__ = (db.Index("ix_water_unit_month", "unit_id", "reading_month"), db.Index("ix_water_month", "reading_month"),)
+class WaterReading(ChangeTracked, db.Model):
+    __table_args__ = (db.Index("ix_water_unit_month", "unit_id", "reading_month"), db.Index("ix_water_month", "reading_month"),
+                      db.UniqueConstraint("unit_id", "reading_month", name="uq_water_unit_month"),
+                      month_check("reading_month", "ck_water_month_format"))
     id = db.Column(db.Integer, primary_key=True)
     unit_id = db.Column(db.Integer, db.ForeignKey("unit.id"), nullable=False)
     reading_month = db.Column(db.String(7), nullable=False)
@@ -1055,7 +1104,7 @@ class WaterReading(db.Model):
         return round(self.usage * float(self.rate or 0), 2)
 
 
-class Employee(db.Model):
+class Employee(ChangeTracked, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     employee_no = db.Column(db.String(50), unique=True, nullable=False)
     full_name = db.Column(db.String(200), nullable=False)
@@ -1070,7 +1119,7 @@ class Employee(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
-class Expense(db.Model):
+class Expense(ChangeTracked, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     expense_date = db.Column(db.Date, default=date.today)
     category = db.Column(db.String(100))
@@ -1109,7 +1158,7 @@ class AuditLog(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
-class Setting(db.Model):
+class Setting(ChangeTracked, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     key = db.Column(db.String(80), unique=True)
     value = db.Column(db.String(255))
@@ -1118,7 +1167,7 @@ class Setting(db.Model):
 # -----------------------------
 # V10.63 Community foundation
 # -----------------------------
-class ResidentProfile(db.Model):
+class ResidentProfile(ChangeTracked, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), unique=True, nullable=False)
     unit_id = db.Column(db.Integer, db.ForeignKey("unit.id"), nullable=False)
@@ -3384,35 +3433,6 @@ def settings():
         "smtp_sender": "",
         "smtp_username": "",
         "smtp_password": "",
-        # Philippine payroll / statutory settings (editable under HR Payroll Rules)
-        "hr_working_days": "26",
-        "hr_work_hours_per_day": "8",
-        "hr_grace_minutes": "5",
-        "hr_sss_employee_rate": "5",
-        "hr_sss_employer_rate": "10",
-        "hr_sss_max_msc": "35000",
-        "hr_sss_ec_threshold": "14500",
-        "hr_sss_ec_low": "10",
-        "hr_sss_ec_high": "30",
-        "hr_philhealth_rate": "5",
-        "hr_philhealth_min_base": "10000",
-        "hr_philhealth_max_base": "100000",
-        "hr_philhealth_employee_share": "50",
-        "hr_pagibig_max_base": "5000",
-        "hr_pagibig_low_rate": "1",
-        "hr_pagibig_high_rate": "2",
-        "hr_pagibig_employer_rate": "2",
-        "hr_bir_exempt_threshold": "20833",
-        "hr_bir_bracket2": "33332",
-        "hr_bir_bracket3": "66666",
-        "hr_bir_bracket4": "166666",
-        "hr_bir_bracket5": "666666",
-        "hr_bir_rate2": "15",
-        "hr_bir_rate3": "20",
-        "hr_bir_rate4": "25",
-        "hr_bir_rate5": "30",
-        "hr_bir_rate6": "35",
-        "hr_13th_month_ceiling": "90000",
     }
 
     if request.method == "POST":
@@ -3781,10 +3801,14 @@ def init_db():
                     "paid_date": "DATE",
                 },
             }
+            for tracked_model in ChangeTracked.__subclasses__():
+                migrations.setdefault(tracked_model.__tablename__, {}).update({"updated_at": "DATETIME", "updated_by": "VARCHAR(80)"})
             pending = []
             with db.engine.connect() as conn:
                 for table, columns in migrations.items():
                     existing = {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})").fetchall()}
+                    if not existing:
+                        continue  # table not created yet (HR tables are created on first use)
                     pending.extend((table, name, definition) for name, definition in columns.items() if name not in existing)
 
             if pending:
@@ -3907,6 +3931,7 @@ from decimal import Decimal as _Decimal
 
 class EmployeeAttendance(db.Model):
     __tablename__ = "employee_attendance"
+    __table_args__ = (db.UniqueConstraint("employee_id", "attendance_date", name="uq_employee_attendance_day"),)
     id = db.Column(db.Integer, primary_key=True)
     employee_id = db.Column(db.Integer, db.ForeignKey("employee.id"), nullable=False, index=True)
     attendance_date = db.Column(db.Date, nullable=False, index=True)
@@ -3916,7 +3941,7 @@ class EmployeeAttendance(db.Model):
     remarks = db.Column(db.String(255), nullable=True)
     created_at = db.Column(db.DateTime, default=_dt_datetime.utcnow)
 
-class EmployeePayroll(db.Model):
+class EmployeePayroll(ChangeTracked, db.Model):
     __tablename__ = "employee_payroll"
     id = db.Column(db.Integer, primary_key=True)
     employee_id = db.Column(db.Integer, db.ForeignKey("employee.id"), nullable=False, index=True)
@@ -4278,6 +4303,7 @@ def employee_13th_month():
 # ============================================================
 class EmployeeLeave(db.Model):
     __tablename__ = "employee_leave"
+    __table_args__ = (db.CheckConstraint("end_date >= start_date", name="ck_employee_leave_dates"),)
     id=db.Column(db.Integer,primary_key=True)
     employee_id=db.Column(db.Integer,db.ForeignKey("employee.id"),nullable=False,index=True)
     leave_type=db.Column(db.String(50),nullable=False)
@@ -4302,7 +4328,7 @@ class EmployeeOvertime(db.Model):
     approved_by=db.Column(db.String(100))
     created_at=db.Column(db.DateTime,default=_dt_datetime.utcnow)
 
-class EmployeeHRLoan(db.Model):
+class EmployeeHRLoan(ChangeTracked, db.Model):
     __tablename__="employee_hr_loan"
     id=db.Column(db.Integer,primary_key=True)
     employee_id=db.Column(db.Integer,db.ForeignKey("employee.id"),nullable=False,index=True)
@@ -4314,23 +4340,7 @@ class EmployeeHRLoan(db.Model):
     status=db.Column(db.String(20),default="ACTIVE")
     notes=db.Column(db.String(300))
 
-class EmployeePayslipItem(db.Model):
-    __tablename__="employee_payslip_item"
-    id=db.Column(db.Integer,primary_key=True)
-    payroll_id=db.Column(db.Integer,db.ForeignKey("employee_payroll.id"),nullable=False,index=True)
-    item_type=db.Column(db.String(30),nullable=False) # EARNING / DEDUCTION
-    description=db.Column(db.String(150),nullable=False)
-    amount=db.Column(db.Numeric(12,2),default=0)
-
-class EmployeeHoliday(db.Model):
-    __tablename__="employee_holiday"
-    id=db.Column(db.Integer,primary_key=True)
-    holiday_date=db.Column(db.Date,unique=True,nullable=False)
-    name=db.Column(db.String(200),nullable=False)
-    holiday_type=db.Column(db.String(30),default="REGULAR")
-    active=db.Column(db.Boolean,default=True)
-
-class EmployeeHRSetting(db.Model):
+class EmployeeHRSetting(ChangeTracked, db.Model):
     __tablename__="employee_hr_setting"
     id=db.Column(db.Integer,primary_key=True)
     key=db.Column(db.String(80),unique=True,nullable=False)
@@ -4338,7 +4348,7 @@ class EmployeeHRSetting(db.Model):
 
 
 def _v1041_ensure_tables():
-    for model in (EmployeeLeave, EmployeeOvertime, EmployeeHRLoan, EmployeePayslipItem, EmployeeHoliday, EmployeeHRSetting):
+    for model in (EmployeeLeave, EmployeeOvertime, EmployeeHRLoan, EmployeeHRSetting):
         try: model.__table__.create(db.engine,checkfirst=True)
         except Exception: db.session.rollback()
 

@@ -112,7 +112,7 @@ def actual_type(reflected):
 
 def compare_schema(engine, metadata):
     insp = inspect(engine)
-    live_tables = set(insp.get_table_names())
+    live_tables = set(insp.get_table_names()) - {"alembic_version"}  # migration bookkeeping table
     model_tables = {t.name for t in metadata.sorted_tables}
     for missing in sorted(model_tables - live_tables):
         fail(f"table missing in MySQL: {missing}")
