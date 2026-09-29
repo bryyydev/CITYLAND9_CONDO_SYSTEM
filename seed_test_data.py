@@ -13,7 +13,7 @@ from datetime import date
 from decimal import Decimal
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "backend"))
-from legacy_app import app, db, Unit, Owner, Tenant, ParkingLot, ParkingBilling, Billing, Payment, WaterReading  # noqa: E402
+from legacy_app import app, db, Unit, Owner, Tenant, Billing, Payment, WaterReading  # noqa: E402
 
 def add_if_missing():
     with app.app_context():
@@ -70,18 +70,6 @@ def add_if_missing():
             db.session.add(Tenant(unit_id=u.id, tenant_name="Carlos Santos", contact_no="09170000005",
                                   email="carlos.tenant@example.com", move_in=date(2026,2,1),
                                   status="Current", representative=False, notes="TEST DATA"))
-
-        # Parking lot records for parking-page testing.
-        for no,slot,assigned_name in [
-            ("TEST-501","P-TEST-01","Juan Dela Cruz"),
-            ("TEST-502","P-TEST-02","Carlos Santos"),
-        ]:
-            u=residential[no]
-            if not ParkingLot.query.filter_by(slot_no=slot).first():
-                db.session.add(ParkingLot(unit_id=u.id, slot_no=slot, area_sqm=10, rate_per_sqm=100,
-                                          status="Assigned", active=True,
-                                          assigned_to_type="Tenant" if no=="TEST-502" else "Owner",
-                                          assigned_to_name=assigned_name, notes="TEST DATA"))
 
         db.session.flush()
 

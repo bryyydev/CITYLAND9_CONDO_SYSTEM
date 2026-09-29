@@ -12,12 +12,10 @@
 erDiagram
     UNIT ||--o{ OWNER : "has"
     UNIT ||--o{ TENANT : "has"
-    UNIT ||--o{ PARKING_LOT : "old parking model"
-    UNIT |o--o| UNIT : "assigned parking / storage unit (new model)"
+    UNIT |o--o| UNIT : "assigned parking / storage unit"
     UNIT ||--o{ BILLING : "monthly SOA"
     UNIT ||--o{ WATER_READING : "monthly reading"
     UNIT ||--o{ ADVANCE_PAYMENT : "prepaid dues"
-    PARKING_LOT ||--o{ PARKING_BILLING : "per month"
     BILLING ||--o{ PAYMENT : "paid by"
     ADVANCE_PAYMENT ||--o{ ADVANCE_APPLICATION : "applied as"
     BILLING ||--o{ ADVANCE_APPLICATION : "receives"
@@ -169,6 +167,7 @@ Tables with no relationships: `announcement`, `expense`, `gate_pass`, `audit_log
 **Phase B: business decisions made 2026-09-30:** freeze issued bills · charge storage from the next billing month · one payments ledger with automatic OR numbers · assigned PARKING units only.
 - **B1 ✅ DONE** (migration `0003_freeze_bills`): the engine uses the amounts stored on each bill. At the switchover, every non-edited bill got the amounts it was displaying, and old-code vs new-code figures were identical on a rehearsal copy and on the real database. Storage counts from the month in Rates & Rules → Storage ("Include storage in SOA totals from", set to 2026-10). A logged **Recalculate from current rates** button is available to Admin/Accounting (`recalculate_soa`). The penalty *rate* still follows the current setting (step 10, dated rates, is not needed for frozen amounts).
 - **B2 ✅ DONE** (migration `0004_receipts`): `receipt` + `receipt_allocation` tables. Every bill payment, water payment and advance payment now gets an automatic OR number (`OR-<year>-<6 digits>`, per year, no gaps; the number is locked during the save so two cashiers can't get the same one). The existing payment records and balance maths are unchanged. Earlier payments were backfilled (marked "earlier payment") and reconciled to the money recorded. New pages: **Official Receipts** (search, totals by method) and a printable receipt. The SOA and resident portal show the OR number. Not covered: payments loaded by the Excel import (no OR; can be backfilled later), and water readings marked paid with no amount recorded.
+- **B3 ✅ DONE** (migration `0005_one_parking`): parking is a PARKING unit assigned to a residential unit (Edit Unit / Dues → With Parking), charged at that unit's area × rate (or the default parking rate). The migration converts each active lot: a lot that duplicates the assigned PARKING unit is dropped, and a unit with one lot and no assignment gets a new PARKING unit with the same slot no., area and rate. It stops with a report and changes nothing if a unit has several lots, the charges differ, or `parking_billing` has money recorded. Then it checks that every unit's parking charge is identical and drops `parking_lot`, `parking_billing`, `unit.parking_slot` and `unit.parking_slots`. On the real database both demo lots (TEST-501/502) were duplicates. The **Parking** page is now a read-only list of PARKING units and who has them. The SOA now always shows the Parking line it charges (it was hidden unless a lot had an "include in SOA" flag, while ₱1,000 was still in the total). The Excel export no longer has the ParkingLots/ParkingBilling sheets, and the import ignores them. The SQLite importer refuses a SQLite file that still has active lots.
 5. **Freeze issued bills (S1):** a bill's stored amounts become the truth once issued ("posted"). Recalculation happens only for draft bills or through an explicit "Recalculate SOA" action that's logged. This needs Q1 answered and D13 fixed first.
 6. **One payments ledger (S2):** a `receipt` table (OR number, date, method, reference, amount, unit, received_by) plus `receipt_allocation` rows that apply it to a bill, water charge, or advance. The existing three sources are migrated into it. Collections reports then read one table.
 7. **One parking model (S5):** keep assigned PARKING units (the V10.28 design), migrate the `parking_lot` rows, and retire `parking_lot`/`parking_billing`.

@@ -9,7 +9,7 @@
 | Module | Superadmin | Admin | Manager (HR) | Staff | Accounting | Resident |
 |---|---|---|---|---|---|---|
 | Dashboard | ✅ | ✅ | — | — | — | — |
-| Units, owners, tenants, parking | ✅ | ✅ (**edit units / add owners fixed, D3**) | — (**was edit-only**) | — (**was edit-only**) | — | — (**was any unit page, D2**) |
+| Units, owners, tenants, parking (B3: parking list is read-only) | ✅ | ✅ (**edit units / add owners fixed, D3**) | — (**was edit-only**) | — (**was edit-only**) | — | — (**was any unit page, D2**) |
 | Billing Management, SOA, payments, QR | ✅ | ✅ | — | — | **✅ read/write** | own SOA only (portal) |
 | Recalculate an issued SOA from current rates (new, B1) | ✅ | ✅ | — | — | ✅ | — |
 | Official Receipts ledger + printable OR (new, B2) | ✅ | ✅ | — | — | ✅ | own OR numbers on own SOA |

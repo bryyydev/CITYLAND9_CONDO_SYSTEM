@@ -311,17 +311,13 @@ def asset_unit_charge(asset, default_rate_key):
 
 
 def parking_dues(unit):
-    """Parking = total active parking area × parking rate per sqm."""
-    total = 0.0
-    for p in getattr(unit, "parking_lots", []) or []:
-        if p.active:
-            rate = float(p.rate_per_sqm or setting_float("parking_rate_per_sqm", 0))
-            total += float(p.area_sqm or 0) * rate
+    """Parking = the assigned PARKING unit's area × its rate per sqm (or the default parking rate).
+    One parking model since Phase B3; the old per-unit parking lots were converted."""
     assigned = assigned_asset(unit, "assigned_parking_unit_id")
-    if assigned and not total:
-        rate = float(assigned.unit_rate_per_sqm or setting_float("parking_rate_per_sqm", 0))
-        total = float(assigned.area_sqm or 0) * rate
-    return round(total, 2)
+    if not assigned:
+        return 0.0
+    rate = float(assigned.unit_rate_per_sqm or setting_float("parking_rate_per_sqm", 0))
+    return round(float(assigned.area_sqm or 0) * rate, 2)
 
 def storage_dues(unit):
     if not getattr(unit, "include_storage", False):
@@ -428,7 +424,6 @@ def _prepare_bill_calculation_cache():
     bills = (
         Billing.query
         .options(
-            selectinload(Billing.unit).selectinload(Unit.parking_lots),
             selectinload(Billing.unit).selectinload(Unit.assigned_parking_unit),
             selectinload(Billing.unit).selectinload(Unit.assigned_storage_unit),
             selectinload(Billing.unit).selectinload(Unit.tenants),
@@ -858,22 +853,7 @@ def overdue_months_for_unit(unit_id, month=None):
         rows = rows.filter(Billing.billing_month <= month)
     return [b.billing_month for b in rows.order_by(Billing.billing_month.desc()).all() if bill_balance(b) > 0 and b.due_date and date.today() > b.due_date]
 
-def overdue_months_for_parking(parking_id, month=None):
-    lot = db.session.get(ParkingLot, parking_id)
-    if not lot:
-        return []
-    rows = ParkingBilling.query.filter(ParkingBilling.parking_lot_id == parking_id)
-    if month:
-        rows = rows.filter(ParkingBilling.billing_month <= month)
-    records = [r.billing_month for r in rows.order_by(ParkingBilling.billing_month.desc()).all() if money(r.amount) - money(r.amount_paid) > 0 and r.due_date and date.today() > r.due_date]
-    if records:
-        return records
-    # Legacy bills did not have one parking-charge row per lot. For those bills,
-    # the unit's overdue months are also the parking's overdue months.
-    return overdue_months_for_unit(lot.unit_id, month)
 
-def parking_charge_for_month(parking, month):
-    return round(float(parking.area_sqm or 0) * float(parking.rate_per_sqm or setting_float("parking_rate_per_sqm", 0)), 2)
 
 
 # -----------------------------
@@ -920,8 +900,6 @@ class Unit(ChangeTracked, db.Model):
     contact_no = db.Column(db.String(80))
     email = db.Column(db.String(160))
     tenant_name = db.Column(db.String(200))
-    parking_slot = db.Column(db.String(80))
-    parking_slots = db.Column(db.Integer, default=0)
     parking_rate_per_sqm = db.Column(db.Float, default=0)
     monthly_rate = db.Column(db.Numeric(12, 2), default=0)
     auto_rate = db.Column(db.Boolean, default=True)
@@ -940,12 +918,6 @@ class Unit(ChangeTracked, db.Model):
     )
     tenants = db.relationship(
         "Tenant",
-        back_populates="unit",
-        lazy=True,
-        cascade="all, delete-orphan",
-    )
-    parking_lots = db.relationship(
-        "ParkingLot",
         back_populates="unit",
         lazy=True,
         cascade="all, delete-orphan",
@@ -985,38 +957,6 @@ class Tenant(ChangeTracked, db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     unit = db.relationship("Unit", back_populates="tenants")
 
-
-class ParkingLot(ChangeTracked, db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    unit_id = db.Column(db.Integer, db.ForeignKey("unit.id"), nullable=False)
-    slot_no = db.Column(db.String(80), nullable=False)
-    area_sqm = db.Column(db.Float, default=0)
-    rate_per_sqm = db.Column(db.Float, default=0)
-    status = db.Column(db.String(30), default="Assigned")
-    active = db.Column(db.Boolean, default=True)
-    notes = db.Column(db.String(300))
-    assigned_to_type = db.Column(db.String(20), default="Owner")
-    assigned_to_name = db.Column(db.String(200))
-    include_in_soa_owner = db.Column(db.Boolean, default=False)
-    include_in_soa_tenant = db.Column(db.Boolean, default=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    unit = db.relationship("Unit", back_populates="parking_lots")
-    billing_records = db.relationship("ParkingBilling", back_populates="parking_lot", lazy=True, cascade="all, delete-orphan")
-
-
-class ParkingBilling(db.Model):
-    __table_args__ = (db.Index("ix_parking_billing_lot_month", "parking_lot_id", "billing_month"),
-                      db.UniqueConstraint("parking_lot_id", "billing_month", name="uq_parking_billing_lot_month"),
-                      month_check("billing_month", "ck_parking_billing_month_format"))
-    id = db.Column(db.Integer, primary_key=True)
-    parking_lot_id = db.Column(db.Integer, db.ForeignKey("parking_lot.id"), nullable=False)
-    billing_month = db.Column(db.String(7), nullable=False)
-    amount = db.Column(db.Numeric(12, 2), default=0)
-    amount_paid = db.Column(db.Numeric(12, 2), default=0)
-    due_date = db.Column(db.Date)
-    status = db.Column(db.String(30), default="Unpaid")
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    parking_lot = db.relationship("ParkingLot", back_populates="billing_records")
 
 
 class Billing(ChangeTracked, db.Model):
@@ -1383,8 +1323,6 @@ def condo_calc_text(bill):
 app.template_global(name="rate_for_type")(rate_for_type)
 app.template_global(name="water_payment_status")(water_payment_status)
 app.template_global(name="overdue_months_for_unit")(overdue_months_for_unit)
-app.template_global(name="overdue_months_for_parking")(overdue_months_for_parking)
-app.template_global(name="parking_charge_for_month")(parking_charge_for_month)
 app.template_global(name="unit_dues")(unit_dues)
 app.template_global(name="parking_dues")(parking_dues)
 app.template_global(name="storage_dues")(storage_dues)
@@ -1585,20 +1523,6 @@ def units():
                 )
             )
 
-        # Optional first parking record when “With Parking” is selected.
-        if d.get("include_parking") == "on" and d.get("parking_slot_no", "").strip():
-            db.session.add(ParkingLot(
-                unit_id=u.id,
-                slot_no=d.get("parking_slot_no", "").strip(),
-                area_sqm=float(d.get("parking_area_sqm") or 0),
-                rate_per_sqm=float(d.get("parking_rate_per_sqm") or setting_float("parking_rate_per_sqm", 0)),
-                status="Assigned", active=True,
-                assigned_to_type=d.get("parking_assigned_to_type", d.get("occupancy_type", "Owner")),
-                assigned_to_name=(d.get("owner_name", "") if d.get("parking_assigned_to_type", d.get("occupancy_type", "Owner")) == "Owner" else d.get("tenant_name", "")).strip(),
-                include_in_soa_owner=d.get("parking_include_soa_owner") == "on",
-                include_in_soa_tenant=d.get("parking_include_soa_tenant") == "on",
-            ))
-
         db.session.commit()
         audit(f"Created unit {unit_no}")
         flash(f"Unit {unit_no} created successfully.", "success")
@@ -1676,7 +1600,6 @@ def unit_detail(uid):
         storage_units=Unit.query.filter_by(active=True, unit_type="STORAGE").order_by(Unit.unit_no).all(),
         tenants=Tenant.query.filter_by(unit_id=uid).order_by(Tenant.status.desc(), Tenant.id.desc()).all(),
         owners=Owner.query.filter_by(unit_id=uid).order_by(Owner.id.desc()).all(),
-        parking_lots=ParkingLot.query.filter_by(unit_id=uid).order_by(ParkingLot.id.desc()).all(),
         bills=Billing.query.filter_by(unit_id=uid).order_by(Billing.billing_month.desc()).all(),
     )
 
@@ -1893,106 +1816,19 @@ def edit_owner(uid, oid):
 # -----------------------------
 # Parking
 # -----------------------------
-@app.route("/unit/<int:uid>/parking/add", methods=["POST"])
-@guarded
-def add_parking(uid):
-    u = db.session.get(Unit, uid)
-    if not u:
-        flash("Unit not found.", "danger")
-        return redirect(url_for("units"))
-
-    slot = request.form.get("slot_no", "").strip()
-    if not slot:
-        flash("Parking lot number is required.", "danger")
-        return redirect(url_for("unit_detail", uid=uid))
-
-    p = ParkingLot(
-        unit_id=uid,
-        slot_no=slot,
-        area_sqm=float(request.form.get("area_sqm") or 0),
-        rate_per_sqm=float(request.form.get("rate_per_sqm") or setting_float("parking_rate_per_sqm", 0)),
-        status="Assigned",
-        active=True,
-        assigned_to_type=request.form.get("assigned_to_type", "Owner"),
-        assigned_to_name=request.form.get("assigned_to_name", "").strip(),
-        include_in_soa_owner=request.form.get("include_in_soa_owner") == "on",
-        include_in_soa_tenant=request.form.get("include_in_soa_tenant") == "on",
-    )
-    db.session.add(p)
-    u.include_parking = True
-    u.parking_slots = ParkingLot.query.filter_by(unit_id=uid, active=True).count() + 1
-    u.parking_slot = slot
-    u.parking_rate_per_sqm = p.rate_per_sqm
-    db.session.commit()
-
-    audit(f"Added parking {slot} to unit {u.unit_no}")
-    flash("Parking lot assigned to unit.", "success")
-    return redirect(url_for("unit_detail", uid=uid))
-
-
-@app.route("/unit/parking/<int:pid>/soa", methods=["POST"])
-@guarded
-def edit_parking_soa(pid):
-    p = db.session.get(ParkingLot, pid)
-    if not p:
-        flash("Parking lot not found.", "danger")
-        return redirect(url_for("units"))
-    p.include_in_soa_owner = request.form.get("include_in_soa_owner") == "on"
-    p.include_in_soa_tenant = request.form.get("include_in_soa_tenant") == "on"
-    db.session.commit()
-    audit(f"Updated SOA inclusion for parking {p.slot_no} in unit {p.unit.unit_no}: owner={'Yes' if p.include_in_soa_owner else 'No'}, tenant representative={'Yes' if p.include_in_soa_tenant else 'No'}")
-    flash("Parking SOA inclusion updated.", "success")
-    return redirect(url_for("unit_detail", uid=p.unit_id))
-
-
 @app.route("/parking")
 @guarded
 def parking():
-    units_list = Unit.query.filter_by(active=True).order_by(Unit.unit_no).all()
-    lots = ParkingLot.query.order_by(ParkingLot.active.desc(), ParkingLot.slot_no).all()
-    month = request.args.get("month") or datetime.now().strftime("%Y-%m")
-    return render_template("parking.html", units=units_list, lots=lots, month=month)
+    """Parking = PARKING-type units assigned to residential units (Phase B3)."""
+    assigned_to = {u.assigned_parking_unit_id: u for u in
+                   Unit.query.filter(Unit.assigned_parking_unit_id.isnot(None)).all()}
+    rows = []
+    for asset in Unit.query.filter_by(unit_type="PARKING").order_by(Unit.unit_no).all():
+        rate = float(asset.unit_rate_per_sqm or setting_float("parking_rate_per_sqm", 0))
+        rows.append({"asset": asset, "unit": assigned_to.get(asset.id), "rate": rate,
+                     "charge": round(float(asset.area_sqm or 0) * rate, 2)})
+    return render_template("parking.html", rows=rows)
 
-
-@app.route("/parking/add", methods=["POST"])
-@guarded
-def add_parking_global():
-    try:
-        uid=int(request.form.get("unit_id"))
-        area=float(request.form.get("area_sqm") or 0)
-        rate=float(request.form.get("rate_per_sqm") or setting_float("parking_rate_per_sqm",0))
-    except (TypeError, ValueError):
-        flash("Invalid parking details.", "danger")
-        return redirect(url_for("parking"))
-    u=db.session.get(Unit,uid)
-    slot=request.form.get("slot_no","").strip()
-    if not u or not slot:
-        flash("Unit and parking lot number are required.", "danger")
-        return redirect(url_for("parking"))
-    p=ParkingLot(unit_id=uid,slot_no=slot,area_sqm=area,rate_per_sqm=rate,status="Assigned",active=True,assigned_to_type=request.form.get("assigned_to_type","Owner"),assigned_to_name=request.form.get("assigned_to_name","").strip(),include_in_soa_owner=request.form.get("include_in_soa_owner")=="on",include_in_soa_tenant=request.form.get("include_in_soa_tenant")=="on")
-    db.session.add(p); u.include_parking=True; db.session.commit()
-    audit(f"Added parking {slot} to unit {u.unit_no}")
-    flash("Parking lot added.","success")
-    return redirect(url_for("parking"))
-
-
-@app.route("/parking/<int:pid>/remove", methods=["POST"])
-@guarded
-def remove_parking(pid):
-    p = db.session.get(ParkingLot, pid)
-    if not p:
-        return redirect(url_for("units"))
-
-    unit = p.unit
-    p.active = False
-    p.status = "Available"
-    remaining = ParkingLot.query.filter_by(unit_id=unit.id, active=True).count()
-    unit.parking_slots = remaining
-    unit.include_parking = remaining > 0
-    db.session.commit()
-    audit(f"Removed parking {p.slot_no} from unit {unit.unit_no}")
-    flash("Parking lot removed from unit.", "success")
-    return redirect(url_for("unit_detail", uid=unit.id))
 
 
 # -----------------------------
@@ -2027,11 +1863,6 @@ def billing():
                 storage_dues=storage, water=water, other=0, penalty=penalty, adjustment=0, previous_balance=max(previous, Decimal("0")),
                 amount_paid=0, due_date=due_date, status="Unpaid")
             db.session.add(bill)
-            for lot in u.parking_lots:
-                if lot.active:
-                    charge = Decimal(str(parking_charge_for_month(lot, month)))
-                    if not ParkingBilling.query.filter_by(parking_lot_id=lot.id, billing_month=month).first():
-                        db.session.add(ParkingBilling(parking_lot_id=lot.id, billing_month=month, amount=charge, amount_paid=0, due_date=due_date, status="Unpaid"))
             created += 1
         allocate_advances_for_month(month)
         db.session.commit()
@@ -2050,10 +1881,6 @@ def billing():
     for existing_bill in month_bills_for_sync:
         if existing_bill.due_date != month_due_date:
             existing_bill.due_date = month_due_date
-            due_date_changed = True
-    for parking_bill in ParkingBilling.query.filter_by(billing_month=month).all():
-        if parking_bill.due_date != month_due_date:
-            parking_bill.due_date = month_due_date
             due_date_changed = True
 
     # One query for the month's readings instead of one query per bill.
@@ -2226,10 +2053,9 @@ def billing_detail(bid):
 
     return render_template(
         "billing_detail.html", bill=b, previous=unpaid_previous_bills(b.unit_id,b.billing_month),
-        contact=current_contact_for_unit(b.unit), parking_lots=[p for p in b.unit.parking_lots if p.active],
+        contact=current_contact_for_unit(b.unit),
         assigned_parking=assigned_asset(b.unit, "assigned_parking_unit_id"), assigned_storage=assigned_asset(b.unit, "assigned_storage_unit_id"),
         unit_overdue=overdue_months_for_unit(b.unit_id,b.billing_month),
-        parking_overdue={p.id: overdue_months_for_parking(p.id,b.billing_month) for p in b.unit.parking_lots if p.active},
         water_reading=water_reading, water_history=water_history, water_bill_map=water_bill_map, water_reading_map=water_reading_map,
         advance_applied=advance_for_bill(b),
     )
@@ -2895,8 +2721,6 @@ def _excel_rows():
         "Units": Unit.query.order_by(Unit.id).all(),
         "Owners": Owner.query.order_by(Owner.id).all(),
         "Tenants": Tenant.query.order_by(Tenant.id).all(),
-        "ParkingLots": ParkingLot.query.order_by(ParkingLot.id).all(),
-        "ParkingBilling": ParkingBilling.query.order_by(ParkingBilling.id).all(),
         "Billing": Billing.query.order_by(Billing.id).all(),
         "Payments": Payment.query.order_by(Payment.id).all(),
         "WaterReadings": WaterReading.query.order_by(WaterReading.id).all(),
@@ -2915,8 +2739,6 @@ def database_export():
       "Units":["id","unit_no","floor","unit_type","area_sqm","unit_rate_per_sqm","dues_mode","manual_monthly_dues","include_parking","include_storage","assigned_parking_unit_id","assigned_storage_unit_id","occupancy_type","owner_name","contact_no","email","status","active"],
       "Owners":["id","unit_id","owner_name","contact_no","email","move_in","move_out","status","notes"],
       "Tenants":["id","unit_id","tenant_name","contact_no","email","move_in","move_out","status","representative","notes"],
-      "ParkingLots":["id","unit_id","slot_no","area_sqm","rate_per_sqm","assigned_to_type","assigned_to_name","status","active","notes"],
-      "ParkingBilling":["id","parking_lot_id","billing_month","amount","amount_paid","due_date","status"],
       "Billing":["id","unit_id","billing_month","assessment","parking_dues","storage_dues","water","other","penalty","adjustment","previous_balance","amount_paid","due_date","status","paid_date"],
       "Payments":["id","billing_id","amount","payment_date","reference","remarks"],
       "WaterReadings":["id","unit_id","reading_month","previous_reading","current_reading","rate","reading_date","paid","paid_date"],
@@ -3060,8 +2882,6 @@ def database_import():
         unit_by_id, unit_by_no = load_maps(Unit, lambda x: str(x.unit_no or "").strip())
         owner_by_id, _ = load_maps(Owner)
         tenant_by_id, _ = load_maps(Tenant)
-        parking_by_id, _ = load_maps(ParkingLot)
-        parking_bill_by_id, _ = load_maps(ParkingBilling)
         billing_by_id, _ = load_maps(Billing)
         payment_by_id, _ = load_maps(Payment)
         water_by_id, _ = load_maps(WaterReading)
@@ -3069,13 +2889,10 @@ def database_import():
         expense_by_id, _ = load_maps(Expense)
 
         unit_id_map = {}
-        parking_id_map = {}
         billing_id_map = {}
         counts = {"Units": {"inserted": 0, "updated": 0},
                   "Owners": {"inserted": 0, "updated": 0},
                   "Tenants": {"inserted": 0, "updated": 0},
-                  "ParkingLots": {"inserted": 0, "updated": 0},
-                  "ParkingBilling": {"inserted": 0, "updated": 0},
                   "WaterReadings": {"inserted": 0, "updated": 0},
                   "Billing": {"inserted": 0, "updated": 0},
                   "Payments": {"inserted": 0, "updated": 0},
@@ -3197,66 +3014,6 @@ def database_import():
             obj.status = val(r, "status", "Status", default=obj.status)
             obj.representative = as_bool(val(r, "representative", "Representative", "is_representative"), getattr(obj, "representative", False))
             obj.notes = val(r, "notes", "Notes", default=obj.notes)
-
-        # ---------------------------------------------------------
-        # Parking lots and parking billing
-        # ---------------------------------------------------------
-        for r in rows("ParkingLots"):
-            old_id = int_id(val(r, "id", "ParkingID"))
-            old_unit_id = int_id(val(r, "unit_id", "UnitID"))
-            unit_obj = unit_id_map.get(old_unit_id) or unit_by_id.get(old_unit_id)
-            slot = val(r, "slot_no", "ParkingSlot", "ParkingLot")
-            if unit_obj is None or not slot:
-                continue
-            obj = parking_by_id.get(old_id) if old_id is not None else None
-            if obj is None:
-                obj = ParkingLot(unit_id=unit_obj.id, slot_no=str(slot))
-                if old_id is not None and old_id not in parking_by_id:
-                    obj.id = old_id
-                db.session.add(obj)
-                if old_id is not None:
-                    parking_by_id[old_id] = obj
-                counts["ParkingLots"]["inserted"] += 1
-            else:
-                counts["ParkingLots"]["updated"] += 1
-            obj.unit_id = unit_obj.id
-            obj.slot_no = str(slot)
-            obj.area_sqm = float(val(r, "area_sqm", "AreaSQM", "Area", default=obj.area_sqm or 0) or 0)
-            obj.rate_per_sqm = float(val(r, "rate_per_sqm", "RatePerSQM", default=obj.rate_per_sqm or 0) or 0)
-            obj.assigned_to_type = val(r, "assigned_to_type", "AssignedToType", default=obj.assigned_to_type)
-            obj.assigned_to_name = val(r, "assigned_to_name", "AssignedToName", default=obj.assigned_to_name)
-            obj.status = val(r, "status", "Status", default=obj.status)
-            obj.active = as_bool(val(r, "active", "IsActive"), True)
-            obj.notes = val(r, "notes", "Notes", default=obj.notes)
-            if old_id is not None:
-                parking_id_map[old_id] = obj
-
-        db.session.flush()
-
-        for r in rows("ParkingBilling"):
-            old_id = int_id(val(r, "id", "ParkingBillingID"))
-            old_parking_id = int_id(val(r, "parking_lot_id", "ParkingLotID"))
-            parking_obj = parking_id_map.get(old_parking_id) or parking_by_id.get(old_parking_id)
-            month = normalize_month(val(r, "billing_month", "BillingMonth", "Month"))
-            if parking_obj is None or month is None:
-                continue
-            obj = parking_bill_by_id.get(old_id) if old_id is not None else None
-            if obj is None:
-                obj = ParkingBilling(parking_lot_id=parking_obj.id, billing_month=month)
-                if old_id is not None and old_id not in parking_bill_by_id:
-                    obj.id = old_id
-                db.session.add(obj)
-                if old_id is not None:
-                    parking_bill_by_id[old_id] = obj
-                counts["ParkingBilling"]["inserted"] += 1
-            else:
-                counts["ParkingBilling"]["updated"] += 1
-            obj.parking_lot_id = parking_obj.id
-            obj.billing_month = month
-            obj.amount = money(val(r, "amount", "Amount", default=obj.amount))
-            obj.amount_paid = money(val(r, "amount_paid", "AmountPaid", "Paid", default=obj.amount_paid))
-            obj.due_date = parse_excel_date(val(r, "due_date", "DueDate", default=obj.due_date))
-            obj.status = val(r, "status", "Status", default=obj.status)
 
         # ---------------------------------------------------------
         # Water readings before Billing so current water values can be synced.
@@ -3534,7 +3291,7 @@ def reports():
         "reports.html",
         units=Unit.query.filter_by(active=True).count(),
         tenants=Tenant.query.filter_by(status="Current").count(),
-        parking=ParkingLot.query.filter_by(active=True).count(),
+        parking=Unit.query.filter(Unit.active.is_(True), Unit.assigned_parking_unit_id.isnot(None)).count(),
         outstanding=outstanding,
         period=period, start_date=start_date, end_date=end_date, period_label=period_label,
         bills=bills, payments=payments, water_paid=water_paid, advances=advances, expenses=expenses,
@@ -3912,7 +3669,7 @@ def init_db():
         db.create_all()
 
         # Add performance indexes to databases that already existed before this build.
-        for table in (Billing, ParkingBilling, Payment, AdvanceApplication, WaterReading):
+        for table in (Billing, Payment, AdvanceApplication, WaterReading):
             for index in table.__table__.indexes:
                 try:
                     index.create(bind=db.engine, checkfirst=True)
@@ -3960,7 +3717,6 @@ def init_db():
                     "area_sqm": "FLOAT DEFAULT 0",
                     "unit_rate_per_sqm": "FLOAT DEFAULT 0",
                     "include_parking": "BOOLEAN DEFAULT 0",
-                    "parking_slots": "INTEGER DEFAULT 0",
                     "parking_rate_per_sqm": "FLOAT DEFAULT 0",
                     "auto_rate": "BOOLEAN DEFAULT 1",
                     "dues_mode": "VARCHAR(20) DEFAULT 'per_sqm'",
@@ -3969,12 +3725,6 @@ def init_db():
                     "include_storage": "BOOLEAN DEFAULT 0",
                     "assigned_parking_unit_id": "INTEGER",
                     "assigned_storage_unit_id": "INTEGER",
-                },
-                "parking_lot": {
-                    "assigned_to_type": "VARCHAR(20) DEFAULT 'Owner'",
-                    "assigned_to_name": "VARCHAR(200)",
-                    "include_in_soa_owner": "BOOLEAN DEFAULT 0",
-                    "include_in_soa_tenant": "BOOLEAN DEFAULT 0",
                 },
                 "tenant": {
                     "representative": "BOOLEAN DEFAULT 0",
@@ -4040,10 +3790,6 @@ def init_db():
                 "receive_soa_email": "BIT DEFAULT 0" if db.engine.dialect.name == "mssql" else ("BOOLEAN DEFAULT FALSE" if db.engine.dialect.name == "postgresql" else "BOOLEAN DEFAULT 0"),
                 "include_in_soa": "BIT DEFAULT 1" if db.engine.dialect.name == "mssql" else ("BOOLEAN DEFAULT TRUE" if db.engine.dialect.name == "postgresql" else "BOOLEAN DEFAULT 1"),
             },
-            "parking_lot": {
-                "include_in_soa_owner": "BIT DEFAULT 0" if db.engine.dialect.name == "mssql" else ("BOOLEAN DEFAULT FALSE" if db.engine.dialect.name == "postgresql" else "BOOLEAN DEFAULT 0"),
-                "include_in_soa_tenant": "BIT DEFAULT 0" if db.engine.dialect.name == "mssql" else ("BOOLEAN DEFAULT FALSE" if db.engine.dialect.name == "postgresql" else "BOOLEAN DEFAULT 0"),
-            },
             "water_reading": {
                 "paid": "BIT DEFAULT 0" if db.engine.dialect.name == "mssql" else ("BOOLEAN DEFAULT FALSE" if db.engine.dialect.name == "postgresql" else "BOOLEAN DEFAULT 0"),
                 "paid_amount": "NUMERIC(12,2) DEFAULT 0",
@@ -4076,10 +3822,6 @@ def init_db():
         for b in Billing.query.all():
             if b.billing_month:
                 try: b.due_date = date.fromisoformat(b.billing_month + "-08")
-                except ValueError: pass
-        for p in ParkingBilling.query.all():
-            if p.billing_month:
-                try: p.due_date = date.fromisoformat(p.billing_month + "-08")
                 except ValueError: pass
         db.session.commit()
 

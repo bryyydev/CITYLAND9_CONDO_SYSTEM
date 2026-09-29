@@ -6,7 +6,7 @@
 --   CREATE DATABASE cityland9 CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 --   mysql -u <user> -p cityland9 < database/schema.sql
 --
--- Tables: 31 (ordered so foreign-key targets are created first)
+-- Tables: 29 (ordered so foreign-key targets are created first)
 
 SET NAMES utf8mb4;
 
@@ -113,8 +113,6 @@ CREATE TABLE unit (
 	contact_no VARCHAR(80), 
 	email VARCHAR(160), 
 	tenant_name VARCHAR(200), 
-	parking_slot VARCHAR(80), 
-	parking_slots INTEGER, 
 	parking_rate_per_sqm DOUBLE, 
 	monthly_rate NUMERIC(12, 2), 
 	auto_rate BOOL, 
@@ -364,27 +362,6 @@ CREATE TABLE owner (
 	FOREIGN KEY(unit_id) REFERENCES unit (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
--- parking_lot
-CREATE TABLE parking_lot (
-	id INTEGER NOT NULL AUTO_INCREMENT, 
-	unit_id INTEGER NOT NULL, 
-	slot_no VARCHAR(80) NOT NULL, 
-	area_sqm DOUBLE, 
-	rate_per_sqm DOUBLE, 
-	status VARCHAR(30), 
-	active BOOL, 
-	notes VARCHAR(300), 
-	assigned_to_type VARCHAR(20), 
-	assigned_to_name VARCHAR(200), 
-	include_in_soa_owner BOOL, 
-	include_in_soa_tenant BOOL, 
-	created_at DATETIME(6), 
-	updated_at DATETIME(6), 
-	updated_by VARCHAR(80), 
-	PRIMARY KEY (id), 
-	FOREIGN KEY(unit_id) REFERENCES unit (id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
-
 -- receipt
 CREATE TABLE receipt (
 	id INTEGER NOT NULL AUTO_INCREMENT, 
@@ -534,23 +511,6 @@ CREATE TABLE maintenance_ticket (
 	FOREIGN KEY(resident_profile_id) REFERENCES resident_profile (id), 
 	FOREIGN KEY(vendor_id) REFERENCES vendor (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
-
--- parking_billing
-CREATE TABLE parking_billing (
-	id INTEGER NOT NULL AUTO_INCREMENT, 
-	parking_lot_id INTEGER NOT NULL, 
-	billing_month VARCHAR(7) NOT NULL, 
-	amount NUMERIC(12, 2), 
-	amount_paid NUMERIC(12, 2), 
-	due_date DATE, 
-	status VARCHAR(30), 
-	created_at DATETIME(6), 
-	PRIMARY KEY (id), 
-	CONSTRAINT uq_parking_billing_lot_month UNIQUE (parking_lot_id, billing_month), 
-	CONSTRAINT ck_parking_billing_month_format CHECK (billing_month LIKE '____-__' AND SUBSTR(billing_month, 1, 4) BETWEEN '1900' AND '2999' AND SUBSTR(billing_month, 6, 2) BETWEEN '01' AND '12'), 
-	FOREIGN KEY(parking_lot_id) REFERENCES parking_lot (id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
-CREATE INDEX ix_parking_billing_lot_month ON parking_billing (parking_lot_id, billing_month);
 
 -- payment
 CREATE TABLE payment (

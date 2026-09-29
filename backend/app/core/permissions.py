@@ -40,8 +40,7 @@ PERMISSIONS = {
     "add_owner": PROPERTY,            # CHANGED: was SA/manager/staff (bug D3)
     "edit_owner": PROPERTY,           # CHANGED: was SA/manager/admin/staff
     "add_tenant": PROPERTY, "edit_tenant": PROPERTY, "tenant_status": PROPERTY, "tenants": PROPERTY,
-    "add_parking": PROPERTY, "edit_parking_soa": PROPERTY, "parking": PROPERTY,
-    "add_parking_global": PROPERTY, "remove_parking": PROPERTY,
+    "parking": PROPERTY,              # Phase B3: read-only list of PARKING units (lot routes retired)
 
     # ---- Billing, SOA, payments, advances (Accounting gets full read/write) -------
     "billing": BILLING_RW,            # CHANGED: + accounting (incl. Generate Bills)

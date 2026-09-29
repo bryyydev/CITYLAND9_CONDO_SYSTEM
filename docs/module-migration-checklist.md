@@ -15,7 +15,7 @@ Status values: `LEGACY` (only the Jinja UI exists) · `API` (REST endpoints done
 | # | Sidebar group | Module (as named in the UI) | Legacy endpoints | Target blueprint | Status |
 |---|---|---|---|---|---|
 | 1 | Condo Management | Dashboard | `index`, `dashboard` | `dashboard` | LEGACY |
-| 2 | Condo Management | Units / Unit Directory ¹ | `units`, `unit_detail`, `edit_unit`, `add_owner`, `edit_owner`, `add_tenant`, `edit_tenant`, `tenant_status`, `tenants`, `add_parking`, `edit_parking_soa`, `parking`, `add_parking_global`, `remove_parking` | `units` | LEGACY |
+| 2 | Condo Management | Units / Unit Directory ¹ | `units`, `unit_detail`, `edit_unit`, `add_owner`, `edit_owner`, `add_tenant`, `edit_tenant`, `tenant_status`, `tenants`, `parking` (since B3 a read-only list of PARKING units; the 4 parking-lot routes were retired) | `units` | LEGACY |
 | 3 | Condo Management | Billing & SOA / Billing Management ² | `billing`, `billing_detail`, `mark_bill_paid`, `edit_soa`, `billing_qr` | `billing` | LEGACY |
 | 4 | Condo Management | Advance Payments | `advance_payments` | `billing` | LEGACY |
 | 5 | Condo Management | SOA Email | `billing_email`, `send_billing_emails`, `email_bill` | `billing` | LEGACY |
@@ -121,7 +121,7 @@ The heart of the system. It must be moved **verbatim** before any billing-relate
 |---|---|
 | `_prepare_bill_calculation_cache` (370) | Loads every bill in one query, processes them per unit in chronological order, and computes: condo, parking, water, penalty, previous balance, advance applied, current, total, balance. Cached on `flask.g` for each request. |
 | `unit_dues` (252) | `area_sqm × (unit_rate_per_sqm or rate for unit type)`. |
-| `parking_dues` (282) | Sum of active parking lots' `area × rate` (falls back to the global `parking_rate_per_sqm`). If there are none, uses the assigned PARKING asset unit. |
+| `parking_dues` | Since B3: the assigned PARKING unit's `area × rate` (falls back to the global `parking_rate_per_sqm`); 0 if none. (Before B3: active parking lots first, then the assigned PARKING unit.) |
 | `storage_dues` / `asset_unit_charge` (295/273) | The assigned STORAGE unit's per-sqm charge, or its manual monthly dues. |
 | `water_amount_for_reading` (302) | `max(current − previous, 0) × rate`, but only when the setting `water_auto_compute` = 1. |
 | Penalty (425–531, 583–625, 788–792) | `penalty_rate`% × the unpaid **prior-month** charges of the types chosen in the `penalty_include_*` settings. Applied only once the bill is overdue. Payments are allocated in the order Condo → Parking → Storage → Water. |
@@ -199,7 +199,7 @@ Legend for roles: **SA** super_admin · **A** admin · **M** manager · **S** st
 ### 2 · Units / Unit Directory (includes Owners, Tenants, Parking)
 | Aspect | Legacy behavior |
 |---|---|
-| Routes | `GET/POST /units` · `GET /unit/<id>` · `POST /unit/<id>/edit` · `POST /unit/<id>/owner/add` · `POST /unit/<id>/owner/<oid>/edit` · `POST /unit/<id>/tenant/add` · `POST /unit/<id>/tenant/<tid>/edit` · `POST /tenant/<tid>/status` · `GET /tenants` · `POST /unit/<id>/parking/add` · `POST /unit/parking/<pid>/soa` · `GET /parking` · `POST /parking/add` · `POST /parking/<pid>/remove` |
+| Routes | `GET/POST /units` · `GET /unit/<id>` · `POST /unit/<id>/edit` · `POST /unit/<id>/owner/add` · `POST /unit/<id>/owner/<oid>/edit` · `POST /unit/<id>/tenant/add` · `POST /unit/<id>/tenant/<tid>/edit` · `POST /tenant/<tid>/status` · `GET /tenants` · `GET /parking` (B3: the parking-lot add/edit/remove routes were retired; parking is assigned on the unit) |
 | Tables | `unit` (self-referencing FKs `assigned_parking_unit_id` and `assigned_storage_unit_id` point to PARKING/STORAGE asset units), `owner`, `tenant`, `parking_lot`, `parking_billing`; reads `billing` |
 | Create-unit form | `unit_no, floor, unit_type, area_sqm, unit_rate_per_sqm, auto_rate, dues_mode, manual_monthly_dues, occupancy_type, status, include_parking, assigned_parking_unit_id, include_storage, assigned_storage_unit_id, owner_name, contact_no, email, owner_receive_soa_email, tenant_name, tenant_contact, tenant_email, tenant_move_in, tenant_receive_soa_email` (the code also reads `parking_slot_no`, `parking_area_sqm`, … which **the form doesn't send**) |
 | Validation | `unit_no` required and unique. Tenant/owner name required. Checkboxes use `== "on"`. |

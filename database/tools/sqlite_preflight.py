@@ -77,6 +77,11 @@ def check(path):
         rep.note(f"table {t} does not exist yet in SQLite (created on demand; nothing to migrate)")
     for t in sorted(live_tables - model_tables):
         rep.warn(f"table {t} exists in SQLite but not in the models: its data would NOT be migrated")
+    if "parking_lot" in live_tables:   # retired in Phase B3 (migration 0005 converts lots on MySQL)
+        lots = con.execute("SELECT COUNT(*) FROM parking_lot WHERE active = 1").fetchone()[0]
+        if lots:
+            rep.block(f"parking_lot has {lots} active lot(s): parking is now an assigned PARKING unit. "
+                      "Assign PARKING units in the legacy app first, or the parking charges would be lost")
 
     counts = {}
     for table in metadata.sorted_tables:
