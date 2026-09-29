@@ -47,16 +47,35 @@ app = Flask(
 )
 app.secret_key = os.getenv("SECRET_KEY", "cityland9-v10-change-this-secret")
 
+# Database selection (docs/migration.md):
+#   DATABASE_URL set        -> use it as-is
+#   DB_ENGINE=mysql         -> local MySQL/MariaDB from MYSQL_HOST/PORT/DATABASE/USER/PASSWORD
+#   otherwise (default)     -> the SQLite file cityland_condo_web.db in the project root
 db_url = os.getenv("DATABASE_URL", "").strip()
+if not db_url and os.getenv("DB_ENGINE", "sqlite").strip().lower() == "mysql":
+    from sqlalchemy.engine import URL as _URL
+    db_url = _URL.create(
+        "mysql+pymysql",
+        username=os.getenv("MYSQL_USER", ""), password=os.getenv("MYSQL_PASSWORD", ""),
+        host=os.getenv("MYSQL_HOST", "127.0.0.1"), port=int(os.getenv("MYSQL_PORT", "3306")),
+        database=os.getenv("MYSQL_DATABASE", "cityland9"), query={"charset": "utf8mb4"},
+    ).render_as_string(hide_password=False)
 if not db_url:
     # Always keep the local SQLite database in the project root, regardless of
     # the directory from which the server is launched.
     db_path = os.path.join(BASE_DIR, "cityland_condo_web.db")
     db_url = "sqlite:///" + db_path.replace("\\", "/")
+
+if db_url.startswith("mysql"):
+    # PyMySQL rejects SQLite's "timeout" argument (migration issue I1). Recycle
+    # connections before MySQL's idle timeout closes them.
+    _engine_options = {"pool_pre_ping": True, "pool_recycle": 280, "connect_args": {"connect_timeout": 10}}
+else:
+    _engine_options = {"pool_pre_ping": True, "connect_args": {"timeout": 30}}
 app.config.update(
     SQLALCHEMY_DATABASE_URI=db_url,
     SQLALCHEMY_TRACK_MODIFICATIONS=False,
-    SQLALCHEMY_ENGINE_OPTIONS={"pool_pre_ping": True, "connect_args": {"timeout": 30}},
+    SQLALCHEMY_ENGINE_OPTIONS=_engine_options,
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
 )
@@ -2760,8 +2779,16 @@ def database_import():
         return by_id, by_key
 
     def backup_sqlite_database():
-        """Create a consistent SQLite backup before a destructive import/update."""
+        """Create a consistent backup before a destructive import/update."""
         uri = app.config.get("SQLALCHEMY_DATABASE_URI", "")
+        if uri.startswith("mysql"):
+            # Local MySQL: mysqldump to database/backups/. No backup -> no import (issue I6).
+            try:
+                sys.path.insert(0, os.path.join(BASE_DIR, "database"))
+                import local_mysql
+                return local_mysql.backup(label="before_import")
+            except BaseException as exc:
+                raise RuntimeError(f"the automatic database backup failed ({exc}), so nothing was imported") from None
         if not uri.startswith("sqlite:///") or uri.startswith("sqlite:///:memory:"):
             return None
         db_file = uri[len("sqlite:///"):]

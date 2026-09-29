@@ -34,3 +34,9 @@ Desktop.ini
 
 # Local test reports and screenshots
 test-output/
+
+# CityLand's own local database server data (client data - never in git)
+database/mysql-data/
+*.db-wal
+*.db-shm
+*.db-journal

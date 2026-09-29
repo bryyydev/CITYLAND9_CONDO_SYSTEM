@@ -1,6 +1,14 @@
 # CityLand 9 — Database Migration Plan: SQLite → Local MySQL
 
-**Status:** PLAN, for review. **No production data has been migrated or modified.**
+**Status (2026-09-30):** this development PC **runs on local MySQL**: MariaDB 10.4 program files, CityLand's own server on 127.0.0.1:3307, data in `database/mysql-data/`. Only demo/test data existed. It was migrated and verified: 76 rows with every value identical, and the 4 bills' computed figures identical. After the switch, 37/37 account checks and all 42 legacy pages passed. **The client's production data has not been migrated.** That is still step 8 of the runbook (§9), on the client's server.
+
+**How it runs now**
+- `.env` holds `DB_ENGINE=mysql`, the `MYSQL_*` settings with generated passwords, and a random `SECRET_KEY`. `backend/run.py` starts the database server automatically.
+- Tools: `database/local_mysql.py {init,start,stop,status,backup}`, `database/tools/migrate_sqlite_to_mysql.py --confirm`, `database/tools/bill_snapshot.py`.
+- On MySQL, the Excel import takes a `mysqldump` backup first and refuses to import if the backup fails (I6).
+- **Rollback:** set `DB_ENGINE=sqlite` in `.env` and restart. The SQLite file hasn't been used since the switch, except for 6 test sign-in audit rows written by a stale server process during verification. Anything entered in MySQL after the switch won't be in SQLite.
+
+The original plan text follows.
 **Date:** 2026-09-29 · **Baseline:** git commit `c8c0f94` (V10.64, Stage 1)
 **Deployment constraint:** self-hosted only. MySQL runs on the client's own server PC or LAN. No cloud database, cloud backend or backend-as-a-service is used or planned (see `docs/architecture.md`).
 
