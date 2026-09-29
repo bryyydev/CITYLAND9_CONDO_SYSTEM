@@ -82,6 +82,13 @@ def check(path):
         if lots:
             rep.block(f"parking_lot has {lots} active lot(s): parking is now an assigned PARKING unit. "
                       "Assign PARKING units in the legacy app first, or the parking charges would be lost")
+    unit_cols = {r[1] for r in con.execute("PRAGMA table_info(unit)")} if "unit" in live_tables else set()
+    if "owner_name" in unit_cols and "owner" in live_tables:   # S4: the copy is no longer stored
+        orphans = con.execute("SELECT COUNT(*) FROM unit WHERE TRIM(COALESCE(owner_name, '')) <> '' AND id NOT IN "
+                              "(SELECT unit_id FROM owner)").fetchone()[0]
+        if orphans:
+            rep.block(f"{orphans} unit(s) have an owner name only on the unit (no owner record). "
+                      "Add the owner on the unit page first, or the name would be lost")
 
     counts = {}
     for table in metadata.sorted_tables:

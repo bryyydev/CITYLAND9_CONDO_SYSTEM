@@ -427,6 +427,7 @@ def _prepare_bill_calculation_cache():
             selectinload(Billing.unit).selectinload(Unit.assigned_parking_unit),
             selectinload(Billing.unit).selectinload(Unit.assigned_storage_unit),
             selectinload(Billing.unit).selectinload(Unit.tenants),
+            selectinload(Billing.unit).selectinload(Unit.owners),
         )
         .order_by(Billing.unit_id.asc(), Billing.billing_month.asc(), Billing.id.asc())
         .all()
@@ -895,13 +896,8 @@ class Unit(ChangeTracked, db.Model):
     assigned_parking_unit = db.relationship("Unit", foreign_keys=[assigned_parking_unit_id], remote_side=[id], uselist=False)
     assigned_storage_unit = db.relationship("Unit", foreign_keys=[assigned_storage_unit_id], remote_side=[id], uselist=False)
 
-    # Legacy fields retained for compatibility
-    owner_name = db.Column(db.String(200))
-    contact_no = db.Column(db.String(80))
-    email = db.Column(db.String(160))
-    tenant_name = db.Column(db.String(200))
-    parking_rate_per_sqm = db.Column(db.Float, default=0)
-    monthly_rate = db.Column(db.Numeric(12, 2), default=0)
+    # S4: owner/tenant names, contact and email are no longer copied onto the unit. The
+    # read-only properties below read them from the owner and tenant records.
     auto_rate = db.Column(db.Boolean, default=True)
     dues_mode = db.Column(db.String(20), default="per_sqm")  # per_sqm or manual
     manual_monthly_dues = db.Column(db.Numeric(12, 2), default=0)
@@ -923,6 +919,36 @@ class Unit(ChangeTracked, db.Model):
         cascade="all, delete-orphan",
     )
     bills = db.relationship("Billing", back_populates="unit", lazy=True)
+
+    @property
+    def current_owner(self):
+        """The most recently added owner with status Current (the one the old copy showed)."""
+        current = [o for o in self.owners if o.status == "Current"]
+        return max(current, key=lambda o: o.id) if current else None
+
+    @property
+    def current_tenant(self):
+        """The representative current tenant, otherwise the most recently added current tenant."""
+        current = [t for t in self.tenants if t.status == "Current"]
+        if not current:
+            return None
+        return next((t for t in current if t.representative), None) or max(current, key=lambda t: t.id)
+
+    @property
+    def owner_name(self):
+        return self.current_owner.owner_name if self.current_owner else None
+
+    @property
+    def contact_no(self):
+        return self.current_owner.contact_no if self.current_owner else None
+
+    @property
+    def email(self):
+        return self.current_owner.email if self.current_owner else None
+
+    @property
+    def tenant_name(self):
+        return self.current_tenant.tenant_name if self.current_tenant else None
 
 
 class Owner(ChangeTracked, db.Model):
@@ -1472,9 +1498,6 @@ def units():
             unit_type=d.get("unit_type", ""),
             area_sqm=float(d.get("area_sqm") or 0),
             unit_rate_per_sqm=float(d.get("unit_rate_per_sqm") or rate_for_type(d.get("unit_type"))),
-            owner_name=d.get("owner_name", "").strip(),
-            contact_no=d.get("contact_no", "").strip(),
-            email=d.get("email", "").strip(),
             occupancy_type=d.get("occupancy_type", "Owner"),
             status=d.get("status", "Vacant"),
             include_parking=d.get("include_parking") == "on",
@@ -1488,7 +1511,6 @@ def units():
         )
         if u.auto_rate:
             u.unit_rate_per_sqm = rate_for_type(u.unit_type)
-        u.monthly_rate = unit_dues(u)
 
         db.session.add(u)
         db.session.commit()
@@ -1535,6 +1557,7 @@ def units():
 
     query = Unit.query.options(
         selectinload(Unit.tenants),
+        selectinload(Unit.owners),
         selectinload(Unit.assigned_parking_unit),
         selectinload(Unit.assigned_storage_unit),
     ).filter_by(active=True)
@@ -1543,8 +1566,8 @@ def units():
         query = query.filter(
             or_(
                 Unit.unit_no.ilike(f"%{q}%"),
-                Unit.owner_name.ilike(f"%{q}%"),
-                Unit.tenant_name.ilike(f"%{q}%"),
+                Unit.owners.any((Owner.status == "Current") & Owner.owner_name.ilike(f"%{q}%")),
+                Unit.tenants.any((Tenant.status == "Current") & Tenant.tenant_name.ilike(f"%{q}%")),
             )
         )
     if floor:
@@ -1617,9 +1640,6 @@ def edit_unit(uid):
     u.unit_type = d.get("unit_type", "")
     u.area_sqm = float(d.get("area_sqm") or 0)
     u.unit_rate_per_sqm = float(d.get("unit_rate_per_sqm") or rate_for_type(u.unit_type))
-    u.owner_name = d.get("owner_name", "")
-    u.contact_no = d.get("contact_no", "")
-    u.email = d.get("email", "")
     u.occupancy_type = d.get("occupancy_type", "Owner")
     u.status = d.get("status", "Vacant")
     u.include_parking = d.get("include_parking") == "on"
@@ -1631,7 +1651,6 @@ def edit_unit(uid):
     u.manual_monthly_dues = money(d.get("manual_monthly_dues"))
     if u.auto_rate and u.dues_mode == "per_sqm":
         u.unit_rate_per_sqm = rate_for_type(u.unit_type)
-    u.monthly_rate = unit_dues(u)
 
     db.session.commit()
     audit(f"Updated unit {u.unit_no}")
@@ -1671,7 +1690,6 @@ def add_tenant(uid):
         receive_soa_email=request.form.get("receive_soa_email") == "on",
     )
     db.session.add(tenant)
-    u.tenant_name = name if tenant.status == "Current" else u.tenant_name
     u.status = "Occupied"
     db.session.commit()
 
@@ -1776,9 +1794,6 @@ def add_owner(uid):
             receive_soa_email=request.form.get("receive_soa_email") == "on",
         )
     )
-    u.owner_name = name
-    u.contact_no = request.form.get("contact_no", "")
-    u.email = request.form.get("email", "")
     db.session.commit()
     audit(f"Added owner {name} to unit {u.unit_no}")
     flash("Owner added.", "success")
@@ -1803,10 +1818,6 @@ def edit_owner(uid, oid):
     if owner.status == "Current":
         owner.move_out = None
     unit = db.session.get(Unit, uid)
-    if unit and owner.status == "Current":
-        unit.owner_name = owner.owner_name
-        unit.contact_no = owner.contact_no
-        unit.email = owner.email
     db.session.commit()
     audit(f"Updated owner {owner.owner_name} in unit {unit.unit_no if unit else uid}; SOA email opt-in={'Yes' if owner.receive_soa_email else 'No'}")
     flash("Owner updated.", "success")
@@ -1917,7 +1928,7 @@ def billing():
     bill_query = Billing.query.join(Unit).outerjoin(Tenant, Tenant.unit_id == Unit.id).filter(Billing.billing_month == month)
     if q:
         like = f"%{q}%"
-        bill_query = bill_query.filter(or_(Unit.unit_no.ilike(like), Unit.owner_name.ilike(like), Tenant.tenant_name.ilike(like)))
+        bill_query = bill_query.filter(or_(Unit.unit_no.ilike(like), Unit.owners.any((Owner.status == "Current") & Owner.owner_name.ilike(like)), Tenant.tenant_name.ilike(like)))
     if unit_type_filter:
         bill_query = bill_query.filter(Unit.unit_type == unit_type_filter)
     bills_base = bill_query.distinct().order_by(Billing.id.desc()).all()
@@ -2004,7 +2015,7 @@ def advance_payments():
         flash(f"Advance payment of ₱{amount:,.2f} recorded for {months} month(s) (official receipt {receipt.receipt_no}).", "success")
         return redirect(url_for("advance_payments", unit_id=unit_id))
 
-    units = Unit.query.filter(Unit.active.is_(True), ~Unit.unit_type.in_(["PARKING", "STORAGE"])).order_by(Unit.unit_no).all()
+    units = Unit.query.options(selectinload(Unit.owners)).filter(Unit.active.is_(True), ~Unit.unit_type.in_(["PARKING", "STORAGE"])).order_by(Unit.unit_no).all()
     advances = AdvancePayment.query.join(Unit).order_by(AdvancePayment.id.desc()).all()
     rows = [(a, advance_balance(a)) for a in advances]
     return render_template("advance_payments.html", units=units, advances=rows, today=date.today().isoformat(), selected_unit=request.args.get("unit_id", type=int), current_month=datetime.now().strftime("%Y-%m"))
@@ -2453,7 +2464,7 @@ def water():
     return render_template(
         "water.html",
         month=month,
-        units=Unit.query.filter_by(active=True).order_by(Unit.unit_no).all(),
+        units=Unit.query.options(selectinload(Unit.owners), selectinload(Unit.tenants)).filter_by(active=True).order_by(Unit.unit_no).all(),
         readings=readings, history=history, bill_map={},
         outstanding_history=outstanding_history,
         show_form=show_form, selected_unit_id=selected_unit_id,
@@ -2890,6 +2901,7 @@ def database_import():
 
         unit_id_map = {}
         billing_id_map = {}
+        units_sheet_owners = []
         counts = {"Units": {"inserted": 0, "updated": 0},
                   "Owners": {"inserted": 0, "updated": 0},
                   "Tenants": {"inserted": 0, "updated": 0},
@@ -2928,9 +2940,10 @@ def database_import():
             obj.include_parking = as_bool(val(r, "include_parking", "WithParking"), getattr(obj, "include_parking", False))
             obj.include_storage = as_bool(val(r, "include_storage", "WithStorage"), getattr(obj, "include_storage", False))
             obj.occupancy_type = str(val(r, "occupancy_type", "OccupancyType", "ResponsibleParty", default=obj.occupancy_type or "Owner"))
-            obj.owner_name = val(r, "owner_name", "OwnerName", default=obj.owner_name)
-            obj.contact_no = val(r, "contact_no", "OwnerContact", "ContactNo", default=obj.contact_no)
-            obj.email = val(r, "email", "OwnerEmail", default=obj.email)
+            sheet_owner = str(val(r, "owner_name", "OwnerName", default="") or "").strip()
+            if sheet_owner:   # S4: kept until the Owners sheet is read (see below)
+                units_sheet_owners.append((obj, sheet_owner, val(r, "contact_no", "OwnerContact", "ContactNo", default=None),
+                                           val(r, "email", "OwnerEmail", default=None)))
             obj.status = str(val(r, "status", "UnitStatus", default=obj.status or "Vacant"))
             obj.active = as_bool(val(r, "active", "IsActive"), True)
             unit_id_map[old_id] = obj
@@ -2986,6 +2999,13 @@ def database_import():
             obj.move_out = parse_excel_date(val(r, "move_out", "MoveOut", default=obj.move_out))
             obj.status = val(r, "status", "Status", default=obj.status)
             obj.notes = val(r, "notes", "Notes", default=obj.notes)
+
+        # S4: an owner given only on the Units sheet (no Owners row) becomes a Current owner record.
+        db.session.flush()
+        for unit_obj, name, contact, email in units_sheet_owners:
+            if not Owner.query.filter_by(unit_id=unit_obj.id).first():
+                db.session.add(Owner(unit_id=unit_obj.id, owner_name=name, contact_no=contact, email=email, status="Current"))
+                counts["Owners"]["inserted"] += 1
 
         for r in rows("Tenants"):
             old_id = int_id(val(r, "id", "TenantID"))
@@ -3717,7 +3737,6 @@ def init_db():
                     "area_sqm": "FLOAT DEFAULT 0",
                     "unit_rate_per_sqm": "FLOAT DEFAULT 0",
                     "include_parking": "BOOLEAN DEFAULT 0",
-                    "parking_rate_per_sqm": "FLOAT DEFAULT 0",
                     "auto_rate": "BOOLEAN DEFAULT 1",
                     "dues_mode": "VARCHAR(20) DEFAULT 'per_sqm'",
                     "manual_monthly_dues": "NUMERIC(12,2) DEFAULT 0",

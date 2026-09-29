@@ -49,8 +49,7 @@ def add_if_missing():
                          include_parking=bool(parking), include_storage=bool(storage),
                          assigned_parking_unit_id=parking.id if parking else None,
                          assigned_storage_unit_id=storage.id if storage else None,
-                         occupancy_type=occ, owner_name=owner_name, contact_no=contact,
-                         email=email, status="Occupied", active=True)
+                         occupancy_type=occ, status="Occupied", active=True)
                 db.session.add(u)
                 db.session.flush()
             residential[no] = u
