@@ -31,3 +31,6 @@ frontend/dist/
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# Local test reports and screenshots
+test-output/
