@@ -96,7 +96,7 @@
             <td><span class="billing-status {{st|lower|replace(' ','-')}}">{% if st=='Paid' %}✓{% elif st=='Overdue' %}⚠{% elif st=='Partially Paid' %}◐{% else %}○{% endif %} {{st}}</span></td>
             <td class="action-cell"><a class="btn small primary view-print-btn" target="_blank" href="{{url_for('billing_detail',bid=b.id)}}">◉ View / Print</a>
               {% if bill_balance(b) > 0 %}<button type="button" class="btn small payment-btn" data-bid="{{b.id}}" data-unit="{{b.unit.unit_no}}" data-balance="{{bill_balance(b)}}" data-month="{{b.billing_month}}">✓ Paid</button>{% endif %}
-              {% if current_user and current_user.role in ["super_admin", "admin"] %}<a class="btn small" href="{{url_for('billing_detail',bid=b.id)}}#edit-soa">✎ Edit SOA</a>{% endif %}</td>
+              {% if can_access('edit_soa') %}<a class="btn small" href="{{url_for('billing_detail',bid=b.id)}}#edit-soa">✎ Edit SOA</a>{% endif %}</td>
           </tr>
         {% else %}<tr><td colspan="8" class="empty">No bills found for {{month}}. Generate bills or change your filters.</td></tr>{% endfor %}
         </tbody>

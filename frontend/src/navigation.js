@@ -1,12 +1,13 @@
-// The ONE navigation definition for the React app: sidebar, routes, breadcrumbs
-// and page titles all come from here.
+// The ONE navigation definition for the staff-side portals: sidebar, routes,
+// breadcrumbs and page titles all come from here.
 //
-// `key` is the legacy Flask endpoint name. The server decides which keys a user
-// may open (GET /api/auth/me -> permissions), using the same role table as the
-// legacy sidebar, so menu visibility can never drift from backend authorization.
+// `key` is the permission (= legacy Flask endpoint name). The server sends the user's
+// permissions (GET /api/auth/me), computed from backend/app/core/permissions.py, so the
+// menu can never show something the API would refuse.
 //
-// `path` mirrors the legacy URL, so /app/billing/advance <-> /billing/advance.
-// `migrated: false` means the React page links to the legacy page for now.
+// `path` mirrors the legacy URL and is mounted under the user's portal:
+//   /app/accounting/billing  ->  legacy page /billing
+// Residents have their own navigation (RESIDENT_NAV) and pages.
 
 export const NAV = [
   {
@@ -89,8 +90,21 @@ export const PAGES = NAV.flatMap(({ group, items }) =>
 
 export const pageByKey = (key) => PAGES.find((p) => p.key === key);
 
-// Where each role lands after sign-in (the server sends the endpoint name).
-export const homePath = (user) => pageByKey(user?.home)?.path ?? "/dashboard";
+// Resident portal (real React pages, no legacy screens).
+export const RESIDENT_NAV = [
+  {
+    group: "MY UNIT",
+    items: [
+      { key: "api_resident", label: "Home", icon: "home", path: "" },
+      { key: "api_resident", label: "Statement of Account", icon: "bill", path: "/soa" },
+      { key: "api_resident", label: "Maintenance Requests", icon: "wrench", path: "/maintenance" },
+      { key: "api_resident", label: "Notices", icon: "megaphone", path: "/notices" },
+    ],
+  },
+];
+
+// Where a user lands after sign-in: /<portal> (each portal has its own home page).
+export const homePath = (user) => (user?.portal ? `/${user.portal}` : "/login");
 
 // Legacy pages are on the same server. In `npm run dev` they are on :5000.
 export const LEGACY_ORIGIN = import.meta.env.DEV ? "http://127.0.0.1:5000" : "";

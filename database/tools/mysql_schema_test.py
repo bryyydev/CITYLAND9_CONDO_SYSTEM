@@ -62,9 +62,19 @@ def mysql_url(database):
     )
 
 
+def mysql_type_of(col):
+    """The type a column gets on MySQL (honours .with_variant(..., "mysql"))."""
+    t = col.type
+    return getattr(t, "mapping", {}).get("mysql", t) if type(t).__name__ == "Variant" else t
+
+
 def expected_type(col):
     """Normalised type family expected in MySQL for a model column."""
-    name = type(col.type).__name__.upper()
+    t = mysql_type_of(col)
+    name = type(t).__name__.upper()
+    if name == "ENUM":
+        return "ENUM(" + ",".join(t.enums) + ")"
+    col = type("C", (), {"type": t})  # the checks below read col.type
     if name in ("INTEGER",):
         return "INT"
     if name in ("STRING", "VARCHAR"):
@@ -85,6 +95,8 @@ def expected_type(col):
 def actual_type(reflected):
     t = reflected["type"]
     name = type(t).__name__.upper()
+    if name == "ENUM":
+        return "ENUM(" + ",".join(t.enums) + ")"
     if name in ("INTEGER", "INT"):
         return "INT"
     if name == "VARCHAR":

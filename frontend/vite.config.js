@@ -21,5 +21,7 @@ export default defineConfig({
     outDir: "dist",
     emptyOutDir: true,
     sourcemap: false,
+    // html2pdf.js (~1 MB) is a separate chunk loaded only when a resident clicks "Download PDF".
+    chunkSizeWarningLimit: 1000,
   },
 });

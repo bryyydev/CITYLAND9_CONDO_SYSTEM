@@ -62,7 +62,7 @@
   <section class="soa-payment"><h2>▤ &nbsp; PAYMENT HISTORY</h2><table class="soa-payment-history"><thead><tr><th>DATE</th><th>REFERENCE</th><th>AMOUNT</th><th>PAYMENT TYPE</th></tr></thead><tbody>{% for p in bill.payments %}<tr><td>{{p.payment_date}}</td><td>{{p.reference or '—'}}</td><td>{{p.amount|currency}}</td><td>{{p.remarks or 'Cash / Manual'}}</td></tr>{% else %}<tr><td colspan="4">No payments recorded.</td></tr>{% endfor %}</tbody></table></section>
   <div class="soa-footer">Thank you for your continued support. <span>CITYLAND 9 SYSTEM</span></div>
 {% if bill.soa_note %}<div class="card no-print"><strong>Admin Correction Note:</strong> {{bill.soa_note}}</div>{% endif %}
-{% if current_user and current_user.role in ["super_admin", "admin"] %}
+{% if can_access('edit_soa') %}
 <div class="card no-print soa-edit-panel" id="edit-soa-panel" hidden>
   <div class="card-head"><div><h2>✎ Edit SOA</h2><p class="muted">Manual editing controls are visible only to Superadmin/Admin. Saved changes are recorded in Audit Logs.</p></div><button type="button" class="btn small" onclick="closeSoaEditor()">✕ Close</button></div>
 <form method="post" action="{{url_for('edit_soa',bid=bill.id)}}" class="form-grid compact">
@@ -79,7 +79,7 @@
 <div class="form-actions"><button type="submit" class="btn primary" onclick="return confirm('Save this manual SOA correction? The change will be recorded in Audit Logs.')">Save SOA Correction</button><button type="button" class="btn" onclick="closeSoaEditor()">Cancel</button></div>
 </form></div>{% endif %}
 </div>
-<div class="toolbar no-print"><a class="btn" href="{{url_for('billing')}}?month={{bill.billing_month}}">← Back to Billing</a><button class="btn primary" onclick="window.print()">🖨 View / Print SOA</button>{% if current_user and current_user.role in ["super_admin", "admin"] %}<button class="btn" type="button" onclick="openSoaEditor()">✎ EDIT SOA</button>{% endif %}<form method="post" action="{{url_for('email_bill',bid=bill.id)}}" class="inline-form"><button class="btn" type="submit">✉ Send Email</button></form><a class="btn" href="{{url_for('billing_qr',bid=bill.id)}}">▣ Payment QR</a></div>
+<div class="toolbar no-print"><a class="btn" href="{{url_for('billing')}}?month={{bill.billing_month}}">← Back to Billing</a><button class="btn primary" onclick="window.print()">🖨 View / Print SOA</button>{% if can_access('edit_soa') %}<button class="btn" type="button" onclick="openSoaEditor()">✎ EDIT SOA</button>{% endif %}{% if can_access('email_bill') %}<form method="post" action="{{url_for('email_bill',bid=bill.id)}}" class="inline-form"><button class="btn" type="submit">✉ Send Email</button></form>{% endif %}<a class="btn" href="{{url_for('billing_qr',bid=bill.id)}}">▣ Payment QR</a></div>
 <script>
 function openSoaEditor(){
   const panel=document.getElementById("edit-soa-panel");

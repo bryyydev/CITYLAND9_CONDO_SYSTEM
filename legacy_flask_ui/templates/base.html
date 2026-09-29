@@ -272,7 +272,7 @@ main.main{
     <div class="nav nav-parent {{'active' if request.endpoint in ['billing','billing_detail','mark_bill_paid','billing_qr','advance_payments','billing_email'] else ''}}"><span class="nav-icon">▤</span><span>Billing &amp; SOA</span></div>
     {% if can_access('billing') %}<a class="nav sub {{'active' if request.endpoint in ['billing','billing_detail','mark_bill_paid','billing_qr'] else ''}}" href="{{url_for('billing')}}"><span class="nav-icon">›</span><span>Billing Management</span></a>{% endif %}
     {% if can_access('advance_payments') %}<a class="nav sub {{'active' if request.endpoint=='advance_payments' else ''}}" href="{{url_for('advance_payments')}}"><span class="nav-icon">›</span><span>Advance Payments</span></a>{% endif %}
-    {% if can_access('billing') %}<a class="nav sub {{'active' if request.endpoint=='billing_email' else ''}}" href="{{url_for('billing_email')}}"><span class="nav-icon">›</span><span>SOA Email</span></a>{% endif %}
+    {% if can_access('billing_email') %}<a class="nav sub {{'active' if request.endpoint=='billing_email' else ''}}" href="{{url_for('billing_email')}}"><span class="nav-icon">›</span><span>SOA Email</span></a>{% endif %}
   </div>
   {% endif %}
 
@@ -301,7 +301,7 @@ main.main{
 
   {% if can_access('announcements') or can_access('maintenance') or can_access('vendors') or can_access('documents') or can_access('resident_portal') %}<div class="side-label">COMMUNITY SERVICES</div>
   {% if can_access('resident_portal') %}<a class="nav {{'active' if request.endpoint=='resident_portal' else ''}}" href="{{url_for('resident_portal')}}"><span class="nav-icon">⌂</span><span>Resident Portal</span></a>{% endif %}
-  {% if current_user.role in ['super_admin','admin'] %}<a class="nav {{'active' if request.endpoint=='resident_users' else ''}}" href="{{url_for('resident_users')}}"><span class="nav-icon">♙</span><span>Resident Accounts</span></a>{% endif %}
+  {% if can_access('resident_users') %}<a class="nav {{'active' if request.endpoint=='resident_users' else ''}}" href="{{url_for('resident_users')}}"><span class="nav-icon">♙</span><span>Resident Accounts</span></a>{% endif %}
   {% if can_access('announcements') %}<a class="nav {{'active' if request.endpoint=='announcements' else ''}}" href="{{url_for('announcements')}}"><span class="nav-icon">▤</span><span>Announcements</span></a>{% endif %}
   {% if can_access('maintenance') %}<a class="nav {{'active' if request.endpoint=='maintenance' else ''}}" href="{{url_for('maintenance')}}"><span class="nav-icon">⚒</span><span>Maintenance</span></a>{% endif %}
   {% if can_access('vendors') %}<a class="nav {{'active' if request.endpoint=='vendors' else ''}}" href="{{url_for('vendors')}}"><span class="nav-icon">▦</span><span>Vendors</span></a>{% endif %}
@@ -310,7 +310,7 @@ main.main{
 
   {% if can_access('reports') or can_access('users') or can_access('audit_logs') or can_access('settings') %}<div class="side-label">ADMINISTRATION</div>
   {% if can_access('reports') %}<a class="nav {{'active' if request.endpoint=='reports' else ''}}" href="{{url_for('reports')}}"><span class="nav-icon">▤</span><span>Condo Reports</span></a>{% endif %}
-  {% if current_user.role=='super_admin' %}<a class="nav {{'active' if request.endpoint=='users' else ''}}" href="{{url_for('users')}}"><span class="nav-icon">♙</span><span>Users &amp; Access</span></a>{% endif %}
+  {% if can_access('users') %}<a class="nav {{'active' if request.endpoint=='users' else ''}}" href="{{url_for('users')}}"><span class="nav-icon">♙</span><span>Users &amp; Access</span></a>{% endif %}
   {% if can_access('audit_logs') %}<a class="nav {{'active' if request.endpoint=='audit_logs' else ''}}" href="{{url_for('audit_logs')}}"><span class="nav-icon">☷</span><span>Audit Logs</span></a>{% endif %}
   {% if can_access('settings') %}<a class="nav {{'active' if request.endpoint=='settings' else ''}}" href="{{url_for('settings')}}"><span class="nav-icon">⚙</span><span>Rates &amp; Rules</span></a>{% endif %}
   {% endif %}

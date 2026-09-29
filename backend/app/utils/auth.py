@@ -1,0 +1,119 @@
+"""API authorization decorators (JSON responses).
+
+    @role_required(["ADMIN", "ACCOUNTING"])       role check           -> 401 / 403 JSON
+    @permission_required("billing")               matrix check         -> 401 / 403 JSON
+    @require_unit_ownership("unit_id")            IDOR guard (bug D2)  -> 403 JSON for other units
+
+The application registers how to find the signed-in user (init_auth), so this module
+does not import the models and can be reused by every blueprint.
+"""
+import hmac
+import secrets
+from functools import wraps
+
+from flask import current_app, g, jsonify, request, session
+
+from ..core.permissions import can
+from ..core.roles import RESIDENT, normalize_role
+
+UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def init_auth(app, *, current_user, resident_unit_id):
+    """current_user() -> User or None;  resident_unit_id(user) -> int or None."""
+    app.extensions["cityland9_auth"] = {"current_user": current_user, "resident_unit_id": resident_unit_id}
+
+
+def _hooks():
+    return current_app.extensions["cityland9_auth"]
+
+
+def signed_in_user():
+    if "cityland9_user" not in g:
+        g.cityland9_user = _hooks()["current_user"]()
+    return g.cityland9_user
+
+
+def json_error(status, message):
+    response = jsonify({"error": {"status": status, "message": message}})
+    response.status_code = status
+    return response
+
+
+def _authorize(check):
+    """Shared wrapper: 401 when signed out, 403 when `check(user)` is False."""
+    def decorator(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            user = signed_in_user()
+            if not user or not user.active:
+                return json_error(401, "Not signed in.")
+            if not check(user):
+                current_app.logger.warning("403 %s %s for user=%s role=%s", request.method, request.path, user.username, user.role)
+                return json_error(403, "You do not have permission to access this function.")
+            return fn(*args, **kwargs)
+        return wrapper
+    return decorator
+
+
+def role_required(roles):
+    """Allow only the given roles. Accepts 'SUPERADMIN'/'super_admin' spellings."""
+    allowed = {normalize_role(r) for r in roles}
+    return _authorize(lambda user: user.role in allowed)
+
+
+def permission_required(permission):
+    """Allow the roles that core/permissions.py grants for `permission`."""
+    return _authorize(lambda user: can(user.role, permission))
+
+
+def require_unit_ownership(unit_param="unit_id"):
+    """IDOR protection for unit-scoped endpoints.
+
+    A RESIDENT may only reach the unit linked to their resident profile: the unit id in
+    the URL (route parameter `unit_param`) must match, otherwise 403. Other roles pass
+    through unchanged (their access is decided by @role_required / @permission_required,
+    which must be applied as well).
+
+    The resident's unit is read from the database on every request, not trusted from the
+    browser, so it cannot go stale or be forged.
+    """
+    def decorator(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            user = signed_in_user()
+            if not user:
+                return json_error(401, "Not signed in.")
+            if user.role == RESIDENT:
+                own_unit = _hooks()["resident_unit_id"](user)
+                requested = kwargs.get(unit_param)
+                if own_unit is None or requested is None or int(requested) != int(own_unit):
+                    current_app.logger.warning("IDOR blocked: resident %s requested unit %s (own unit %s)", user.username, requested, own_unit)
+                    return json_error(403, "You can only view your own unit.")
+            return fn(*args, **kwargs)
+        return wrapper
+    return decorator
+
+
+# ---- CSRF (cookie sessions need it; see docs/architecture.md section 3) -------------------
+def csrf_token():
+    token = session.get("csrf_token")
+    if not token:
+        token = session["csrf_token"] = secrets.token_urlsafe(32)
+    return token
+
+
+def protect_api_blueprint(bp):
+    """CSRF check on state-changing requests + JSON error pages for one API blueprint."""
+    @bp.before_request
+    def _check_csrf():
+        if request.method in UNSAFE_METHODS:
+            sent = request.headers.get("X-CSRFToken", "")
+            expected = session.get("csrf_token", "")
+            if not expected or not hmac.compare_digest(sent, expected):
+                return json_error(403, "Missing or invalid CSRF token. Reload the page and try again.")
+
+    for status, message in ((400, "Bad request."), (404, "Not found."), (405, "Method not allowed."),
+                            (500, "Server error. The error was logged.")):
+        bp.register_error_handler(status, lambda exc, s=status, m=message: json_error(s, m))
+    return bp

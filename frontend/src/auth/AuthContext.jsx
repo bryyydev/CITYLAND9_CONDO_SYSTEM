@@ -1,6 +1,11 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { api, ApiError, setCsrfToken } from "../api/client.js";
 
+// Who is signed in, as reported by the server (GET /api/auth/me):
+//   { username, role, roleLabel, portal, home, unitId, permissions[] }
+// The server decides role, unit and permissions; React only reads them.
+// Hiding things in React is for convenience: the Flask API enforces every rule again.
+
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
@@ -41,10 +46,29 @@ export function AuthProvider({ children }) {
 
   const value = useMemo(() => {
     const allowed = new Set(user?.permissions || []);
-    return { user, checkError, refresh, login, logout, can: (key) => allowed.has(key) };
+    return {
+      user,
+      role: user?.role ?? null,
+      unitId: user?.unitId ?? null,
+      portal: user?.portal ?? null,
+      checkError,
+      refresh,
+      login,
+      logout,
+      /** can("mark_bill_paid") -> may this user use that function? */
+      can: (permission) => allowed.has(permission),
+      /** hasRole(["admin", "accounting"]) */
+      hasRole: (roles) => !!user && roles.includes(user.role),
+    };
   }, [user, checkError, refresh, login, logout]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export const useAuth = () => useContext(AuthContext);
+
+/** Render children only when the user has `permission` (hides elevated buttons/modals). */
+export function Can({ permission, children, fallback = null }) {
+  const { can } = useAuth();
+  return can(permission) ? children : fallback;
+}

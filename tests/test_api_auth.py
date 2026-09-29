@@ -50,23 +50,29 @@ def test_superadmin_login_me_and_shared_legacy_session(app_module):
     resp = api_login(client, "superadmin", "admin123")
     assert resp.status_code == 200
     user = resp.get_json()["user"]
-    assert user == {**user, "username": "superadmin", "role": "super_admin", "home": "dashboard"}
-    assert {"dashboard", "billing", "users", "settings", "resident_users"} <= set(user["permissions"])
+    assert user == {**user, "username": "superadmin", "role": "super_admin", "home": "dashboard", "portal": "superadmin", "unitId": None}
+    assert {"dashboard", "billing", "users", "settings", "resident_users", "audit_logs", "employee_payroll"} <= set(user["permissions"])
     assert client.get("/api/auth/me").get_json()["user"]["username"] == "superadmin"
     # Same Flask session: legacy pages open without a second login.
     assert client.get("/dashboard").status_code == 200
 
 
-@pytest.mark.parametrize("role, home, allowed, denied", [
-    ("admin", "dashboard", {"billing", "settings", "resident_users"}, {"users"}),
-    ("manager", "employees", {"employees", "employee_payroll"}, {"billing", "dashboard", "settings"}),
-    ("staff", "move_certificate", {"move_certificate", "employee_attendance", "reports"}, {"employees", "billing"}),
-    ("accounting", "reports", {"reports", "audit_logs", "vendors"}, {"employees", "move_certificate"}),
-    ("resident", "resident_portal", {"resident_portal", "announcements", "maintenance"}, {"units", "billing", "reports"}),
+@pytest.mark.parametrize("role, home, portal, allowed, denied", [
+    ("admin", "dashboard", "admin", {"units", "billing", "water", "reports", "move_certificate"},
+     {"users", "resident_users", "settings", "audit_logs", "employees", "employee_payroll"}),
+    ("manager", "employees", "hr", {"employees", "employee_payroll", "employee_hr_settings", "announcements"},
+     {"billing", "dashboard", "settings", "documents", "reports"}),
+    ("staff", "move_certificate", "staff", {"move_certificate", "gate_pass", "expenses", "employee_attendance", "maintenance"},
+     {"reports", "audit_logs", "billing", "employee_leave", "employee_payroll"}),
+    ("accounting", "reports", "accounting", {"reports", "audit_logs", "billing", "mark_bill_paid", "edit_soa", "advance_payments"},
+     {"units", "employees", "move_certificate", "users", "settings", "email_bill"}),
+    ("resident", "resident_portal", "resident", {"resident_portal", "maintenance", "api_resident"},
+     {"units", "unit_detail", "billing", "reports", "documents", "audit_logs"}),
 ])
-def test_permissions_match_legacy_menu(app_module, role, home, allowed, denied):
+def test_permissions_follow_the_role_matrix(app_module, role, home, portal, allowed, denied):
     user = api_login(app_module.app.test_client(), f"test_{role}", PASSWORD).get_json()["user"]
-    assert user["role"] == role and user["home"] == home
+    assert user["role"] == role and user["home"] == home and user["portal"] == portal
+    assert (user["unitId"] is not None) == (role == "resident")
     assert allowed <= set(user["permissions"])
     assert not denied & set(user["permissions"])
 

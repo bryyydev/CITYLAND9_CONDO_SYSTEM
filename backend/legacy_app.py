@@ -1,4 +1,5 @@
 import os
+import sys
 import shutil
 import sqlite3
 import re
@@ -11,7 +12,8 @@ from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, session, flash, send_file, g, jsonify, abort
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import or_, inspect, func
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import selectinload, validates
+from sqlalchemy.dialects.mysql import ENUM as MYSQL_ENUM
 from werkzeug.security import generate_password_hash, check_password_hash
 from io import BytesIO
 
@@ -146,61 +148,19 @@ def login_required(fn):
 
 ROLE_LEVEL = {"resident": 5, "staff": 10, "accounting": 20, "admin": 30, "manager": 40, "super_admin": 50}
 
-# Cityland 9 navigation hierarchy.
-# Superadmin: all modules.
-# Admin: all modules except Users & Access.
-# Manager: Employees & Payroll only (plus account/profile controls).
-# Staff: Operations + limited Employees & Payroll + Administration.
-# Accounting: Administration only.
-ENDPOINT_ROLES = {
-    # Workspace / Dashboard
-    "dashboard": {"super_admin", "admin"},
+# Role-based access control: ONE permission matrix for pages, API, menus and buttons.
+# Edit backend/app/core/permissions.py to change who may use what.
+from app.core.permissions import PERMISSIONS, ANY_SIGNED_IN, can as _role_can  # noqa: E402
+from app.core.roles import ALL_ROLES, RESIDENT  # noqa: E402
 
-    # Condo Management
-    "units": {"super_admin", "admin"},
-    "unit_detail": {"super_admin", "admin"},
-    "edit_unit": {"super_admin", "admin"},
-    "tenants": {"super_admin", "admin"},
-    "parking": {"super_admin", "admin"},
-    "billing": {"super_admin", "admin"},
-    "advance_payments": {"super_admin", "admin"},
-    "water": {"super_admin", "admin"},
-
-    # Operations
-    "move_certificate": {"super_admin", "admin", "staff"},
-    "gate_pass": {"super_admin", "admin", "staff"},
-    "expenses": {"super_admin", "admin", "staff"},
-
-    # Employees & Payroll
-    "employees": {"super_admin", "admin", "manager"},
-    "employee_attendance": {"super_admin", "admin", "manager", "staff"},
-    "employee_leave": {"super_admin", "admin", "manager", "staff"},
-    "employee_overtime": {"super_admin", "admin", "manager", "staff"},
-    "employee_payroll": {"super_admin", "admin", "manager"},
-    "employee_hr_loans": {"super_admin", "admin", "manager"},
-    "employee_hr_settings": {"super_admin", "admin", "manager"},
-    "employee_payroll_reports": {"super_admin", "admin", "manager"},
-    "employee_13th_month_full": {"super_admin", "admin", "manager"},
-
-    # Administration (Manager intentionally excluded)
-    "reports": {"super_admin", "admin", "accounting", "staff"},
-    "audit_logs": {"super_admin", "admin", "accounting", "staff"},
-    "settings": {"super_admin", "admin"},
-    "users": {"super_admin"},
-    "resident_portal": {"resident", "super_admin", "admin"},
-    "announcements": {"resident", "super_admin", "admin", "staff", "manager", "accounting"},
-    "maintenance": {"resident", "super_admin", "admin", "staff"},
-    "vendors": {"super_admin", "admin", "staff", "accounting"},
-    "documents": {"resident", "super_admin", "admin", "staff", "manager", "accounting"},
-}
+# Kept under its old name for anything that still refers to it.
+ENDPOINT_ROLES = PERMISSIONS
 
 
 def can_access(endpoint, user=None):
+    """True when the user's role may use `endpoint`. Unknown endpoints are denied."""
     u = user or current_user()
-    if not u:
-        return False
-    allowed = ENDPOINT_ROLES.get(endpoint)
-    return True if allowed is None else u.role in allowed
+    return bool(u) and _role_can(u.role, endpoint)
 
 
 # Landing page per role. Every role must be allowed to open its own landing
@@ -221,22 +181,26 @@ def home_endpoint(user):
     return endpoint if endpoint and can_access(endpoint, user) else "change_password"
 
 
-def roles(*allowed):
-    def decorator(fn):
-        @wraps(fn)
-        def wrapper(*args, **kwargs):
-            u = current_user()
-            if not u:
-                return redirect(url_for("login"))
-            if u.role not in allowed:
-                flash("You do not have permission to access this function.", "danger")
-                home = home_endpoint(u)
-                if home == request.endpoint:
-                    abort(403)
-                return redirect(url_for(home))
-            return fn(*args, **kwargs)
-        return wrapper
-    return decorator
+def guarded(fn):
+    """Page-level RBAC for legacy routes: the endpoint (function) name is looked up in
+    the permission matrix. Signed out -> login page; not permitted -> flash + the
+    role's home page (403 if that is the page itself). Endpoints missing from the
+    matrix are denied (fail closed)."""
+    endpoint = fn.__name__
+
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        u = current_user()
+        if not u:
+            return redirect(url_for("login"))
+        if not _role_can(u.role, endpoint):
+            flash("You do not have permission to access this function.", "danger")
+            home = home_endpoint(u)
+            if home == request.endpoint:
+                abort(403)
+            return redirect(url_for(home))
+        return fn(*args, **kwargs)
+    return wrapper
 
 
 def rate_for_type(unit_type):
@@ -834,9 +798,17 @@ class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
-    role = db.Column(db.String(40), default="staff")
+    # SQLite keeps VARCHAR(40); MySQL gets a strict ENUM of the six roles (database/schema.sql).
+    role = db.Column(db.String(40).with_variant(MYSQL_ENUM(*ALL_ROLES), "mysql"), default="staff")
     active = db.Column(db.Boolean, default=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    @validates("role")
+    def _validate_role(self, key, value):
+        # Same rule as the MySQL ENUM, enforced on SQLite too: no unknown roles can be saved.
+        if value not in ALL_ROLES:
+            raise ValueError(f"Invalid role {value!r}; allowed: {', '.join(ALL_ROLES)}")
+        return value
 
 
 class Unit(db.Model):
@@ -1291,7 +1263,7 @@ def index():
 
 
 @app.route("/dashboard")
-@roles("super_admin", "admin")
+@guarded
 def dashboard():
     month = datetime.now().strftime("%Y-%m")
     units = [u for u in Unit.query.filter_by(active=True).all() if u.unit_type not in ("PARKING", "STORAGE")]
@@ -1354,7 +1326,7 @@ def logout():
 # Units
 # -----------------------------
 @app.route("/units", methods=["GET", "POST"])
-@roles("super_admin", "admin")
+@guarded
 def units():
     if request.method == "POST":
         d = request.form
@@ -1500,7 +1472,7 @@ def units():
 
 
 @app.route("/unit/<int:uid>")
-@login_required
+@guarded
 def unit_detail(uid):
     u = db.session.get(Unit, uid)
     if not u:
@@ -1522,7 +1494,7 @@ def unit_detail(uid):
 
 
 @app.route("/unit/<int:uid>/edit", methods=["POST"])
-@roles("super_admin", "manager", "staff")
+@guarded
 def edit_unit(uid):
     u = db.session.get(Unit, uid)
     if not u:
@@ -1560,7 +1532,7 @@ def edit_unit(uid):
 # Multiple tenants
 # -----------------------------
 @app.route("/unit/<int:uid>/tenant/add", methods=["POST"])
-@roles("super_admin", "admin")
+@guarded
 def add_tenant(uid):
     u = db.session.get(Unit, uid)
     if not u:
@@ -1598,7 +1570,7 @@ def add_tenant(uid):
 
 
 @app.route("/tenants")
-@roles("super_admin", "admin")
+@guarded
 def tenants():
     q = request.args.get("q", "").strip()
     status = request.args.get("status", "Current")
@@ -1613,7 +1585,7 @@ def tenants():
 
 
 @app.route("/unit/<int:uid>/tenant/<int:tid>/edit", methods=["POST"])
-@roles("super_admin", "admin")
+@guarded
 def edit_tenant(uid, tid):
     tenant = db.session.get(Tenant, tid)
     if not tenant or tenant.unit_id != uid:
@@ -1647,7 +1619,7 @@ def edit_tenant(uid, tid):
 
 
 @app.route("/tenant/<int:tid>/status", methods=["POST"])
-@roles("super_admin", "admin")
+@guarded
 def tenant_status(tid):
     tenant = db.session.get(Tenant, tid)
     if not tenant:
@@ -1670,7 +1642,7 @@ def tenant_status(tid):
 # Owners
 # -----------------------------
 @app.route("/unit/<int:uid>/owner/add", methods=["POST"])
-@roles("super_admin", "manager", "staff")
+@guarded
 def add_owner(uid):
     u = db.session.get(Unit, uid)
     if not u:
@@ -1703,7 +1675,7 @@ def add_owner(uid):
 
 
 @app.route("/unit/<int:uid>/owner/<int:oid>/edit", methods=["POST"])
-@roles("super_admin", "manager", "admin", "staff")
+@guarded
 def edit_owner(uid, oid):
     owner = db.session.get(Owner, oid)
     if not owner or owner.unit_id != uid:
@@ -1734,7 +1706,7 @@ def edit_owner(uid, oid):
 # Parking
 # -----------------------------
 @app.route("/unit/<int:uid>/parking/add", methods=["POST"])
-@roles("super_admin", "admin")
+@guarded
 def add_parking(uid):
     u = db.session.get(Unit, uid)
     if not u:
@@ -1771,7 +1743,7 @@ def add_parking(uid):
 
 
 @app.route("/unit/parking/<int:pid>/soa", methods=["POST"])
-@roles("super_admin", "admin")
+@guarded
 def edit_parking_soa(pid):
     p = db.session.get(ParkingLot, pid)
     if not p:
@@ -1786,7 +1758,7 @@ def edit_parking_soa(pid):
 
 
 @app.route("/parking")
-@roles("super_admin", "admin")
+@guarded
 def parking():
     units_list = Unit.query.filter_by(active=True).order_by(Unit.unit_no).all()
     lots = ParkingLot.query.order_by(ParkingLot.active.desc(), ParkingLot.slot_no).all()
@@ -1795,7 +1767,7 @@ def parking():
 
 
 @app.route("/parking/add", methods=["POST"])
-@roles("super_admin", "admin")
+@guarded
 def add_parking_global():
     try:
         uid=int(request.form.get("unit_id"))
@@ -1817,7 +1789,7 @@ def add_parking_global():
 
 
 @app.route("/parking/<int:pid>/remove", methods=["POST"])
-@roles("super_admin", "admin")
+@guarded
 def remove_parking(pid):
     p = db.session.get(ParkingLot, pid)
     if not p:
@@ -1839,7 +1811,7 @@ def remove_parking(pid):
 # Billing
 # -----------------------------
 @app.route("/billing", methods=["GET", "POST"])
-@roles("super_admin", "admin")
+@guarded
 def billing():
     month = request.args.get("month") or datetime.now().strftime("%Y-%m")
 
@@ -1980,7 +1952,7 @@ def billing():
 
 
 @app.route("/billing/advance", methods=["GET", "POST"])
-@roles("super_admin", "admin")
+@guarded
 def advance_payments():
     if request.method == "POST":
         unit_id = request.form.get("unit_id", type=int)
@@ -2022,7 +1994,7 @@ def advance_payments():
 
 
 @app.route("/billing/<int:bid>")
-@roles("super_admin", "admin")
+@guarded
 def billing_detail(bid):
     b=db.session.get(Billing,bid)
     if not b: return "Bill not found",404
@@ -2074,7 +2046,7 @@ def billing_detail(bid):
 
 
 @app.route("/billing/<int:bid>/pay", methods=["POST"])
-@roles("super_admin", "admin")
+@guarded
 def mark_bill_paid(bid):
     b = db.session.get(Billing, bid)
     if not b:
@@ -2202,7 +2174,7 @@ def send_soa_email_to_contact(bill, contact):
 
 
 @app.route("/billing/email")
-@roles("super_admin", "admin")
+@guarded
 def billing_email():
     month=request.args.get("month") or datetime.now().strftime("%Y-%m")
     bills=Billing.query.join(Unit).filter(Billing.billing_month==month).order_by(Unit.unit_no).all()
@@ -2213,7 +2185,7 @@ def billing_email():
 
 
 @app.route("/billing/email/send", methods=["POST"])
-@roles("super_admin", "admin")
+@guarded
 def send_billing_emails():
     month=request.form.get("month") or datetime.now().strftime("%Y-%m"); selected_ids=request.form.getlist("bill_ids"); send_all=request.form.get("send_all")=="1"
     all_bills=Billing.query.join(Unit).filter(Billing.billing_month==month).order_by(Unit.unit_no).all()
@@ -2235,7 +2207,7 @@ def send_billing_emails():
 
 
 @app.route("/billing/<int:bid>/email", methods=["POST"])
-@roles("super_admin", "admin")
+@guarded
 def email_bill(bid):
     b=db.session.get(Billing,bid)
     if not b: flash("Bill not found.","danger"); return redirect(url_for("billing"))
@@ -2253,7 +2225,7 @@ def email_bill(bid):
 
 
 @app.route("/billing/<int:bid>/edit-soa", methods=["POST"])
-@roles("super_admin", "admin")
+@guarded
 def edit_soa(bid):
     b=db.session.get(Billing,bid)
     if not b: flash("Bill not found.","danger"); return redirect(url_for("billing"))
@@ -2267,7 +2239,7 @@ def edit_soa(bid):
 
 
 @app.route("/billing/<int:bid>/qr")
-@roles("super_admin", "admin")
+@guarded
 def billing_qr(bid):
     b = db.session.get(Billing, bid)
     if not b:
@@ -2289,7 +2261,7 @@ def billing_qr(bid):
 # Water
 # -----------------------------
 @app.route("/water/previous", methods=["GET"])
-@roles("super_admin", "admin")
+@guarded
 def water_previous():
     """Return the latest previous reading for a unit before the selected month."""
     try:
@@ -2307,7 +2279,7 @@ def water_previous():
     return jsonify({"previous_reading": 0, "found": False})
 
 @app.route("/water", methods=["GET", "POST"])
-@roles("super_admin", "admin")
+@guarded
 def water():
     month = request.args.get("month") or datetime.now().strftime("%Y-%m")
 
@@ -2397,7 +2369,7 @@ def water():
 
 
 @app.route("/water/<int:rid>/paid", methods=["POST"])
-@roles("super_admin", "admin")
+@guarded
 def mark_water_paid(rid):
     reading = db.session.get(WaterReading, rid)
     if not reading:
@@ -2444,7 +2416,7 @@ def mark_water_paid(rid):
 
 
 @app.route("/water/<int:rid>/edit", methods=["GET", "POST"])
-@roles("super_admin", "admin")
+@guarded
 def edit_water(rid):
     reading = db.session.get(WaterReading, rid)
     if not reading:
@@ -2487,7 +2459,7 @@ def edit_water(rid):
 # Employees
 # -----------------------------
 @app.route("/employees", methods=["GET", "POST"])
-@roles("super_admin", "admin", "manager")
+@guarded
 def employees():
     if request.method == "POST":
         emp_no = request.form.get("employee_no", "").strip()
@@ -2507,7 +2479,7 @@ def employees():
 
 
 @app.route("/employee/<int:eid>/delete", methods=["POST"])
-@roles("super_admin", "manager")
+@guarded
 def delete_employee(eid):
     e=db.session.get(Employee,eid)
     if e:
@@ -2520,7 +2492,7 @@ def delete_employee(eid):
 # Expenses / Gate Pass
 # -----------------------------
 @app.route("/expenses", methods=["GET", "POST"])
-@roles("super_admin", "admin", "staff")
+@guarded
 def expenses():
     if request.method == "POST":
         db.session.add(
@@ -2540,7 +2512,7 @@ def expenses():
 
 
 @app.route("/move-certificate", methods=["GET", "POST"])
-@roles("super_admin", "admin", "staff")
+@guarded
 def move_certificate():
     units_list = Unit.query.filter_by(active=True).order_by(Unit.unit_no).all()
     selected_unit = None
@@ -2618,14 +2590,14 @@ def move_certificate():
 
 
 @app.route("/move-certificates")
-@roles("super_admin", "admin", "staff")
+@guarded
 def move_certificates():
     certificates = MoveCertificate.query.order_by(MoveCertificate.id.desc()).limit(500).all()
     return render_template("move_certificates.html", certificates=certificates)
 
 
 @app.route("/gate-pass", methods=["GET", "POST"])
-@roles("super_admin", "admin", "staff")
+@guarded
 def gate_pass():
     if request.method == "POST":
         db.session.add(
@@ -2665,7 +2637,7 @@ def _excel_rows():
 
 
 @app.route("/database/export.xlsx")
-@roles("super_admin", "manager")
+@guarded
 def database_export():
     if Workbook is None: return "Install openpyxl first.", 500
     wb=Workbook(); wb.remove(wb.active)
@@ -2692,7 +2664,7 @@ def database_export():
 
 
 @app.route("/database/import", methods=["POST"])
-@roles("super_admin", "manager")
+@guarded
 def database_import():
     """Fast, safer Excel importer.
 
@@ -3200,7 +3172,7 @@ def database_import():
 # Reports
 # -----------------------------
 @app.route("/reports")
-@roles("super_admin", "admin", "accounting", "staff")
+@guarded
 def reports():
     # Reports are transaction-date based. Daily/weekly/monthly/yearly are
     # convenient presets, while custom dates allow accounting staff to run
@@ -3296,7 +3268,7 @@ def reports():
 
 
 @app.route("/reports/export.xlsx")
-@roles("super_admin", "admin", "accounting", "staff")
+@guarded
 def reports_export():
     # Reuse the report calculations from the report page by invoking the same
     # endpoint internally is unnecessary; calculate a compact transaction export here.
@@ -3344,7 +3316,7 @@ def reports_export():
 # Settings / Rates & Rules
 # -----------------------------
 @app.route("/settings", methods=["GET", "POST"])
-@roles("super_admin", "admin")
+@guarded
 def settings():
     defaults = {
         "corporation_name": "CITYLAND 9 CONDOMINIUM CORPORATION",
@@ -3459,7 +3431,7 @@ def change_password():
 
 
 @app.route("/users/<int:user_id>/reset-password", methods=["POST"])
-@roles("super_admin")
+@guarded
 def reset_user_password(user_id):
     target = db.session.get(User, user_id)
     if not target:
@@ -3492,7 +3464,7 @@ def reset_user_password(user_id):
 # Users / Audit
 # -----------------------------
 @app.route("/users/<int:user_id>/delete", methods=["POST"])
-@roles("super_admin")
+@guarded
 def delete_user(user_id):
     actor = current_user()
     target = db.session.get(User, user_id)
@@ -3520,7 +3492,7 @@ def delete_user(user_id):
 
 
 @app.route("/users", methods=["GET", "POST"])
-@roles("super_admin")
+@guarded
 def users():
     if request.method == "POST":
         username = request.form.get("username", "").strip()
@@ -3534,11 +3506,16 @@ def users():
             flash("Username already exists.", "danger")
             return redirect(url_for("users"))
 
+        role = request.form.get("role", "staff")
+        if role not in ALL_ROLES:
+            flash("Please choose a valid role.", "danger")
+            return redirect(url_for("users"))
+
         db.session.add(
             User(
                 username=username,
                 password_hash=generate_password_hash(password),
-                role=request.form.get("role", "staff"),
+                role=role,
                 active=True,
             )
         )
@@ -3551,7 +3528,7 @@ def users():
 
 
 @app.route("/audit")
-@roles("super_admin", "admin", "accounting", "staff")
+@guarded
 def audit_logs():
     return render_template(
         "audit.html",
@@ -3563,7 +3540,7 @@ def audit_logs():
 # V10.63 Community / Resident Services
 # -----------------------------
 @app.route("/resident-users", methods=["GET", "POST"])
-@roles("super_admin", "admin")
+@guarded
 def resident_users():
     if request.method == "POST":
         username=request.form.get("username", "").strip()
@@ -3590,7 +3567,7 @@ def resident_users():
 
 
 @app.route("/portal")
-@roles("resident", "super_admin", "admin")
+@guarded
 def resident_portal():
     profile = getattr(current_user(), "resident_profile", None)
     if current_user().role == "resident" and not profile:
@@ -3604,7 +3581,7 @@ def resident_portal():
     return render_template("resident_portal.html", profile=profile, unit_id=unit_id, announcements=recent_announcements, tickets=tickets_q.limit(10).all())
 
 @app.route("/announcements", methods=["GET", "POST"])
-@roles("resident", "super_admin", "admin", "staff", "manager", "accounting")
+@guarded
 def announcements():
     if request.method == "POST":
         if current_user().role == "resident":
@@ -3618,9 +3595,13 @@ def announcements():
     return render_template("announcements.html", rows=rows)
 
 @app.route("/maintenance", methods=["GET", "POST"])
-@roles("resident", "super_admin", "admin", "staff")
+@guarded
 def maintenance():
     profile = getattr(current_user(), "resident_profile", None)
+    if current_user().role == RESIDENT and not profile:
+        # Without a linked unit a resident would otherwise see (and file for) every unit.
+        flash("Your resident profile is not yet linked to a unit. Please contact the administrator.", "warning")
+        return redirect(url_for("logout"))
     if request.method == "POST":
         unit_id = profile.unit_id if profile else request.form.get("unit_id", type=int)
         row = MaintenanceTicket(ticket_no=f"MT-{datetime.now().strftime('%Y%m%d%H%M%S')}-{MaintenanceTicket.query.count()+1:04d}", unit_id=unit_id, resident_profile_id=profile.id if profile else None, category=request.form.get("category", "General"), title=request.form.get("title", "").strip(), description=request.form.get("description", "").strip(), priority=request.form.get("priority", "Normal"))
@@ -3636,7 +3617,7 @@ def maintenance():
     return render_template("maintenance.html", rows=rows, units=units, vendors=vendors, profile=profile)
 
 @app.route("/maintenance/<int:ticket_id>/update", methods=["POST"])
-@roles("super_admin", "admin", "staff")
+@guarded
 def maintenance_update(ticket_id):
     row = db.session.get(MaintenanceTicket, ticket_id)
     if not row: flash("Maintenance ticket not found.", "danger"); return redirect(url_for("maintenance"))
@@ -3644,7 +3625,7 @@ def maintenance_update(ticket_id):
     db.session.commit(); audit(f"Updated maintenance ticket {row.ticket_no}"); flash("Maintenance ticket updated.", "success"); return redirect(url_for("maintenance"))
 
 @app.route("/vendors", methods=["GET", "POST"])
-@roles("super_admin", "admin", "staff", "accounting")
+@guarded
 def vendors():
     if request.method == "POST":
         row=Vendor(vendor_name=request.form.get("vendor_name", "").strip(), service_type=request.form.get("service_type", "").strip(), contact_person=request.form.get("contact_person", "").strip(), contact_no=request.form.get("contact_no", "").strip(), email=request.form.get("email", "").strip(), address=request.form.get("address", "").strip(), notes=request.form.get("notes", "").strip())
@@ -3653,7 +3634,7 @@ def vendors():
     return render_template("vendors.html", rows=Vendor.query.order_by(Vendor.vendor_name).all())
 
 @app.route("/documents", methods=["GET", "POST"])
-@roles("resident", "super_admin", "admin", "staff", "manager", "accounting")
+@guarded
 def documents():
     profile=getattr(current_user(), "resident_profile", None)
     if request.method == "POST":
@@ -3973,7 +3954,7 @@ def _v1039_calc_payroll(emp, start, end, basic, overtime, allowances, deductions
     return round(basic,2), round(absence_deduction,2), round(late_deduction,2), round(net,2)
 
 @app.route("/employees/attendance", methods=["GET","POST"])
-@roles("super_admin", "admin", "manager", "staff")
+@guarded
 def employee_attendance():
     _v1039_ensure_tables()
     employees = Employee.query.order_by(Employee.id).all()
@@ -4007,7 +3988,7 @@ def employee_attendance():
     return render_template("employee_attendance.html", employees=employees, records=records, selected_date=day.isoformat())
 
 @app.route("/employees/attendance/history/<int:eid>")
-@roles("super_admin", "admin", "manager", "staff")
+@guarded
 def employee_attendance_history(eid):
     _v1039_ensure_tables()
     emp = db.session.get(Employee, eid)
@@ -4036,7 +4017,7 @@ def employee_attendance_history(eid):
     return render_template("employee_attendance_history.html", employee=emp, rows=rows, start=start.isoformat(), end=end.isoformat(), counts=counts)
 
 @app.route("/employees/payroll", methods=["GET","POST"])
-@roles("super_admin", "admin", "manager")
+@guarded
 def employee_payroll():
     _v1039_ensure_tables()
     employees = Employee.query.order_by(Employee.id).all()
@@ -4106,7 +4087,7 @@ def employee_payroll():
     return render_template("employee_payroll.html", employees=employees, payroll=payroll, start=start.isoformat(), end=end.isoformat())
 
 @app.route("/employees/payroll/<int:payroll_id>/print")
-@roles("super_admin", "admin", "manager")
+@guarded
 def employee_payroll_print(payroll_id):
     p = db.session.get(EmployeePayroll, payroll_id)
     if not p:
@@ -4213,7 +4194,7 @@ def _v1040_calc(gross, basic, other=0, absences=0, late_undertime=0):
     )
 
 @app.route("/employees/payroll/<int:payroll_id>/statutory",methods=["GET","POST"])
-@roles("super_admin", "admin", "manager")
+@guarded
 def employee_payroll_statutory(payroll_id):
     EmployeePayrollStatutory.__table__.create(db.engine,checkfirst=True)
     p=db.session.get(EmployeePayroll,payroll_id)
@@ -4230,7 +4211,7 @@ def employee_payroll_statutory(payroll_id):
     return render_template("employee_payroll_statutory.html",p=p,employee=emp,calc=(row.__dict__ if row else c))
 
 @app.route("/employees/payroll/<int:payroll_id>/statutory/print")
-@roles("super_admin", "admin", "manager")
+@guarded
 def employee_payroll_statutory_print(payroll_id):
     p=db.session.get(EmployeePayroll,payroll_id)
     if not p: abort(404)
@@ -4242,7 +4223,7 @@ def employee_payroll_statutory_print(payroll_id):
     return render_template("employee_payroll_statutory_print.html",p=p,employee=emp,s=row)
 
 @app.route("/employees/payroll/13th-month")
-@roles("super_admin", "admin", "manager")
+@guarded
 def employee_13th_month():
     year=request.args.get("year") or str(_dt_date.today().year)
     employees=Employee.query.order_by(Employee.id).all()
@@ -4332,7 +4313,7 @@ def _v1041_hourly(emp):
     return _v1039_money(getattr(emp,"monthly_salary",0))/26/8
 
 @app.route("/employees/edit/<int:eid>",methods=["GET","POST"])
-@roles("super_admin", "admin", "manager")
+@guarded
 def employee_edit(eid):
     e=_v1041_emp(eid)
     if not e: abort(404)
@@ -4346,7 +4327,7 @@ def employee_edit(eid):
     return render_template("employee_edit.html",employee=e)
 
 @app.route("/employees/leave",methods=["GET","POST"])
-@roles("super_admin", "admin", "manager", "staff")
+@guarded
 def employee_leave():
     _v1041_ensure_tables(); employees=Employee.query.order_by(Employee.full_name).all()
     if request.method=="POST":
@@ -4358,7 +4339,7 @@ def employee_leave():
     return render_template("employee_leave.html",employees=employees,rows=rows)
 
 @app.route("/employees/leave/<int:lid>/status",methods=["POST"])
-@roles("super_admin", "admin", "manager")
+@guarded
 def employee_leave_status(lid):
     row=db.session.get(EmployeeLeave,lid)
     if row:
@@ -4367,7 +4348,7 @@ def employee_leave_status(lid):
     return redirect(url_for("employee_leave"))
 
 @app.route("/employees/overtime",methods=["GET","POST"])
-@roles("super_admin", "admin", "manager", "staff")
+@guarded
 def employee_overtime():
     _v1041_ensure_tables(); employees=Employee.query.order_by(Employee.full_name).all()
     if request.method=="POST":
@@ -4379,7 +4360,7 @@ def employee_overtime():
     return render_template("employee_overtime.html",employees=employees,rows=rows)
 
 @app.route("/employees/overtime/<int:oid>/status",methods=["POST"])
-@roles("super_admin", "admin", "manager")
+@guarded
 def employee_overtime_status(oid):
     row=db.session.get(EmployeeOvertime,oid)
     if row:
@@ -4388,7 +4369,7 @@ def employee_overtime_status(oid):
     return redirect(url_for("employee_overtime"))
 
 @app.route("/employees/hr/loans",methods=["GET","POST"])
-@roles("super_admin", "admin", "manager")
+@guarded
 def employee_hr_loans():
     _v1041_ensure_tables(); employees=Employee.query.order_by(Employee.full_name).all()
     if request.method=="POST":
@@ -4399,7 +4380,7 @@ def employee_hr_loans():
     return render_template("employee_hr_loans.html",employees=employees,rows=rows)
 
 @app.route("/employees/hr-settings", methods=["GET","POST"])
-@roles("super_admin", "admin", "manager")
+@guarded
 def employee_hr_settings():
     _v1041_ensure_tables()
     defaults = {
@@ -4424,7 +4405,7 @@ def employee_hr_settings():
 
 
 @app.route("/employees/payroll-reports")
-@roles("super_admin", "admin", "manager")
+@guarded
 def employee_payroll_reports():
     year=int(request.args.get("year") or _dt_date.today().year)
     rows=EmployeePayroll.query.filter(db.extract("year",EmployeePayroll.period_end)==year).order_by(EmployeePayroll.period_end,EmployeePayroll.employee_id).all()
@@ -4433,7 +4414,7 @@ def employee_payroll_reports():
     return render_template("employee_payroll_reports.html",year=year,rows=rows,employees={e.id:e for e in Employee.query.all()},stats=stats,total_basic=total_basic,total_ot=total_ot,total_allow=total_allow,total_net=total_net)
 
 @app.route("/employees/13th-month")
-@roles("super_admin", "admin", "manager")
+@guarded
 def employee_13th_month_full():
     year=int(request.args.get("year") or _dt_date.today().year)
     employees=Employee.query.order_by(Employee.full_name).all(); rows=[]
@@ -4454,21 +4435,23 @@ except Exception: pass
 # Additive only: the legacy pages above keep working unchanged.
 # ============================================================
 from app.routes.auth import make_auth_blueprint  # noqa: E402
+from app.routes.resident import make_resident_blueprint  # noqa: E402
 from app.routes.spa import make_spa_blueprint  # noqa: E402
-
-# Menu visibility for React = the same ENDPOINT_ROLES the legacy sidebar uses.
-# base.html hard-codes Resident Accounts to super_admin/admin, so mirror that here.
-NAV_ROLES = {**ENDPOINT_ROLES, "resident_users": {"super_admin", "admin"}}
+from app.utils.auth import init_auth  # noqa: E402
 
 
-def permissions_for(user):
-    return {endpoint for endpoint, allowed in NAV_ROLES.items() if user.role in allowed}
+def resident_unit_id(user):
+    """The unit a resident account is linked to (None when not linked or inactive)."""
+    profile = getattr(user, "resident_profile", None)
+    return profile.unit_id if profile and profile.active else None
 
 
+init_auth(app, current_user=current_user, resident_unit_id=resident_unit_id)
 app.register_blueprint(make_auth_blueprint(
-    db=db, User=User, audit=audit, check_password_hash=check_password_hash,
-    current_user=current_user, home_endpoint=home_endpoint, permissions_for=permissions_for,
+    User=User, audit=audit, check_password_hash=check_password_hash,
+    home_endpoint=home_endpoint, resident_unit_id=resident_unit_id,
 ))
+app.register_blueprint(make_resident_blueprint(sys.modules[__name__]))
 app.register_blueprint(make_spa_blueprint(os.path.join(BASE_DIR, "frontend", "dist")))
 
 # ============================================================

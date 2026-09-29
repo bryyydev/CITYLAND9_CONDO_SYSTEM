@@ -94,15 +94,21 @@ def check(path):
             if col.name not in live_cols:
                 continue
             cq = q(col.name)
-            kind = type(col.type).__name__.upper()
+            col_type = col.type.impl if type(col.type).__name__ == "Variant" else col.type
+            kind = type(col_type).__name__.upper()
+            mysql_enum = getattr(col.type, "mapping", {}).get("mysql") if type(col.type).__name__ == "Variant" else None
+            if mysql_enum is not None and type(mysql_enum).__name__ == "ENUM":
+                bad = [v for (v,) in con.execute(f"SELECT DISTINCT {cq} FROM {tq} WHERE {cq} IS NOT NULL") if v not in mysql_enum.enums]
+                if bad:
+                    rep.block(f"{table.name}.{col.name}: value(s) {bad} are not allowed by the MySQL ENUM {list(mysql_enum.enums)}")
             if not col.nullable and not col.primary_key:
                 n = con.execute(f"SELECT COUNT(*) FROM {tq} WHERE {cq} IS NULL").fetchone()[0]
                 if n:
                     rep.block(f"{table.name}.{col.name}: {n} NULL value(s) in a NOT NULL column")
-            if kind in ("STRING", "VARCHAR") and col.type.length:
-                n, longest = con.execute(f"SELECT COUNT(*), MAX(LENGTH({cq})) FROM {tq} WHERE LENGTH({cq}) > ?", (col.type.length,)).fetchone()
+            if kind in ("STRING", "VARCHAR") and col_type.length:
+                n, longest = con.execute(f"SELECT COUNT(*), MAX(LENGTH({cq})) FROM {tq} WHERE LENGTH({cq}) > ?", (col_type.length,)).fetchone()
                 if n:
-                    rep.block(f"{table.name}.{col.name}: {n} value(s) longer than VARCHAR({col.type.length}) (longest {longest})")
+                    rep.block(f"{table.name}.{col.name}: {n} value(s) longer than VARCHAR({col_type.length}) (longest {longest})")
             if kind in ("INTEGER", "NUMERIC", "DECIMAL", "FLOAT", "BOOLEAN"):
                 bad = con.execute(f"SELECT COUNT(*) FROM {tq} WHERE {cq} IS NOT NULL AND typeof({cq}) NOT IN ('integer','real')").fetchone()[0]
                 if bad:

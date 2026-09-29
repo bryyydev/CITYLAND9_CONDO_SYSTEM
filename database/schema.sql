@@ -137,7 +137,7 @@ CREATE TABLE user (
 	id INTEGER NOT NULL AUTO_INCREMENT, 
 	username VARCHAR(80) NOT NULL, 
 	password_hash VARCHAR(255) NOT NULL, 
-	`role` VARCHAR(40), 
+	`role` ENUM('super_admin','admin','manager','staff','accounting','resident'), 
 	active BOOL, 
 	created_at DATETIME(6), 
 	PRIMARY KEY (id), 
