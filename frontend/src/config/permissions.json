@@ -1,0 +1,295 @@
+{
+  "_generated": "by database/tools/export_permissions.py from backend/app/core/permissions.py - do not edit",
+  "anySignedIn": [
+    "change_password",
+    "index"
+  ],
+  "permissions": {
+    "add_owner": [
+      "admin",
+      "super_admin"
+    ],
+    "add_tenant": [
+      "admin",
+      "super_admin"
+    ],
+    "advance_payments": [
+      "accounting",
+      "admin",
+      "super_admin"
+    ],
+    "announcements": [
+      "admin",
+      "manager",
+      "resident",
+      "super_admin"
+    ],
+    "api_resident": [
+      "admin",
+      "resident",
+      "super_admin"
+    ],
+    "audit_logs": [
+      "accounting",
+      "super_admin"
+    ],
+    "billing": [
+      "accounting",
+      "admin",
+      "super_admin"
+    ],
+    "billing_detail": [
+      "accounting",
+      "admin",
+      "super_admin"
+    ],
+    "billing_email": [
+      "admin",
+      "super_admin"
+    ],
+    "billing_qr": [
+      "accounting",
+      "admin",
+      "super_admin"
+    ],
+    "dashboard": [
+      "admin",
+      "super_admin"
+    ],
+    "database_export": [
+      "super_admin"
+    ],
+    "database_import": [
+      "super_admin"
+    ],
+    "delete_employee": [
+      "manager",
+      "super_admin"
+    ],
+    "delete_user": [
+      "super_admin"
+    ],
+    "documents": [
+      "admin",
+      "super_admin"
+    ],
+    "edit_owner": [
+      "admin",
+      "super_admin"
+    ],
+    "edit_soa": [
+      "accounting",
+      "admin",
+      "super_admin"
+    ],
+    "edit_tenant": [
+      "admin",
+      "super_admin"
+    ],
+    "edit_unit": [
+      "admin",
+      "super_admin"
+    ],
+    "edit_water": [
+      "admin",
+      "super_admin"
+    ],
+    "email_bill": [
+      "admin",
+      "super_admin"
+    ],
+    "employee_13th_month": [
+      "manager",
+      "super_admin"
+    ],
+    "employee_13th_month_full": [
+      "manager",
+      "super_admin"
+    ],
+    "employee_attendance": [
+      "manager",
+      "staff",
+      "super_admin"
+    ],
+    "employee_attendance_history": [
+      "manager",
+      "staff",
+      "super_admin"
+    ],
+    "employee_edit": [
+      "manager",
+      "super_admin"
+    ],
+    "employee_hr_loans": [
+      "manager",
+      "super_admin"
+    ],
+    "employee_hr_settings": [
+      "manager",
+      "super_admin"
+    ],
+    "employee_leave": [
+      "manager",
+      "super_admin"
+    ],
+    "employee_leave_status": [
+      "manager",
+      "super_admin"
+    ],
+    "employee_overtime": [
+      "manager",
+      "super_admin"
+    ],
+    "employee_overtime_status": [
+      "manager",
+      "super_admin"
+    ],
+    "employee_payroll": [
+      "manager",
+      "super_admin"
+    ],
+    "employee_payroll_print": [
+      "manager",
+      "super_admin"
+    ],
+    "employee_payroll_reports": [
+      "manager",
+      "super_admin"
+    ],
+    "employee_payroll_statutory": [
+      "manager",
+      "super_admin"
+    ],
+    "employee_payroll_statutory_print": [
+      "manager",
+      "super_admin"
+    ],
+    "employees": [
+      "manager",
+      "super_admin"
+    ],
+    "expenses": [
+      "admin",
+      "staff",
+      "super_admin"
+    ],
+    "gate_pass": [
+      "admin",
+      "staff",
+      "super_admin"
+    ],
+    "gate_pass_review": [
+      "admin",
+      "staff",
+      "super_admin"
+    ],
+    "maintenance": [
+      "admin",
+      "resident",
+      "staff",
+      "super_admin"
+    ],
+    "maintenance_update": [
+      "admin",
+      "staff",
+      "super_admin"
+    ],
+    "mark_bill_paid": [
+      "accounting",
+      "admin",
+      "super_admin"
+    ],
+    "mark_water_paid": [
+      "admin",
+      "super_admin"
+    ],
+    "move_certificate": [
+      "admin",
+      "staff",
+      "super_admin"
+    ],
+    "move_certificates": [
+      "admin",
+      "staff",
+      "super_admin"
+    ],
+    "parking": [
+      "admin",
+      "super_admin"
+    ],
+    "recalculate_soa": [
+      "accounting",
+      "admin",
+      "super_admin"
+    ],
+    "receipt_detail": [
+      "accounting",
+      "admin",
+      "super_admin"
+    ],
+    "receipts": [
+      "accounting",
+      "admin",
+      "super_admin"
+    ],
+    "reports": [
+      "accounting",
+      "admin",
+      "super_admin"
+    ],
+    "reports_export": [
+      "accounting",
+      "admin",
+      "super_admin"
+    ],
+    "reset_user_password": [
+      "super_admin"
+    ],
+    "resident_portal": [
+      "admin",
+      "resident",
+      "super_admin"
+    ],
+    "resident_users": [
+      "super_admin"
+    ],
+    "send_billing_emails": [
+      "admin",
+      "super_admin"
+    ],
+    "settings": [
+      "super_admin"
+    ],
+    "tenant_status": [
+      "admin",
+      "super_admin"
+    ],
+    "tenants": [
+      "admin",
+      "super_admin"
+    ],
+    "unit_detail": [
+      "admin",
+      "super_admin"
+    ],
+    "units": [
+      "admin",
+      "super_admin"
+    ],
+    "users": [
+      "super_admin"
+    ],
+    "vendors": [
+      "admin",
+      "super_admin"
+    ],
+    "water": [
+      "admin",
+      "super_admin"
+    ],
+    "water_previous": [
+      "admin",
+      "super_admin"
+    ]
+  }
+}

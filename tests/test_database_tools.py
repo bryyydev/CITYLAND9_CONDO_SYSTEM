@@ -25,3 +25,9 @@ def test_preflight_passes_on_seeded_test_database(app_module):
     result = run_tool(os.path.join(TOOLS, "sqlite_preflight.py"), os.path.join(_TMP_DIR, "test.db"))
     assert result.returncode == 0, result.stdout + result.stderr
     assert "BLOCKING (0)" in result.stdout
+
+
+def test_frontend_permission_copy_matches_backend():
+    """The React prototype's permission matrix must equal the server's."""
+    result = run_tool(os.path.join(TOOLS, "export_permissions.py"), "--check")
+    assert result.returncode == 0, result.stdout + result.stderr
