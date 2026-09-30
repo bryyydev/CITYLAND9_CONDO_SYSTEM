@@ -17,7 +17,7 @@ echo Verifying application startup...
 if errorlevel 1 goto :apperror
 
 echo Initializing/checking the database...
-.venv\Scripts\python.exe -c "import sys; sys.path.insert(0, 'backend'); import legacy_app; legacy_app.init_db(); print('Database initialization: OK')"
+.venv\Scripts\python.exe -c "import sys; sys.path.insert(0, 'backend'); import run; run.init_db(); print('Database initialization: OK')"
 if errorlevel 1 goto :dberror
 
 echo.
