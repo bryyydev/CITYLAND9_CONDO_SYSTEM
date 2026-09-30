@@ -61,6 +61,7 @@ PERMISSIONS = {
     # ---- Operations ------------------------------------------------------------------
     "move_certificate": {SA, A, S}, "move_certificates": {SA, A, S},
     "gate_pass": {SA, A, S},
+    "gate_pass_review": {SA, A, S},   # NEW: approve / reject residents' gate pass & move requests
     "expenses": {SA, A, S},
 
     # ---- HR & payroll (Manager) --------------------------------------------------------

@@ -10,18 +10,30 @@ Every unit-scoped route carries the unit id in the URL and is protected twice:
     GET  /api/resident/units/<unit_id>/maintenance          the unit's maintenance tickets
     POST /api/resident/units/<unit_id>/maintenance          file a maintenance request
     GET  /api/resident/notices                              published announcements
+    GET  /api/resident/units/<unit_id>/receipts             payment history (official receipts)
+    GET  /api/resident/units/<unit_id>/receipts/<rid>       one printable official receipt
+    GET  /api/resident/units/<unit_id>/water                monthly water readings and usage
+    GET  /api/resident/units/<unit_id>/gate-passes          the unit's gate pass / move requests
+    POST /api/resident/units/<unit_id>/gate-passes          request a gate pass or move-in/out pass
+    POST /api/resident/units/<unit_id>/gate-passes/<pid>/cancel   cancel a request not yet handled
+    GET  /api/resident/units/<unit_id>/profile              the unit and the resident's contact details
+    PUT  /api/resident/units/<unit_id>/profile              update own contact number / email
 
 Amounts come from the existing billing engine (read-only), so they match the legacy SOA.
 """
-from datetime import datetime
+import re
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from flask import Blueprint, jsonify, request
 
+from ..core.roles import RESIDENT
 from ..utils.auth import json_error, permission_required, protect_api_blueprint, require_unit_ownership, signed_in_user
 
 CATEGORIES = ("General", "Plumbing", "Electrical", "Aircon", "Common Area", "Other")  # same options as the legacy form
 PRIORITIES = ("Normal", "Low", "High", "Urgent")
+GATE_PASS_MAX_DAYS_AHEAD = 90
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def money(value):
@@ -170,5 +182,176 @@ def make_resident_blueprint(legacy):
         rows = A.query.filter_by(published=True).order_by(A.publish_date.desc(), A.id.desc()).limit(50).all()
         return jsonify({"notices": [{"id": a.id, "title": a.title, "message": a.message,
                                      "publishDate": a.publish_date.isoformat() if a.publish_date else None} for a in rows]})
+
+    # ---- Payment history (official receipts) --------------------------------------------
+    def allocation_label(a):
+        if a.kind == "bill":
+            return f"Statement of Account — {a.payment.billing.billing_month}", a.payment.billing.billing_month
+        if a.kind == "water":
+            return f"Water — {a.water_reading.reading_month}", a.water_reading.reading_month
+        return f"Advance condo dues from {a.advance_payment.start_month}", a.advance_payment.start_month
+
+    def receipt_row(r):
+        return {"id": r.id, "receiptNo": r.receipt_no, "date": r.received_date.isoformat(), "amount": money(r.amount),
+                "method": r.payment_method, "reference": r.reference or "",
+                "items": [{"kind": a.kind, "label": allocation_label(a)[0], "month": allocation_label(a)[1],
+                           "amount": money(a.amount)} for a in r.allocations]}
+
+    @bp.get("/units/<int:unit_id>/receipts")
+    @unit_scoped
+    def receipts(unit_id):
+        if not get_unit(unit_id):
+            return json_error(404, "Unit not found.")
+        R = legacy.Receipt
+        rows = R.query.filter_by(unit_id=unit_id).order_by(R.received_date.desc(), R.id.desc()).limit(500).all()
+        return jsonify({"receipts": [receipt_row(r) for r in rows],
+                        "totalPaid": money(sum((Decimal(str(r.amount)) for r in rows), Decimal("0")))})
+
+    @bp.get("/units/<int:unit_id>/receipts/<int:receipt_id>")
+    @unit_scoped
+    def receipt_detail(unit_id, receipt_id):
+        r = legacy.db.session.get(legacy.Receipt, receipt_id)
+        # Same rule as the SOA: the receipt must belong to the unit in the URL.
+        if not r or r.unit_id != unit_id:
+            return json_error(404, "Receipt not found.")
+        contact = legacy.current_contact_for_unit(r.unit)
+        return jsonify({
+            "corporation": legacy.setting("corporation_name", "CITYLAND 9 CONDOMINIUM CORPORATION"),
+            "address": legacy.setting("address", ""),
+            "unit": {"id": r.unit.id, "unitNo": r.unit.unit_no},
+            "receivedFrom": getattr(contact, "tenant_name", None) or getattr(contact, "owner_name", None) or "",
+            "receipt": {**receipt_row(r), "remarks": r.remarks or "", "receivedBy": r.received_by or "",
+                        "backfilled": r.source == "backfill"},
+        })
+
+    # ---- Water usage ----------------------------------------------------------------------
+    @bp.get("/units/<int:unit_id>/water")
+    @unit_scoped
+    def water(unit_id):
+        if not get_unit(unit_id):
+            return json_error(404, "Unit not found.")
+        W = legacy.WaterReading
+        rows = W.query.filter_by(unit_id=unit_id).order_by(W.reading_month.desc()).limit(24).all()
+        return jsonify({"readings": [{
+            "month": w.reading_month, "readingDate": w.reading_date.isoformat() if w.reading_date else None,
+            "previous": round(float(w.previous_reading or 0), 2), "current": round(float(w.current_reading or 0), 2),
+            "usage": round(w.usage, 2), "rate": money(w.rate), "amount": money(w.bill_amount),
+            "paidSeparately": bool(w.paid)} for w in rows]})
+
+    # ---- Gate pass / move requests --------------------------------------------------------
+    def pass_row(p):
+        return {"id": p.id, "type": p.pass_type or "Visitor", "date": p.pass_date.isoformat() if p.pass_date else None,
+                "name": p.visitor_name or "", "purpose": p.purpose or "", "status": p.status,
+                "reviewNote": p.review_note or "",
+                "requestedAt": p.requested_at.isoformat(timespec="minutes") if p.requested_at else None}
+
+    @bp.get("/units/<int:unit_id>/gate-passes")
+    @unit_scoped
+    def gate_passes(unit_id):
+        G = legacy.GatePass
+        rows = G.query.filter_by(unit_id=unit_id).order_by(G.id.desc()).limit(100).all()
+        return jsonify({"passes": [pass_row(p) for p in rows], "types": legacy.GATE_PASS_TYPES,
+                        "maxDaysAhead": GATE_PASS_MAX_DAYS_AHEAD})
+
+    @bp.post("/units/<int:unit_id>/gate-passes")
+    @unit_scoped
+    def gate_pass_create(unit_id):
+        unit = get_unit(unit_id)
+        if not unit:
+            return json_error(404, "Unit not found.")
+        data = request.get_json(silent=True) or {}
+        pass_type = str(data.get("type", "")).strip()
+        name = str(data.get("name", "")).strip()
+        purpose = str(data.get("purpose", "")).strip()
+        try:
+            pass_date = date.fromisoformat(str(data.get("date", "")))
+        except ValueError:
+            return json_error(400, "Choose the date the pass is needed.")
+        if pass_type not in legacy.GATE_PASS_TYPES:
+            return json_error(400, "Choose a pass type from the list.")
+        if not name or not purpose:
+            return json_error(400, "Name and details are required.")
+        if len(name) > 200 or len(purpose) > 300:
+            return json_error(400, "Name must be 200 characters or fewer, details 300 or fewer.")
+        if pass_date < date.today() or pass_date > date.today() + timedelta(days=GATE_PASS_MAX_DAYS_AHEAD):
+            return json_error(400, f"The date must be between today and {GATE_PASS_MAX_DAYS_AHEAD} days from now.")
+        user = signed_in_user()
+        p = legacy.GatePass(pass_date=pass_date, unit_no=unit.unit_no, unit_id=unit.id, pass_type=pass_type,
+                            visitor_name=name, purpose=purpose, status="Requested",
+                            requested_by=user.username, requested_at=datetime.utcnow())
+        legacy.db.session.add(p)
+        legacy.db.session.commit()
+        legacy.audit(f"Requested {pass_type} gate pass #{p.id} for unit {unit.unit_no}")
+        return jsonify({"pass": pass_row(p)}), 201
+
+    @bp.post("/units/<int:unit_id>/gate-passes/<int:pass_id>/cancel")
+    @unit_scoped
+    def gate_pass_cancel(unit_id, pass_id):
+        p = legacy.db.session.get(legacy.GatePass, pass_id)
+        if not p or p.unit_id != unit_id:
+            return json_error(404, "Request not found.")
+        if p.status != "Requested":
+            return json_error(409, f"This request is already {p.status.lower()} and can no longer be cancelled.")
+        p.status = "Cancelled"
+        legacy.db.session.commit()
+        legacy.audit(f"Cancelled gate pass request #{p.id}")
+        return jsonify({"pass": pass_row(p)})
+
+    # ---- Profile & contact details --------------------------------------------------------
+    def linked_person(user):
+        """The owner/tenant record the resident account is linked to, or None."""
+        profile = getattr(user, "resident_profile", None)
+        if not profile or not profile.person_id:
+            return None
+        model = legacy.Tenant if (profile.person_type or "").lower() == "tenant" else legacy.Owner
+        person = legacy.db.session.get(model, profile.person_id)
+        return person if person and person.unit_id == profile.unit_id else None
+
+    def profile_payload(user, unit):
+        profile = getattr(user, "resident_profile", None)
+        person = linked_person(user) if user.role == RESIDENT else None
+        return {
+            "username": user.username,
+            "displayName": profile.display_name if profile else user.username,
+            "unit": {"unitNo": unit.unit_no, "floor": unit.floor, "type": unit.unit_type, "areaSqm": unit.area_sqm},
+            "personType": (profile.person_type if profile else None) or "Owner",
+            "name": (getattr(person, "tenant_name", None) or getattr(person, "owner_name", None)) if person else None,
+            "contactNo": (person.contact_no or "") if person else "",
+            "email": (person.email or "") if person else "",
+            "moveIn": person.move_in.isoformat() if person and person.move_in else None,
+            "canEdit": person is not None,
+        }
+
+    @bp.get("/units/<int:unit_id>/profile")
+    @unit_scoped
+    def profile_get(unit_id):
+        unit = get_unit(unit_id)
+        if not unit:
+            return json_error(404, "Unit not found.")
+        return jsonify({"profile": profile_payload(signed_in_user(), unit)})
+
+    @bp.put("/units/<int:unit_id>/profile")
+    @unit_scoped
+    def profile_update(unit_id):
+        unit = get_unit(unit_id)
+        if not unit:
+            return json_error(404, "Unit not found.")
+        user = signed_in_user()
+        person = linked_person(user) if user.role == RESIDENT else None
+        if not person:
+            return json_error(409, "Your account is not linked to an owner or tenant record, so the office "
+                                   "must update your contact details. Please contact the administrator.")
+        data = request.get_json(silent=True) or {}
+        contact_no = str(data.get("contactNo", "")).strip()
+        email = str(data.get("email", "")).strip()
+        if len(contact_no) > 80 or not re.fullmatch(r"[0-9+()\-\s/]*", contact_no):
+            return json_error(400, "Enter a valid contact number (digits, spaces, + ( ) - /).")
+        if email and (len(email) > 160 or not EMAIL_RE.match(email)):
+            return json_error(400, "Enter a valid email address.")
+        person.contact_no = contact_no or None
+        person.email = email or None
+        legacy.db.session.commit()
+        legacy.audit(f"Resident {user.username} updated own contact details (unit {unit.unit_no})")
+        return jsonify({"profile": profile_payload(user, unit)})
 
     return bp

@@ -75,17 +75,6 @@ CREATE TABLE expense (
 	PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
--- gate_pass
-CREATE TABLE gate_pass (
-	id INTEGER NOT NULL AUTO_INCREMENT, 
-	pass_date DATE, 
-	unit_no VARCHAR(40), 
-	visitor_name VARCHAR(200), 
-	purpose VARCHAR(300), 
-	status VARCHAR(30), 
-	PRIMARY KEY (id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
-
 -- setting
 CREATE TABLE setting (
 	id INTEGER NOT NULL AUTO_INCREMENT, 
@@ -317,6 +306,26 @@ CREATE TABLE employee_payroll (
 CREATE INDEX ix_employee_payroll_employee_id ON employee_payroll (employee_id);
 CREATE INDEX ix_employee_payroll_period_end ON employee_payroll (period_end);
 CREATE INDEX ix_employee_payroll_period_start ON employee_payroll (period_start);
+
+-- gate_pass
+CREATE TABLE gate_pass (
+	id INTEGER NOT NULL AUTO_INCREMENT, 
+	pass_date DATE, 
+	unit_no VARCHAR(40), 
+	visitor_name VARCHAR(200), 
+	purpose VARCHAR(300), 
+	status VARCHAR(30), 
+	pass_type VARCHAR(20), 
+	unit_id INTEGER, 
+	requested_by VARCHAR(80), 
+	requested_at DATETIME(6), 
+	reviewed_by VARCHAR(80), 
+	reviewed_at DATETIME(6), 
+	review_note VARCHAR(300), 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(unit_id) REFERENCES unit (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE INDEX ix_gate_pass_unit_id ON gate_pass (unit_id);
 
 -- move_certificate
 CREATE TABLE move_certificate (

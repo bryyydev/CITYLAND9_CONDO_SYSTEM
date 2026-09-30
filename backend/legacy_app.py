@@ -5,7 +5,7 @@ import sqlite3
 import re
 import smtplib
 from email.message import EmailMessage
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from decimal import Decimal, InvalidOperation
 from functools import wraps
 
@@ -1201,6 +1201,12 @@ class MoveCertificate(db.Model):
     unit = db.relationship("Unit")
 
 
+GATE_PASS_TYPES = ("Visitor", "Delivery", "Move-in", "Move-out")
+# Staff-issued passes start "Issued". A resident's request starts "Requested"; staff then
+# approve it ("Issued") or reject it ("Rejected"), or the resident cancels it ("Cancelled").
+GATE_PASS_STATUSES = ("Requested", "Issued", "Rejected", "Cancelled")
+
+
 class GatePass(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     pass_date = db.Column(db.Date, default=date.today)
@@ -1208,6 +1214,15 @@ class GatePass(db.Model):
     visitor_name = db.Column(db.String(200))
     purpose = db.Column(db.String(300))
     status = db.Column(db.String(30), default="Issued")
+    # Resident requests (migration 0007). Empty on passes recorded before them.
+    pass_type = db.Column(db.String(20))
+    unit_id = db.Column(db.Integer, db.ForeignKey("unit.id"), nullable=True, index=True)
+    requested_by = db.Column(db.String(80))
+    requested_at = db.Column(db.DateTime)
+    reviewed_by = db.Column(db.String(80))
+    reviewed_at = db.Column(db.DateTime)
+    review_note = db.Column(db.String(300))
+    unit = db.relationship("Unit")
 
 
 class AuditLog(db.Model):
@@ -1374,6 +1389,12 @@ def num(v):
         return f"{float(v):,.2f}"
     except Exception:
         return "0.00"
+
+
+@app.template_filter("localtime")
+def localtime(v, fmt="%Y-%m-%d %H:%M"):
+    """Show a UTC timestamp (datetime.utcnow() columns) in the server PC's local time."""
+    return v.replace(tzinfo=timezone.utc).astimezone().strftime(fmt) if v else ""
 
 
 @app.template_filter("month_year")
@@ -2706,10 +2727,15 @@ def move_certificates():
 @guarded
 def gate_pass():
     if request.method == "POST":
+        unit_no = request.form.get("unit_no", "").strip()
+        pass_type = request.form.get("pass_type", "Visitor")
+        unit = Unit.query.filter_by(unit_no=unit_no).first() if unit_no else None
         db.session.add(
             GatePass(
                 pass_date=parse_date(request.form.get("pass_date")) or date.today(),
-                unit_no=request.form.get("unit_no", ""),
+                unit_no=unit_no,
+                unit_id=unit.id if unit else None,
+                pass_type=pass_type if pass_type in GATE_PASS_TYPES else "Visitor",
                 visitor_name=request.form.get("visitor_name", ""),
                 purpose=request.form.get("purpose", ""),
                 status="Issued",
@@ -2720,7 +2746,32 @@ def gate_pass():
         flash("Gate pass recorded.", "success")
         return redirect(url_for("gate_pass"))
 
-    return render_template("gate_pass.html", passes=GatePass.query.order_by(GatePass.id.desc()).all())
+    passes = GatePass.query.order_by(GatePass.id.desc()).all()
+    requested = [p for p in passes if p.status == "Requested"]
+    return render_template("gate_pass.html", passes=passes, requested=requested, pass_types=GATE_PASS_TYPES)
+
+
+@app.route("/gate-pass/<int:pid>/review", methods=["POST"])
+@guarded
+def gate_pass_review(pid):
+    """Approve or reject a gate pass / move request a resident sent from the portal."""
+    p = db.session.get(GatePass, pid)
+    decision = request.form.get("decision")
+    if not p or p.status != "Requested" or decision not in ("approve", "reject"):
+        flash("That request was not found or was already handled.", "danger")
+        return redirect(url_for("gate_pass"))
+    note = request.form.get("review_note", "").strip()[:300]
+    if decision == "reject" and not note:
+        flash("Give the resident a reason when rejecting a request.", "danger")
+        return redirect(url_for("gate_pass"))
+    p.status = "Issued" if decision == "approve" else "Rejected"
+    p.reviewed_by = session.get("username")
+    p.reviewed_at = datetime.utcnow()
+    p.review_note = note or None
+    db.session.commit()
+    audit(f"{'Approved' if decision == 'approve' else 'Rejected'} gate pass request #{p.id} ({p.pass_type}, unit {p.unit_no})")
+    flash(f"Request {'approved' if decision == 'approve' else 'rejected'}.", "success")
+    return redirect(url_for("gate_pass"))
 
 
 
@@ -3766,6 +3817,16 @@ def init_db():
                     "paid": "BOOLEAN DEFAULT 0",
                     "paid_date": "DATE",
                 },
+                # Resident gate pass / move requests (MySQL: migration 0007).
+                "gate_pass": {
+                    "pass_type": "VARCHAR(20)",
+                    "unit_id": "INTEGER REFERENCES unit(id)",
+                    "requested_by": "VARCHAR(80)",
+                    "requested_at": "DATETIME",
+                    "reviewed_by": "VARCHAR(80)",
+                    "reviewed_at": "DATETIME",
+                    "review_note": "VARCHAR(300)",
+                },
             }
             for tracked_model in ChangeTracked.__subclasses__():
                 migrations.setdefault(tracked_model.__tablename__, {}).update({"updated_at": "DATETIME", "updated_by": "VARCHAR(80)"})
@@ -4483,6 +4544,7 @@ init_auth(app, current_user=current_user, resident_unit_id=resident_unit_id,
           resident_access_problem=resident_access_problem)
 app.register_blueprint(make_auth_blueprint(
     User=User, audit=audit, check_password_hash=check_password_hash,
+    generate_password_hash=generate_password_hash, commit=db.session.commit,
     home_endpoint=home_endpoint, resident_access_problem=resident_access_problem,
 ))
 app.register_blueprint(make_resident_blueprint(sys.modules[__name__]))

@@ -7,6 +7,7 @@ user signed in through React is also signed in on the legacy pages (and back).
     POST /api/auth/login    {"username", "password"}        -> {"user": {...}, "csrfToken"}
     POST /api/auth/logout                                   -> 204
     GET  /api/auth/me                                       -> {"user": {...}} or 401
+    POST /api/auth/password {"currentPassword", "newPassword"}  -> 204 (same rules as legacy)
 
 user = {username, role, roleLabel, portal, home, unitId, permissions[]}
 """
@@ -17,7 +18,8 @@ from ..core.roles import PORTALS, RESIDENT, ROLE_LABELS
 from ..utils.auth import csrf_token, json_error, protect_api_blueprint, signed_in_user
 
 
-def make_auth_blueprint(*, User, audit, check_password_hash, home_endpoint, resident_access_problem):
+def make_auth_blueprint(*, User, audit, check_password_hash, generate_password_hash, commit, home_endpoint,
+                        resident_access_problem):
     """Build the blueprint with the legacy app's objects (no import cycle)."""
     bp = protect_api_blueprint(Blueprint("api_auth", __name__, url_prefix="/api"))
 
@@ -77,6 +79,26 @@ def make_auth_blueprint(*, User, audit, check_password_hash, home_endpoint, resi
             session.clear()  # access ended (e.g. moved out) while signed in -> back to the login page
             return json_error(401, "Not signed in.")
         return jsonify({"user": user_payload(user)})
+
+    @bp.post("/auth/password")
+    def change_password():
+        user = signed_in_user()
+        if not user or not user.active:
+            return json_error(401, "Not signed in.")
+        data = request.get_json(silent=True) or {}
+        current = str(data.get("currentPassword", ""))
+        new = str(data.get("newPassword", ""))
+        # Same rules as the legacy Change Password page.
+        if not check_password_hash(user.password_hash, current):
+            return json_error(400, "Current password is incorrect.")
+        if len(new) < 8:
+            return json_error(400, "New password must be at least 8 characters.")
+        if check_password_hash(user.password_hash, new):
+            return json_error(400, "New password must be different from the current password.")
+        user.password_hash = generate_password_hash(new)
+        commit()
+        audit(f"Changed password for user {user.username}")
+        return "", 204
 
     @bp.route("/<path:unknown>", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
     def not_found(unknown):
