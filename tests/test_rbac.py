@@ -56,7 +56,9 @@ def test_legacy_pages_follow_the_matrix(app_module, role):
     for rule in rules:
         resp = client.get(rule.rule)
         allowed = can(role, rule.endpoint)
-        ok = resp.status_code == 200 if allowed else resp.status_code in (302, 403)
+        # Retired old pages (e.g. the resident portal) forward to the new app instead of rendering.
+        moved = resp.status_code == 302 and resp.headers["Location"].startswith("/app/")
+        ok = (resp.status_code == 200 or moved) if allowed else resp.status_code in (302, 403)
         if not ok:
             wrong.append((rule.rule, "expected allowed" if allowed else "expected denied", resp.status_code))
     assert not wrong, wrong
@@ -100,10 +102,12 @@ def test_staff_cannot_see_financial_reports_or_audit_logs(app_module):
 def test_legacy_sidebar_shows_only_permitted_links(app_module):
     for role in ["super_admin"] + ROLES:
         client = client_for(app_module, role)
-        home = client.get("/", follow_redirects=True).get_data(as_text=True)
+        home = client.get("/change-password").get_data(as_text=True)
         sidebar = home.split("<aside", 1)[1].split("</aside>", 1)[0]
         for href in set(re.findall(r'href="(/[^"#]*)"', sidebar)):
-            assert client.get(href).status_code == 200, (role, href)
+            resp = client.get(href)
+            moved = resp.status_code == 302 and resp.headers["Location"].startswith("/app/")  # retired page -> new app
+            assert resp.status_code == 200 or moved, (role, href)
 
 
 # ---- REST API: 401 / 403 JSON --------------------------------------------------------------------

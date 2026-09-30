@@ -73,13 +73,16 @@ def test_sidebar_links_are_accessible(app_module, role):
         client, landing = login(app_module, "superadmin", "admin123")
     else:
         client, landing = login(app_module, f"test_{role}", PASSWORD)
-    html = follow(client, landing)[0].get_data(as_text=True)
+    assert landing == "/app/", f"{role} should land in the new app, not {landing}"
+    # Old module pages keep the old sidebar until they are rebuilt; Change Password opens for every role.
+    html = client.get("/change-password").get_data(as_text=True)
     sidebar = html.split("<aside", 1)[1].split("</aside>", 1)[0]
     links = set(re.findall(r'href="(/[^"#]*)"', sidebar))
     assert links, f"no sidebar links rendered for {role}"
     for url in links:
         resp = client.get(url)
-        assert resp.status_code == 200, f"{role}: sidebar link {url} returned {resp.status_code}"
+        moved = resp.status_code == 302 and resp.headers["Location"].startswith("/app/")  # retired page -> new app
+        assert resp.status_code == 200 or moved, f"{role}: sidebar link {url} returned {resp.status_code}"
 
 
 def test_excel_export_import_roundtrip(app_module, superadmin):
@@ -103,8 +106,10 @@ def test_reports_export(superadmin):
 def test_bad_login_rejected(app_module):
     client = app_module.app.test_client()
     resp = client.post("/login", data={"username": "superadmin", "password": "wrong"})
-    assert resp.status_code == 200
-    assert "Invalid username or password" in resp.get_data(as_text=True)
+    # Not signed in; sent to the new login page with the reason.
+    assert resp.status_code == 302
+    assert resp.headers["Location"] == "/app/login?notice=Invalid+username+or+password."
+    assert client.get("/api/auth/me").status_code == 401
 
 
 def test_anonymous_redirected_to_login(app_module):

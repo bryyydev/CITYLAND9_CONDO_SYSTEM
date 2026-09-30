@@ -9,7 +9,8 @@ from datetime import datetime, date, timezone
 from decimal import Decimal, InvalidOperation
 from functools import wraps
 
-from flask import Flask, render_template, request, redirect, url_for, session, flash, send_file, g, jsonify, abort, has_request_context, has_app_context
+from flask import Flask, render_template, request, redirect, url_for, session, flash, send_file, g, jsonify, abort, has_request_context, has_app_context, get_flashed_messages
+from urllib.parse import urlencode
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import or_, inspect, func, event as sa_event
 from sqlalchemy.orm import selectinload, validates, deferred, declared_attr
@@ -1429,10 +1430,20 @@ def inject_globals():
 # -----------------------------
 # Dashboard
 # -----------------------------
+# The new React app (/app/) is the front door. The old login page, home redirect and
+# resident portal are retired; old module pages stay until each is rebuilt in React.
+APP_URL = "/app/"
+
+
+def app_login_url():
+    """/app/login, carrying the reason an old page signed the user out (e.g. moved out)."""
+    reasons = [m for c, m in get_flashed_messages(with_categories=True) if c in ("danger", "warning")]
+    return "/app/login" + (f"?{urlencode({'notice': reasons[-1]})}" if reasons else "")
+
+
 @app.route("/")
 def index():
-    u = current_user()
-    return redirect(url_for(home_endpoint(u) if u else "login"))
+    return redirect(APP_URL if current_user() else app_login_url())
 
 
 @app.route("/dashboard")
@@ -1470,6 +1481,7 @@ def dashboard():
 # -----------------------------
 @app.route("/login", methods=["GET", "POST"])
 def login():
+    # Sign-in happens in the new app. A POST still works (old bookmarks, scripts, tests).
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
@@ -1480,11 +1492,11 @@ def login():
             session["user_id"] = user.id
             session["username"] = user.username
             audit("Login")
-            return redirect(url_for(home_endpoint(user)))
+            return redirect(APP_URL)
 
         flash("Invalid username or password.", "danger")
 
-    return render_template("login.html")
+    return redirect(app_login_url())
 
 
 @app.route("/logout")
@@ -1492,7 +1504,7 @@ def logout():
     if session.get("user_id"):
         audit("Logout")
     session.clear()
-    return redirect(url_for("login"))
+    return redirect("/app/login")
 
 
 # -----------------------------
@@ -3654,10 +3666,10 @@ def resident_users():
 @app.route("/portal")
 @guarded
 def resident_portal():
+    # Residents use the new portal (/app/resident). Staff keep this unit overview until it is rebuilt.
+    if current_user().role == "resident":
+        return redirect(APP_URL + "resident")
     profile = getattr(current_user(), "resident_profile", None)
-    if current_user().role == "resident" and not profile:
-        flash("Your resident profile is not yet linked to a unit. Please contact the administrator.", "warning")
-        return redirect(url_for("logout"))
     unit_id = profile.unit_id if profile else request.args.get("unit_id", type=int)
     recent_announcements = Announcement.query.filter_by(published=True).order_by(Announcement.publish_date.desc(), Announcement.id.desc()).limit(10).all()
     tickets_q = MaintenanceTicket.query.order_by(MaintenanceTicket.id.desc())

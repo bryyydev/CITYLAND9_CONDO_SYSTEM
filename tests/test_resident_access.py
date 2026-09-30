@@ -51,7 +51,23 @@ def test_current_renter_has_access(app_module, renter):
     client = app_module.app.test_client()
     assert api_login(client, "rita_renter", PW).status_code == 200
     assert client.get(f"/api/resident/units/{renter['unit']}/summary").status_code == 200
-    assert client.get("/portal").status_code == 200
+    # The old resident portal forwards to the new one.
+    resp = client.get("/portal")
+    assert resp.status_code == 302 and resp.headers["Location"] == "/app/resident"
+
+
+def redirect_chain(client, url, hops=5):
+    """Every Location header followed from `url` (the new app itself is not requested)."""
+    chain = []
+    for _ in range(hops):
+        resp = client.get(url)
+        if resp.status_code != 302:
+            break
+        url = resp.headers["Location"]
+        chain.append(url)
+        if url.startswith("/app/"):
+            break
+    return chain
 
 
 def test_moving_out_ends_access_everywhere(app_module, renter):
@@ -60,7 +76,7 @@ def test_moving_out_ends_access_everywhere(app_module, renter):
     assert api_login(react, "rita_renter", PW).status_code == 200
     legacy = app_module.app.test_client()
     legacy.post("/login", data={"username": "rita_renter", "password": PW})
-    assert legacy.get("/portal").status_code == 200
+    assert legacy.get("/maintenance").status_code == 200
 
     # The admin marks the tenant Inactive ("Past") on the unit page, the normal move-out step.
     admin, _ = login(app_module, "superadmin", "admin123")
@@ -71,9 +87,9 @@ def test_moving_out_ends_access_everywhere(app_module, renter):
     assert resp.status_code == 403
     assert "no longer listed as a current tenant of unit TEST-503" in resp.get_json()["error"]["message"]
     assert react.get("/api/auth/me").status_code == 401
-    # Open legacy session: signed out, reason shown on the login page.
-    resp = legacy.get("/portal", follow_redirects=True)
-    assert "no longer listed as a current tenant" in resp.get_data(as_text=True)
+    # Open legacy session: signed out, reason carried to the new login page (?notice=...).
+    final = redirect_chain(legacy, "/maintenance")[-1]
+    assert final.startswith("/app/login?notice=") and "no+longer+listed+as+a+current+tenant" in final
     assert legacy.get("/maintenance").status_code == 302
     assert legacy.get("/change-password").status_code == 302
     # New sign-in attempts are refused with the reason.
