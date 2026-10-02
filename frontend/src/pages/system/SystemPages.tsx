@@ -3,8 +3,8 @@ import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useAuth, useUser } from "../../auth/AuthContext";
 import { DataTable } from "../../components/base/DataTable";
-import { Drawer, useToast } from "../../components/base/overlays";
-import { Badge, Button, Card, CardHeader, ErrorState, Field, Icon, Notice, PageHeader, SearchInput, Skeleton, StatCard, cx } from "../../components/base/ui";
+import { useToast } from "../../components/base/overlays";
+import { Badge, Button, Card, CardHeader, ErrorState, Field, Icon, Notice, PageHeader, SearchInput, Skeleton, StatCard } from "../../components/base/ui";
 import { legacyUrl } from "../../components/feature/ModuleRoute";
 import { MODULES, MODULE_CATALOG } from "../../config/modules";
 import { ROLES, ROLE_ORDER } from "../../config/roles";
@@ -12,7 +12,7 @@ import { useAction, useAsync } from "../../hooks/useAsync";
 import { dateTimeLabel, monthLabel } from "../../lib/format";
 import { isAmount } from "../../lib/money";
 import { IS_MOCK, api } from "../../services/api";
-import type { RatesAndRules, RatesAndRulesUpdate, Role } from "../../services/types";
+import type { RatesAndRules, RatesAndRulesUpdate } from "../../services/types";
 
 // ------------------------------------------------------------------ Superadmin dashboard
 export function SystemDashboard() {
@@ -56,78 +56,6 @@ export function SystemDashboard() {
         </Card>
       </div>
     </>
-  );
-}
-
-// ------------------------------------------------------------------ Users & access
-export function UsersPage() {
-  const { data, error, loading, reload } = useAsync(() => api.admin.users(), []);
-  const [open, setOpen] = useState(false);
-  return (
-    <>
-      <PageHeader eyebrow="Administration" title="Users & Access Management" description="Staff accounts and their role. A role decides exactly which modules the person sees; the server enforces it on every request."
-        actions={<Button icon="user-add-line" onClick={() => setOpen(true)}>Add user</Button>} />
-      <Card>
-        <DataTable rows={data} loading={loading} error={error} onRetry={reload} rowKey={(u) => u.id} columns={[
-          { key: "u", header: "Username", cell: (u) => <b className="text-ink-900">{u.username}</b> },
-          { key: "r", header: "Role", cell: (u) => <span className={cx("rounded-md px-2 py-0.5 text-[12px] font-semibold", ROLES[u.role].badge)}>{ROLES[u.role].label}</span> },
-          { key: "w", header: "Workspace", cell: (u) => ROLES[u.role].workspace },
-          { key: "c", header: "Created", cell: (u) => dateTimeLabel(u.createdAt) },
-          { key: "s", header: "Status", cell: (u) => <Badge tone={u.active ? "ok" : "neutral"}>{u.active ? "Active" : "Disabled"}</Badge> },
-        ]} />
-      </Card>
-      <Card className="mt-6">
-        <CardHeader title="What each role can open" subtitle="From the permission matrix the server uses." />
-        <div className="grid gap-4 p-5 md:grid-cols-2 xl:grid-cols-3">
-          {ROLE_ORDER.map((r) => (
-            <div key={r} className="rounded-xl border border-ink-200 p-4">
-              <span className={cx("rounded-md px-2 py-0.5 text-[12px] font-semibold", ROLES[r].badge)}>{ROLES[r].label}</span>
-              <p className="mt-2 text-[12.5px] text-ink-500">{ROLES[r].tagline}</p>
-              <p className="mt-2 text-[13px] text-ink-700">{ROLES[r].nav.flatMap((g) => g.items).filter((id) => id !== "dashboard" && id !== "rHome").map((id) => MODULES[id].label).join(" · ")}</p>
-            </div>
-          ))}
-        </div>
-      </Card>
-      <AddUserDrawer open={open} onClose={() => setOpen(false)} onDone={() => { setOpen(false); reload(); }} />
-    </>
-  );
-}
-
-function AddUserDrawer({ open, onClose, onDone }: { open: boolean; onClose: () => void; onDone: () => void }) {
-  const [form, setForm] = useState({ username: "", password: "", role: "staff" as Role });
-  const [touched, setTouched] = useState(false);
-  const { busy, act } = useAction();
-  const toast = useToast();
-  const errors = { username: !/^[a-z0-9._-]{3,80}$/i.test(form.username) && "3–80 letters, numbers, dot, dash or underscore.", password: form.password.length < 8 && "At least 8 characters." };
-  async function submit() {
-    setTouched(true);
-    if (errors.username || errors.password) return;
-    try {
-      const u = await act(() => api.admin.createUser(form));
-      toast({ tone: "success", title: `User ${u.username} created`, message: `${ROLES[u.role].label} workspace` });
-      setForm({ username: "", password: "", role: "staff" }); setTouched(false);
-      onDone();
-    } catch (err) {
-      toast({ tone: "error", title: "User not created", message: (err as Error).message });
-    }
-  }
-  return (
-    <Drawer open={open} onClose={onClose} title="Add user" subtitle="Residents get their accounts under Resident Accounts." width="max-w-md"
-      footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button><Button icon="user-add-line" loading={busy} onClick={submit}>Create user</Button></>}>
-      <form className="grid gap-4" onSubmit={(e) => { e.preventDefault(); void submit(); }} noValidate>
-        <Field label="Username" error={touched && errors.username}>{(id) => <input id={id} className="input" autoComplete="off" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value.trim() })} />}</Field>
-        <Field label="Temporary password" error={touched && errors.password} hint="Ask the person to change it after the first sign-in.">{(id) => <input id={id} type="password" className="input" autoComplete="new-password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />}</Field>
-        <fieldset className="space-y-2">
-          <legend className="mb-1 text-[12.5px] font-semibold text-ink-700">Role</legend>
-          {ROLE_ORDER.filter((r) => r !== "resident").map((r) => (
-            <label key={r} className={cx("flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition", form.role === r ? "border-brand-500 bg-brand-50" : "border-ink-200 hover:bg-ink-50")}>
-              <input type="radio" name="role" className="mt-1 accent-brand-600" checked={form.role === r} onChange={() => setForm({ ...form, role: r })} />
-              <span><span className="block font-semibold text-ink-900">{ROLES[r].label}</span><span className="text-[12.5px] text-ink-500">{ROLES[r].tagline}</span></span>
-            </label>
-          ))}
-        </fieldset>
-      </form>
-    </Drawer>
   );
 }
 
@@ -282,7 +210,8 @@ export function SystemSettingsPage() {
         <Card><CardHeader title="Import from Excel" />
           <div className="space-y-4 p-5 text-[13.5px] text-ink-600">
             <Notice tone="warn">Importing replaces data. A backup is taken first; if it can't be taken, the import is refused.</Notice>
-            <a href={legacyUrl("/settings")} className="inline-flex h-10 items-center gap-2 rounded-lg border border-ink-200 bg-white px-4 font-semibold shadow-sm hover:bg-ink-50"><Icon name="upload-2-line" />Open import (classic screen)</a>
+            {IS_MOCK ? <Button variant="secondary" icon="upload-2-line" onClick={() => info("Excel import")}>Open import (classic screen)</Button>
+              : <a href={legacyUrl("/settings")} className="inline-flex h-10 items-center gap-2 rounded-lg border border-ink-200 bg-white px-4 font-semibold shadow-sm hover:bg-ink-50"><Icon name="upload-2-line" />Open import (classic screen)</a>}
           </div></Card>
       </div>
     </>

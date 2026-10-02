@@ -365,12 +365,28 @@ const overtime: T.OvertimeRequest[] = [
 ];
 
 // ------------------------------------------------------------------ administration
+interface MockUser { id: number; username: string; role: T.Role; active: boolean; createdAt: string; mustChangePassword?: boolean; passwordChangedAt?: string }
 let nextUserId = 1;
-const users: T.UserAccount[] = [
-  ...(["super_admin", "admin", "manager", "staff", "accounting"] as T.Role[]).map((role) => ({ id: nextUserId++, username: PERSONAS[role].username, role, active: true, createdAt: "2026-01-05T01:00:00" })),
-  { id: nextUserId++, username: "carmela.reyes", role: "staff", active: true, createdAt: "2026-02-11T02:00:00" },
-  { id: nextUserId++, username: "old.cashier", role: "accounting", active: false, createdAt: "2024-07-01T01:00:00" },
+const users: MockUser[] = [
+  ...(["super_admin", "admin", "manager", "staff", "accounting"] as T.Role[]).map((role) => ({ id: nextUserId++, username: PERSONAS[role].username, role, active: true, createdAt: "2026-01-05T01:00:00Z" })),
+  { id: nextUserId++, username: "carmela.reyes", role: "staff", active: true, createdAt: "2026-02-11T02:00:00Z" },
+  { id: nextUserId++, username: "old.cashier", role: "accounting", active: false, createdAt: "2024-07-01T01:00:00Z" },
+  { id: nextUserId++, username: "marcus.v", role: "resident", active: true, createdAt: "2026-03-02T03:00:00Z" },
 ];
+const meId = () => users.find((u) => u.username === actor())?.id ?? -1;
+const userRow = (u: MockUser): T.UserAccount => {
+  const isSelf = u.id === meId();
+  const reset = u.role === "super_admin" ? "Superadmin passwords can't be reset here. The account owner changes it from their own account menu." : null;
+  const del = isSelf ? "You can't delete the account you're signed in with."
+    : u.role === "super_admin" && !users.some((x) => x.role === "super_admin" && x.active && x.id !== u.id) ? "This is the last active Superadmin account, so it can't be deleted."
+    : u.role === "resident" ? "This account belongs to a resident. Remove or deactivate it under Resident Accounts." : null;
+  const edit = isSelf ? "You can't change your own role or status. Another Superadmin can do it."
+    : u.role === "resident" ? "This account belongs to a resident. Manage it under Resident Accounts." : null;
+  return { ...u, roleLabel: ROLES[u.role].label, mustChangePassword: Boolean(u.mustChangePassword), passwordChangedAt: u.passwordChangedAt ?? null, isSelf,
+    canEdit: !edit, editBlockedReason: edit, canResetPassword: !reset, resetBlockedReason: reset, canDelete: !del, deleteBlockedReason: del };
+};
+const failFields = (fields: Record<string, string>): Promise<never> =>
+  new Promise((_, rej) => setTimeout(() => rej(new ApiError(400, Object.values(fields)[0], fields)), LATENCY));
 const residentAccounts: T.ResidentAccount[] = [
   { id: 1, username: "marcus.v", unitNo: "12-01", personType: "Owner", displayName: "Marcus Villanueva", linked: true, active: true },
   { id: 2, username: "owner.501", unitNo: "5-01", personType: "Owner", displayName: people.find((p) => p.unitId === unitByNo("5-01")!.id)!.name, linked: true, active: true },
@@ -458,7 +474,7 @@ export const mockApi: DataService = {
       if (!currentRole) return fail(401, "Not signed in.");
       const cfg = ROLES[currentRole];
       return wait({ username: PERSONAS[cfg.role].username, role: currentRole, roleLabel: cfg.label, portal: cfg.portal, unitId: currentRole === "resident" ? RESIDENT_UNIT.id : null,
-        permissions: permissionsForRole(currentRole), displayName: PERSONAS[cfg.role].displayName, email: PERSONAS[cfg.role].email, subtitle: PERSONAS[cfg.role].subtitle });
+        permissions: permissionsForRole(currentRole), mustChangePassword: false, passwordPolicy: { minLength: 10, maxLength: 128 }, displayName: PERSONAS[cfg.role].displayName, email: PERSONAS[cfg.role].email, subtitle: PERSONAS[cfg.role].subtitle });
     },
     login: async (username) => {
       const cfg = Object.values(ROLES).find((c) => PERSONAS[c.role].username === username.trim().toLowerCase());
@@ -473,7 +489,7 @@ export const mockApi: DataService = {
     },
     changePassword: (current, next) => {
       if (!current) return fail(400, "Current password is incorrect.");
-      if (next.length < 8) return fail(400, "New password must be at least 8 characters.");
+      if (next.length < 10) return fail(400, "Use at least 10 characters.");
       if (next === current) return fail(400, "New password must be different from the current password.");
       audit(`Changed password for user ${actor()}`);
       return wait(undefined);
@@ -812,16 +828,66 @@ export const mockApi: DataService = {
   },
 
   admin: {
-    users: () => wait(users),
+    users: ({ q, role, status, page, perPage }) => {
+      const needle = q.trim().toLowerCase();
+      const rows = users.filter((u) => (!needle || u.username.toLowerCase().includes(needle)) && (!role || u.role === role) && (!status || u.active === (status === "active")))
+        .sort((a, b) => a.username.localeCompare(b.username));
+      const roleList = (["super_admin", "admin", "manager", "staff", "accounting", "resident"] as T.Role[]).map((r) => ({ value: r, label: ROLES[r].label }));
+      return wait({ users: rows.slice((page - 1) * perPage, page * perPage).map(userRow), total: rows.length, page, perPage,
+        roles: roleList, creatableRoles: roleList.filter((r) => r.value !== "resident"), minPasswordLength: 10 });
+    },
     createUser: (input) => {
-      if (!input.username.trim()) return fail(400, "Username and password are required.");
-      if (users.some((u) => u.username === input.username.trim())) return fail(400, "Username already exists.");
-      if (!ROLES[input.role]) return fail(400, "Please choose a valid role.");
-      if (input.password.length < 8) return fail(400, "Password must be at least 8 characters.");
-      const u: T.UserAccount = { id: nextUserId++, username: input.username.trim(), role: input.role, active: true, createdAt: nowUtc() };
+      const fields: Record<string, string> = {};
+      if (!/^[A-Za-z0-9._-]{3,80}$/.test(input.username)) fields.username = "Use 3–80 letters, numbers, dots, dashes or underscores.";
+      else if (users.some((u) => u.username.toLowerCase() === input.username.toLowerCase())) fields.username = "That username is already taken.";
+      if (input.password.length < 10) fields.password = "Use at least 10 characters.";
+      if (input.role === "resident") fields.role = "Resident accounts are created under Resident Accounts, linked to the owner or tenant.";
+      else if (!ROLES[input.role]) fields.role = "Choose a role from the list.";
+      if (Object.keys(fields).length) return failFields(fields);
+      const u: MockUser = { id: nextUserId++, username: input.username, role: input.role, active: true, createdAt: `${nowUtc()}Z`, mustChangePassword: true };
       users.push(u);
       audit(`Created user ${u.username} (${u.role})`);
-      return wait(u);
+      return wait(userRow(u));
+    },
+    resetUserPassword: (userId, newPassword) => {
+      const u = users.find((x) => x.id === userId);
+      if (!u) return fail(404, "User not found.");
+      if (u.id === meId()) return fail(403, "To change your own password, use Change password in your account menu.");
+      const row = userRow(u);
+      if (!row.canResetPassword) return fail(403, row.resetBlockedReason!);
+      if (newPassword.length < 10) return failFields({ newPassword: "Use at least 10 characters." });
+      u.mustChangePassword = true;
+      u.passwordChangedAt = `${nowUtc()}Z`;
+      audit(`Reset password for user ${u.username}`);
+      return wait(undefined);
+    },
+    updateUser: (userId, input) => {
+      const u = users.find((x) => x.id === userId);
+      if (!u) return fail(404, "User not found.");
+      const row = userRow(u);
+      if (!row.canEdit) return fail(u.role === "resident" ? 409 : 403, row.editBlockedReason!);
+      const role = input.role ?? u.role;
+      const active = input.active ?? u.active;
+      if (role === "resident") return failFields({ role: "Resident accounts are managed under Resident Accounts." });
+      if (!ROLES[role]) return failFields({ role: "Choose a role from the list." });
+      if ((input.reason ?? "").length > 500) return failFields({ reason: "Keep the note under 500 characters." });
+      if (role === u.role && active === u.active) return fail(400, "Nothing to change: the role and status are already like this.");
+      const losesSa = u.role === "super_admin" && u.active && (role !== "super_admin" || !active);
+      if (losesSa && !users.some((x) => x.role === "super_admin" && x.active && x.id !== u.id))
+        return fail(409, "This is the last active Superadmin account. Make another account an active Superadmin first.");
+      const changes = [role !== u.role ? `role ${ROLES[u.role].label} -> ${ROLES[role].label}` : "", active !== u.active ? (active ? "activated" : "deactivated") : ""].filter(Boolean);
+      Object.assign(u, { role, active });
+      audit(`Updated user ${u.username}: ${changes.join(", ")}`);
+      return wait(userRow(u));
+    },
+    deleteUser: (userId) => {
+      const u = users.find((x) => x.id === userId);
+      if (!u) return fail(404, "User not found.");
+      const row = userRow(u);
+      if (!row.canDelete) return fail(u.role === "resident" ? 409 : 403, row.deleteBlockedReason!);
+      users.splice(users.indexOf(u), 1);
+      audit(`Deleted user ${u.username} (${u.role})`);
+      return wait(undefined);
     },
     residentAccounts: () => wait(residentAccounts),
     auditLogs: (q) => {

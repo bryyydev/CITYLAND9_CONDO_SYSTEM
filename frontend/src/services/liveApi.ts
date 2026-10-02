@@ -86,8 +86,17 @@ export const liveApi: DataService = {
     payroll: notConnected("Payroll"),
   },
   admin: {
-    users: notConnected("Users & Access"),
-    createUser: notConnected("Users & Access"),
+    users: (q) => {
+      const params = new URLSearchParams({ page: String(q.page), perPage: String(q.perPage) });
+      if (q.q.trim()) params.set("q", q.q.trim());
+      if (q.role) params.set("role", q.role);
+      if (q.status) params.set("status", q.status);
+      return http(`/admin/users?${params}`);
+    },
+    createUser: async (input) => (await http<{ user: T.UserAccount }>("/admin/users", { method: "POST", body: input })).user,
+    resetUserPassword: (userId, newPassword) => http(`/admin/users/${userId}/password`, { method: "POST", body: { newPassword } }),
+    updateUser: async (userId, input) => (await http<{ user: T.UserAccount }>(`/admin/users/${userId}`, { method: "PATCH", body: input })).user,
+    deleteUser: (userId) => http(`/admin/users/${userId}`, { method: "DELETE" }),
     residentAccounts: notConnected("Resident accounts"),
     auditLogs: notConnected("Audit logs"),
     rates: notConnected("Rates & Rules"),

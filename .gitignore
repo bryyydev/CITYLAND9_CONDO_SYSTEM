@@ -40,3 +40,6 @@ database/mysql-data/
 *.db-wal
 *.db-shm
 *.db-journal
+
+# Application, service and backup logs (may contain usernames and client addresses)
+logs/

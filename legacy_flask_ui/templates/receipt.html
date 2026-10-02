@@ -1,6 +1,7 @@
 {% extends "base.html" %}{% block content %}
 <div class="toolbar no-print"><a class="btn" href="{{url_for('receipts')}}">← Official Receipts</a> <button class="btn primary" onclick="window.print()">🖨 Print receipt</button></div>
-<div class="card" style="max-width:760px;margin:16px auto;padding:28px 32px">
+{% if r.voided_at %}<div class="alert danger" style="max-width:760px;margin:16px auto"><strong>VOID</strong> — voided {{ r.voided_at|localtime }} by {{ r.voided_by or 'system' }}. Reason: {{ r.void_reason }}. The receipt keeps its number; the payments it recorded were reversed.</div>{% endif %}
+<div class="card" style="max-width:760px;margin:16px auto;padding:28px 32px{% if r.voided_at %};opacity:.65{% endif %}">
   <div style="display:flex;justify-content:space-between;gap:16px;border-bottom:3px solid #2f7888;padding-bottom:12px">
     <div><h2 style="margin:0">{{corporation_name}}</h2><div class="muted">{{address}}</div></div>
     <div style="text-align:right"><div class="eyebrow">OFFICIAL RECEIPT</div><h2 style="margin:4px 0 0">{{r.receipt_no}}</h2><div class="muted">{{r.received_date}}</div></div>
@@ -25,4 +26,14 @@
   </table>
   <p class="muted" style="margin-top:22px">Received by: {{r.received_by or '—'}}{% if r.source == 'backfill' %} · Receipt created for a payment recorded before official receipts were introduced.{% endif %}</p>
 </div>
+{% if can_void and not r.voided_at %}
+<div class="card form-card no-print" style="max-width:760px;margin:16px auto">
+  <h3 style="margin-top:0">Void this receipt</h3>
+  <p class="muted">Use this only for a receipt recorded in error. The receipt keeps its number and is marked VOID; the bill, water or advance amounts it paid are reversed; the original records stay. {% if closed_through %}Books are closed through {{ closed_through }}: receipts dated then or earlier can't be voided.{% endif %}</p>
+  <form method="post" action="{{ url_for('void_receipt', rid=r.id) }}" onsubmit="return confirm('Void {{ r.receipt_no }} and reverse its payments? This is recorded in the Audit Logs.');">
+    <label>Reason (required)<input name="reason" required minlength="10" maxlength="500" placeholder="e.g. Recorded on the wrong unit; correct receipt is OR-2026-000123"></label>
+    <div class="form-actions"><button class="btn" style="background:#b3261e;color:#fff">Void receipt</button></div>
+  </form>
+</div>
+{% endif %}
 {% endblock %}

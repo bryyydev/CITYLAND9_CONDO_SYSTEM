@@ -6,10 +6,10 @@ import pytest
 
 from conftest import PASSWORD, ROLES, login
 
-from app.core.permissions import ANY_SIGNED_IN, PERMISSIONS, can
+from app.core.permissions import ANY_SIGNED_IN, PERMISSIONS, PUBLIC_ENDPOINTS, can
 from app.core.roles import ALL_ROLES
 
-PUBLIC = {"static", "login", "logout", "index"}
+PUBLIC = {"static", "login", "logout", "index"} | PUBLIC_ENDPOINTS
 
 
 def legacy_endpoints(app_module):
@@ -19,7 +19,7 @@ def legacy_endpoints(app_module):
 
 def client_for(app_module, role):
     if role == "super_admin":
-        return login(app_module, "superadmin", "admin123")[0]
+        return login(app_module, "superadmin", "Test-Admin-Pass-1")[0]
     return login(app_module, f"test_{role}", PASSWORD)[0]
 
 

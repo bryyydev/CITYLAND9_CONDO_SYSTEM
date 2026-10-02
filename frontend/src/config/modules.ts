@@ -33,7 +33,7 @@ export const MODULES: Record<ModuleId, ModuleDef> = {
   dashboard: m({ id: "dashboard", label: "Dashboard", icon: "dashboard-3-line", path: "", permission: "index", live: true, description: "Overview of your workspace" }),
   modules: m({ id: "modules", label: "All Property Modules", icon: "apps-2-line", path: "/modules", permission: "index", live: true, description: "Every module in the system" }),
 
-  users: m({ id: "users", label: "Users & Access Management", icon: "shield-user-line", path: "/users", permission: "users", live: false, legacyPath: "/users", description: "Staff accounts, roles and password resets" }),
+  users: m({ id: "users", label: "Users & Access Management", icon: "shield-user-line", path: "/users", permission: "users", live: true, description: "Staff accounts, roles and password resets" }),
   residentAccounts: m({ id: "residentAccounts", label: "Resident Accounts", icon: "user-heart-line", path: "/resident-accounts", permission: "resident_users", live: false, legacyPath: "/resident-users", description: "Portal logins linked to owners and tenants" }),
   ratesRules: m({ id: "ratesRules", label: "Rates & Rules", icon: "scales-3-line", path: "/rates-rules", permission: "settings", live: false, legacyPath: "/settings", description: "Dues rates, water, penalties, payment and email settings" }),
   auditLogs: m({ id: "auditLogs", label: "Audit Logs", icon: "file-shield-2-line", path: "/audit-logs", permission: "audit_logs", live: false, legacyPath: "/audit", description: "Read-only record of every important action" }),

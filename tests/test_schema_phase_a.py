@@ -66,7 +66,7 @@ def test_unused_tables_are_gone(app_module):
 
 
 def test_rates_and_rules_no_longer_writes_hr_copies(app_module):
-    client, _ = login(app_module, "superadmin", "admin123")
+    client, _ = login(app_module, "superadmin", "Test-Admin-Pass-1")
     client.post("/settings", data={"corporation_name": "CITYLAND 9 CONDOMINIUM CORPORATION"})
     with app_module.app.app_context():
         assert app_module.Setting.query.filter(app_module.Setting.key.like("hr_%")).count() == 0

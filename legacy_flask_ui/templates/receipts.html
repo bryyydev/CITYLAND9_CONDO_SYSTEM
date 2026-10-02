@@ -18,7 +18,7 @@
   <tbody>
   {% for r in rows %}
     <tr>
-      <td><strong>{{r.receipt_no}}</strong>{% if r.source == 'backfill' %} <span class="badge" title="Created for a payment recorded before receipts existed">earlier payment</span>{% endif %}</td>
+      <td><strong>{{r.receipt_no}}</strong>{% if r.voided_at %} <span class="badge" style="background:#fbe4e2;color:#b3261e" title="{{r.void_reason}}">VOID</span>{% endif %}{% if r.source == 'backfill' %} <span class="badge" title="Created for a payment recorded before receipts existed">earlier payment</span>{% endif %}</td>
       <td>{{r.received_date}}</td>
       <td>{{r.unit.unit_no}}</td>
       <td>{% for a in r.allocations %}{% if not loop.first %}<br>{% endif %}{% if a.kind == 'bill' %}SOA {{a.payment.billing.billing_month|month_year}}{% elif a.kind == 'water' %}Water {{a.water_reading.reading_month|month_year}}{% else %}Advance from {{a.advance_payment.start_month|month_year}}{% endif %} · {{a.amount|currency}}{% endfor %}</td>

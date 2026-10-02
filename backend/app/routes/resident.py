@@ -90,6 +90,7 @@ def make_resident_blueprint(legacy):
             "payments": [
                 {"date": p.payment_date.isoformat() if p.payment_date else None, "amount": money(p.amount),
                  "receiptNo": legacy.receipt_no_for("bill", p.id) or None,
+                 "reversed": bool(getattr(p, "reversed_at", None)),
                  "method": p.payment_method, "type": p.payment_type, "reference": p.reference or ""}
                 for p in sorted(bill.payments, key=lambda p: (p.payment_date or datetime.min.date(), p.id))
             ],
@@ -192,7 +193,7 @@ def make_resident_blueprint(legacy):
         return f"Advance condo dues from {a.advance_payment.start_month}", a.advance_payment.start_month
 
     def receipt_row(r):
-        return {"id": r.id, "receiptNo": r.receipt_no, "date": r.received_date.isoformat(), "amount": money(r.amount),
+        return {"id": r.id, "receiptNo": r.receipt_no, "voided": bool(r.voided_at), "voidReason": r.void_reason or "", "date": r.received_date.isoformat(), "amount": money(r.amount),
                 "method": r.payment_method, "reference": r.reference or "",
                 "items": [{"kind": a.kind, "label": allocation_label(a)[0], "month": allocation_label(a)[1],
                            "amount": money(a.amount)} for a in r.allocations]}
@@ -205,7 +206,8 @@ def make_resident_blueprint(legacy):
         R = legacy.Receipt
         rows = R.query.filter_by(unit_id=unit_id).order_by(R.received_date.desc(), R.id.desc()).limit(500).all()
         return jsonify({"receipts": [receipt_row(r) for r in rows],
-                        "totalPaid": money(sum((Decimal(str(r.amount)) for r in rows), Decimal("0")))})
+                        # Voided receipts are listed (marked) but are not money received.
+                        "totalPaid": money(sum((Decimal(str(r.amount)) for r in rows if not r.voided_at), Decimal("0")))})
 
     @bp.get("/units/<int:unit_id>/receipts/<int:receipt_id>")
     @unit_scoped

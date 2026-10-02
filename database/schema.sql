@@ -6,7 +6,7 @@
 --   CREATE DATABASE cityland9 CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 --   mysql -u <user> -p cityland9 < database/schema.sql
 --
--- Tables: 29 (ordered so foreign-key targets are created first)
+-- Tables: 31 (ordered so foreign-key targets are created first)
 
 SET NAMES utf8mb4;
 
@@ -29,8 +29,13 @@ CREATE TABLE audit_log (
 	username VARCHAR(80), 
 	action VARCHAR(255), 
 	created_at DATETIME(6), 
+	entity_type VARCHAR(40), 
+	entity_id INTEGER, 
+	reason VARCHAR(500), 
+	details TEXT, 
 	PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE INDEX ix_audit_log_entity ON audit_log (entity_type, entity_id);
 
 -- employee
 CREATE TABLE employee (
@@ -73,6 +78,22 @@ CREATE TABLE expense (
 	updated_at DATETIME(6), 
 	updated_by VARCHAR(80), 
 	PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+-- form_submission
+CREATE TABLE form_submission (
+	token VARCHAR(64) NOT NULL, 
+	action VARCHAR(60) NOT NULL, 
+	user_id INTEGER, 
+	created_at DATETIME(6), 
+	PRIMARY KEY (token)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+-- receipt_counter
+CREATE TABLE receipt_counter (
+	year INTEGER NOT NULL, 
+	last_seq INTEGER NOT NULL, 
+	PRIMARY KEY (year)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 -- setting
@@ -120,6 +141,9 @@ CREATE TABLE user (
 	`role` ENUM('super_admin','admin','manager','staff','accounting','resident'), 
 	active BOOL, 
 	created_at DATETIME(6), 
+	session_version INTEGER NOT NULL DEFAULT '0', 
+	must_change_password BOOL NOT NULL DEFAULT '0', 
+	password_changed_at DATETIME(6), 
 	updated_at DATETIME(6), 
 	updated_by VARCHAR(80), 
 	PRIMARY KEY (id), 
@@ -153,6 +177,7 @@ CREATE TABLE advance_payment (
 	payment_method VARCHAR(20), 
 	reference VARCHAR(100), 
 	remarks VARCHAR(300), 
+	reversed_at DATETIME(6), 
 	updated_at DATETIME(6), 
 	updated_by VARCHAR(80), 
 	PRIMARY KEY (id), 
@@ -379,6 +404,9 @@ CREATE TABLE receipt (
 	remarks VARCHAR(300), 
 	received_by VARCHAR(80), 
 	source VARCHAR(20) NOT NULL, 
+	voided_at DATETIME(6), 
+	voided_by VARCHAR(80), 
+	void_reason VARCHAR(500), 
 	created_at DATETIME(6), 
 	PRIMARY KEY (id), 
 	CONSTRAINT uq_receipt_year_seq UNIQUE (receipt_year, receipt_seq), 
@@ -525,6 +553,7 @@ CREATE TABLE payment (
 	payment_type VARCHAR(20), 
 	reference VARCHAR(100), 
 	remarks VARCHAR(300), 
+	reversed_at DATETIME(6), 
 	updated_at DATETIME(6), 
 	updated_by VARCHAR(80), 
 	PRIMARY KEY (id), 

@@ -16,7 +16,7 @@ def api_login(client, username, password):
 
 def test_login_requires_csrf_token(app_module):
     client = app_module.app.test_client()
-    resp = client.post("/api/auth/login", json={"username": "superadmin", "password": "admin123"})
+    resp = client.post("/api/auth/login", json={"username": "superadmin", "password": "Test-Admin-Pass-1"})
     assert resp.status_code == 403
     assert "CSRF" in resp.get_json()["error"]["message"]
 
@@ -47,7 +47,7 @@ def test_inactive_account_cannot_sign_in(app_module):
 
 def test_superadmin_login_me_and_shared_legacy_session(app_module):
     client = app_module.app.test_client()
-    resp = api_login(client, "superadmin", "admin123")
+    resp = api_login(client, "superadmin", "Test-Admin-Pass-1")
     assert resp.status_code == 200
     user = resp.get_json()["user"]
     assert user == {**user, "username": "superadmin", "role": "super_admin", "home": "dashboard", "portal": "superadmin", "unitId": None}
@@ -79,7 +79,7 @@ def test_permissions_follow_the_role_matrix(app_module, role, home, portal, allo
 
 def test_logout_ends_both_sessions(app_module):
     client = app_module.app.test_client()
-    token = api_login(client, "superadmin", "admin123").get_json()["csrfToken"]
+    token = api_login(client, "superadmin", "Test-Admin-Pass-1").get_json()["csrfToken"]
     assert client.post("/api/auth/logout", headers={"X-CSRFToken": token}).status_code == 204
     assert client.get("/api/auth/me").status_code == 401
     assert client.get("/dashboard").status_code == 302  # legacy page now redirects to login

@@ -47,7 +47,7 @@ def test_rate_change_does_not_change_an_issued_bill(app_module, test502):
 
 def test_new_bills_use_the_current_rate(app_module, test502):
     m = app_module
-    client, _ = login(m, "superadmin", "admin123")
+    client, _ = login(m, "superadmin", "Test-Admin-Pass-1")
     client.post("/billing", data={"month": "2031-02"})
     with m.app.app_context():
         unit = m.db.session.get(m.Unit, test502["unit"])
@@ -102,7 +102,7 @@ def test_storage_is_added_only_from_the_cutoff_month(app_module, test502):
         assert with_storage["storage"] == test502["storage"]
         assert with_storage["total"] == without["total"] + test502["storage"]
         # SOA page and resident API tell which case applies
-        admin, _ = login(m, "superadmin", "admin123")
+        admin, _ = login(m, "superadmin", "Test-Admin-Pass-1")
         assert "not included in this total" not in admin.get(f"/billing/{test502['bill']}").get_data(as_text=True)
         set_setting(m, "storage_in_total_from", "9999-12")
         assert "not included in this total" in admin.get(f"/billing/{test502['bill']}").get_data(as_text=True)
@@ -114,7 +114,7 @@ def test_rates_and_rules_validates_the_storage_month(app_module):
     m = app_module
     old = set_setting(m, "storage_in_total_from", "2031-05")
     try:
-        client, _ = login(m, "superadmin", "admin123")
+        client, _ = login(m, "superadmin", "Test-Admin-Pass-1")
         resp = client.post("/settings", data={"storage_in_total_from": "May 2031"}, follow_redirects=True)
         assert "Storage start month must look like 2026-10" in resp.get_data(as_text=True)
         with m.app.app_context():

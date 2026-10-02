@@ -70,7 +70,7 @@ def test_role_never_loops_on_forbidden_pages(app_module, role):
 def test_sidebar_links_are_accessible(app_module, role):
     """Every link the sidebar shows a role must actually open for that role."""
     if role == "super_admin":
-        client, landing = login(app_module, "superadmin", "admin123")
+        client, landing = login(app_module, "superadmin", "Test-Admin-Pass-1")
     else:
         client, landing = login(app_module, f"test_{role}", PASSWORD)
     assert landing == "/app/", f"{role} should land in the new app, not {landing}"

@@ -100,8 +100,12 @@ export interface DataService {
     payroll(period: T.Month): Promise<T.PayrollRecord[]>;
   };
   admin: {
-    users(): Promise<T.UserAccount[]>;
+    users(query: T.UserQuery): Promise<T.UserPage>;
     createUser(input: { username: string; password: string; role: T.Role }): Promise<T.UserAccount>;
+    /** Reset ANOTHER account's password (the signed-in user's own: auth.changePassword). */
+    resetUserPassword(userId: number, newPassword: string): Promise<void>;
+    updateUser(userId: number, input: T.UserUpdate): Promise<T.UserAccount>;
+    deleteUser(userId: number): Promise<void>;
     residentAccounts(): Promise<T.ResidentAccount[]>;
     auditLogs(q: string): Promise<T.AuditLog[]>;
     rates(): Promise<T.RatesAndRules>;

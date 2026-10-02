@@ -3,7 +3,9 @@ import sys
 import shutil
 import sqlite3
 import re
+import secrets
 import smtplib
+import time
 from email.message import EmailMessage
 from datetime import datetime, date, timezone
 from decimal import Decimal, InvalidOperation
@@ -46,7 +48,11 @@ app = Flask(
     static_folder=os.path.join(LEGACY_UI_DIR, "static"),
     static_url_path="/static",
 )
-app.secret_key = os.getenv("SECRET_KEY", "cityland9-v10-change-this-secret")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # backend/ (app.core.*)
+from app.core import security  # noqa: E402
+
+# Production refuses a missing, short or placeholder SECRET_KEY (APP_ENV=development relaxes it).
+app.secret_key = security.check_secret_key(os.getenv("SECRET_KEY"))
 
 # Database selection (docs/migration.md):
 #   DATABASE_URL set        -> use it as-is
@@ -70,7 +76,12 @@ if not db_url:
 if db_url.startswith("mysql"):
     # PyMySQL rejects SQLite's "timeout" argument (migration issue I1). Recycle
     # connections before MySQL's idle timeout closes them.
-    _engine_options = {"pool_pre_ping": True, "pool_recycle": 280, "connect_args": {"connect_timeout": 10}}
+    # READ COMMITTED: after a request takes a row lock (bill, receipt counter) it sees what other
+    # cashiers committed meanwhile (REPEATABLE READ would keep a snapshot from the request's first
+    # query, e.g. the sign-in check). It also avoids gap locks. A shorter lock wait lets
+    # retry_on_deadlock retry promptly instead of keeping a cashier waiting 50 seconds.
+    _engine_options = {"pool_pre_ping": True, "pool_recycle": 280, "isolation_level": "READ COMMITTED",
+                       "connect_args": {"connect_timeout": 10, "init_command": "SET SESSION innodb_lock_wait_timeout = 15"}}
 else:
     _engine_options = {"pool_pre_ping": True, "connect_args": {"timeout": 30}}
 app.config.update(
@@ -79,7 +90,16 @@ app.config.update(
     SQLALCHEMY_ENGINE_OPTIONS=_engine_options,
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
+    # Set SESSION_COOKIE_SECURE=1 once the server is reached over HTTPS (docs/run-guide/06).
+    SESSION_COOKIE_SECURE=os.getenv("SESSION_COOKIE_SECURE", "0") == "1",
+    SESSION_COOKIE_NAME="cityland9_session",
+    # Largest accepted request body (Excel import). Bigger uploads get a friendly error (413).
+    MAX_CONTENT_LENGTH=int(os.getenv("MAX_UPLOAD_MB", "20")) * 1024 * 1024,
 )
+# Excel import limits (protect the server from huge or malicious workbooks).
+IMPORT_MAX_ROWS = int(os.getenv("IMPORT_MAX_ROWS", "50000"))          # per sheet
+IMPORT_MAX_COLUMNS = 200
+IMPORT_MAX_UNCOMPRESSED_MB = int(os.getenv("IMPORT_MAX_UNCOMPRESSED_MB", "200"))
 db = SQLAlchemy(app)
 
 
@@ -122,10 +142,25 @@ def _stamp_changes(sess, flush_context, instances):
 # Helpers
 # -----------------------------
 def money(v):
+    """Internal values (database columns, computed figures) -> Decimal. NOT for user input:
+    typed amounts go through form_amount()/form_decimal(), which reject bad input."""
     try:
         return Decimal(str(v or 0))
     except (InvalidOperation, TypeError, ValueError):
         return Decimal("0")
+
+
+from app.core.numbers import InputError, parse_amount, parse_decimal, round_money  # noqa: E402
+
+
+def form_amount(name, label, **options):
+    """A peso amount from the submitted form (strict; raises InputError)."""
+    return parse_amount(request.form.get(name), label=label, **options)
+
+
+def form_decimal(name, label, places, **options):
+    """A non-money number from the submitted form (area, reading, rate; strict; raises InputError)."""
+    return parse_decimal(request.form.get(name), label=label, places=places, **options)
 
 
 def parse_date(v):
@@ -169,27 +204,99 @@ def setting_float(key, default=0):
         return float(default)
 
 
-def audit(action):
-    """Record an audit log entry and commit it immediately.
+def audit(action, *, entity_type=None, entity_id=None, reason=None, details=None, commit=True):
+    """Record an audit log entry.
 
-    audit() is called after the main db.session.commit() in all routes,
-    so this separate commit only ever contains the AuditLog row itself.
+    Financial changes call it with commit=False BEFORE their own commit, so the change and its
+    audit entry are saved together or not at all. Other callers keep the old behaviour (separate
+    commit after the main change); a failure there is logged instead of silently ignored.
+    details: a dict of before/after values (stored as JSON). Never pass passwords or secrets.
     """
+    import json
+    entry = AuditLog(
+        username=(session.get("username") if has_request_context() else None) or "system",
+        action=action[:255], entity_type=entity_type, entity_id=entity_id,
+        reason=(reason or None) and reason[:500],
+        details=json.dumps(details, default=str, sort_keys=True) if details is not None else None,
+    )
+    db.session.add(entry)
+    if not commit:
+        return entry
     try:
-        db.session.add(
-            AuditLog(
-                username=session.get("username", "system"),
-                action=action,
-            )
-        )
         db.session.commit()
     except Exception:
         db.session.rollback()
+        app.logger.exception("Audit entry could not be saved: %s", action)
+    return entry
 
 
 def current_user():
+    """The signed-in user, or None. Checked on EVERY request (classic pages and API):
+    the account must still exist and be active, the session must belong to the account's
+    current session version (password resets/changes and deactivation end older sessions),
+    and the session must be within its idle and absolute lifetime. An invalid session is cleared."""
+    if "cl9_user" in g:
+        return g.cl9_user
+    user = None
     uid = session.get("user_id")
-    return db.session.get(User, uid) if uid else None
+    if uid:
+        candidate = db.session.get(User, uid)
+        valid = (candidate is not None and candidate.active
+                 and session.get("sv") == (candidate.session_version or 0)
+                 and not security.session_expired(session.get("iat"), session.get("seen")))
+        if valid:
+            user = candidate
+            now = time.time()
+            if now - float(session.get("seen", 0)) > 60:   # refresh activity at most once a minute
+                session["seen"] = now
+        else:
+            session.clear()
+    g.cl9_user = user
+    return user
+
+
+def start_session(user):
+    """Sign `user` in: a fresh session bound to the account's current session version."""
+    session.clear()
+    now = time.time()
+    session.update({"user_id": user.id, "username": user.username, "sv": user.session_version or 0, "iat": now, "seen": now})
+    g.cl9_user = user
+
+
+def end_other_sessions(user, keep_current=False):
+    """Invalidate every existing session of `user` (call before commit). With keep_current the
+    caller's own session stays valid (e.g. the user changed their own password)."""
+    user.session_version = (user.session_version or 0) + 1
+    if keep_current and session.get("user_id") == user.id:
+        session["sv"] = user.session_version
+
+
+def set_password(user, new_password, *, temporary, keep_current_session=False):
+    """Store a new password hash. temporary=True forces a change at the next sign-in."""
+    user.password_hash = generate_password_hash(new_password)
+    user.must_change_password = bool(temporary)
+    user.password_changed_at = datetime.utcnow()
+    end_other_sessions(user, keep_current=keep_current_session)
+
+
+def get_smtp_password():
+    """The SMTP password, decrypted ("" when not set or unreadable after a SECRET_KEY change)."""
+    return security.decrypt_secret(setting("smtp_password", ""), app.secret_key)
+
+
+def set_smtp_password(plaintext):
+    """Store the SMTP password encrypted at rest (call before commit). "" removes it."""
+    row = Setting.query.filter_by(key="smtp_password").first() or Setting(key="smtp_password")
+    row.value = security.encrypt_secret(plaintext, app.secret_key) if plaintext else ""
+    db.session.add(row)
+
+
+USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]{3,80}$")
+
+
+def client_address():
+    """The client's IP for sign-in throttling. Proxy headers are honoured only from TRUSTED_PROXY (backend/run.py)."""
+    return request.remote_addr or "unknown"
 
 
 def login_required(fn):
@@ -281,10 +388,35 @@ def rate_for_type(unit_type):
     }.get(unit_type, 0)
 
 
+def due_day_setting():
+    """Validated due day (1-31) from Rates & Rules; 8 when unset or invalid."""
+    try:
+        day = int(Decimal(str(setting("due_day", "8")).strip()))
+    except (InvalidOperation, ValueError):
+        return 8
+    return day if 1 <= day <= 31 else 8
+
+
+def due_date_for(month):
+    """Due date of a NEW bill for billing month YYYY-MM: the configured due day, or the month's
+    last day when the month is shorter (due day 31 -> 30 April, 28/29 February)."""
+    import calendar
+    year, mon = (int(x) for x in month.split("-"))
+    return date(year, mon, min(due_day_setting(), calendar.monthrange(year, mon)[1]))
+
+
+def dec(value):
+    """A stored number (DOUBLE/float, Decimal, text) as an exact Decimal. str() recovers the value
+    as typed (e.g. 85.15, not 85.1499999...), so the arithmetic below is exact."""
+    return Decimal(str(value or 0))
+
+
+# Pricing rule (documented): amounts are computed in Decimal and rounded ONCE, to the centavo,
+# half up (0.005 -> 0.01). Previously float math + round() could round a half-centavo down.
 def unit_dues(unit):
     """Condo dues = total unit area × applicable rate per sqm."""
-    rate = float(unit.unit_rate_per_sqm or rate_for_type(unit.unit_type))
-    return round(float(unit.area_sqm or 0) * rate, 2)
+    rate = dec(unit.unit_rate_per_sqm) or dec(rate_for_type(unit.unit_type))
+    return round_money(dec(unit.area_sqm) * rate)
 
 
 def assigned_asset(unit, field_name):
@@ -304,11 +436,11 @@ def assigned_asset(unit, field_name):
 
 def asset_unit_charge(asset, default_rate_key):
     if not asset:
-        return 0.0
+        return Decimal("0.00")
     if getattr(asset, "dues_mode", "per_sqm") == "manual" and money(getattr(asset, "manual_monthly_dues", 0)) > 0:
-        return round(float(asset.manual_monthly_dues), 2)
-    rate = float(asset.unit_rate_per_sqm or setting_float(default_rate_key, 0))
-    return round(float(asset.area_sqm or 0) * rate, 2)
+        return round_money(asset.manual_monthly_dues)
+    rate = dec(asset.unit_rate_per_sqm) or dec(setting(default_rate_key, "0"))
+    return round_money(dec(asset.area_sqm) * rate)
 
 
 def parking_dues(unit):
@@ -316,13 +448,13 @@ def parking_dues(unit):
     One parking model since Phase B3; the old per-unit parking lots were converted."""
     assigned = assigned_asset(unit, "assigned_parking_unit_id")
     if not assigned:
-        return 0.0
-    rate = float(assigned.unit_rate_per_sqm or setting_float("parking_rate_per_sqm", 0))
-    return round(float(assigned.area_sqm or 0) * rate, 2)
+        return Decimal("0.00")
+    rate = dec(assigned.unit_rate_per_sqm) or dec(setting("parking_rate_per_sqm", "0"))
+    return round_money(dec(assigned.area_sqm) * rate)
 
 def storage_dues(unit):
     if not getattr(unit, "include_storage", False):
-        return 0.0
+        return Decimal("0.00")
     assigned = assigned_asset(unit, "assigned_storage_unit_id")
     return asset_unit_charge(assigned, "storage_rate_per_sqm")
 
@@ -345,8 +477,8 @@ def storage_charged(bill):
 def water_amount_for_reading(reading):
     if not reading or setting("water_auto_compute", "1") != "1":
         return Decimal("0")
-    usage = max(Decimal(str(reading.current_reading or 0)) - Decimal(str(reading.previous_reading or 0)), Decimal("0"))
-    return usage * Decimal(str(reading.rate or setting_float("water_rate", 50)))
+    usage = max(dec(reading.current_reading) - dec(reading.previous_reading), Decimal("0"))
+    return round_money(usage * (dec(reading.rate) or dec(setting("water_rate", "50"))))
 
 
 def unpaid_previous_bills(unit_id, month):
@@ -404,6 +536,8 @@ def _advance_balance_cached(advance):
     if cache is None:
         cache = {}
         g._advance_balance_cache = cache
+    if getattr(advance, "reversed_at", None):
+        return Decimal("0.00")
     if advance.id not in cache:
         applied = db.session.query(func.coalesce(func.sum(AdvanceApplication.amount), 0)).filter(AdvanceApplication.advance_payment_id == advance.id).scalar() or Decimal("0")
         cache[advance.id] = max(money(advance.amount) - money(applied), Decimal("0")).quantize(Decimal("0.01"))
@@ -704,7 +838,9 @@ def allocate_advances_for_month(month, unit_id=None):
         advances = (
             AdvancePayment.query
             .filter_by(unit_id=bill.unit_id)
+            .filter(AdvancePayment.reversed_at.is_(None))
             .order_by(AdvancePayment.payment_date.asc(), AdvancePayment.id.asc())
+            .with_for_update()          # concurrent payments of the same unit apply each advance once
             .all()
         )
 
@@ -869,6 +1005,12 @@ class User(ChangeTracked, db.Model):
     role = db.Column(db.String(40).with_variant(MYSQL_ENUM(*ALL_ROLES), "mysql"), default="staff")
     active = db.Column(db.Boolean, default=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    # Session security (migration 0008). Raising session_version ends every existing session of
+    # the account (password reset/change, deactivation). must_change_password forces a new
+    # password at the next sign-in (temporary passwords, the old default admin password).
+    session_version = db.Column(db.Integer, nullable=False, default=0, server_default="0")
+    must_change_password = db.Column(db.Boolean, nullable=False, default=False, server_default="0")
+    password_changed_at = db.Column(db.DateTime, nullable=True)
 
     @validates("role")
     def _validate_role(self, key, value):
@@ -1024,6 +1166,8 @@ class Payment(ChangeTracked, db.Model):
     payment_type = db.Column(db.String(20), default="FULL")
     reference = db.Column(db.String(100))
     remarks = db.Column(db.String(300))
+    # Set when the payment's official receipt is voided (migration 0009). The row is kept.
+    reversed_at = db.Column(db.DateTime, nullable=True)
     billing = db.relationship("Billing", back_populates="payments")
 
 
@@ -1041,6 +1185,8 @@ class AdvancePayment(ChangeTracked, db.Model):
     payment_method = db.Column(db.String(20), default="CASH")
     reference = db.Column(db.String(100))
     remarks = db.Column(db.String(300))
+    # Set when the advance's official receipt is voided (migration 0009). The row is kept.
+    reversed_at = db.Column(db.DateTime, nullable=True)
     unit = db.relationship("Unit")
     applications = db.relationship("AdvanceApplication", back_populates="advance", cascade="all, delete-orphan")
 
@@ -1086,7 +1232,9 @@ class WaterReading(ChangeTracked, db.Model):
 
     @property
     def bill_amount(self):
-        return round(self.usage * float(self.rate or 0), 2)
+        """usage × rate in Decimal, rounded half up to the centavo (same rule as all dues)."""
+        usage = max(Decimal(str(self.current_reading or 0)) - Decimal(str(self.previous_reading or 0)), Decimal("0"))
+        return (usage * Decimal(str(self.rate or 0))).quantize(Decimal("0.01"), rounding="ROUND_HALF_UP")
 
 
 class Receipt(db.Model):
@@ -1107,9 +1255,31 @@ class Receipt(db.Model):
     remarks = db.Column(db.String(300))
     received_by = db.Column(db.String(80))
     source = db.Column(db.String(20), nullable=False, default="cashier")  # cashier | backfill
+    # A voided receipt keeps its number (no gaps) and its row (migration 0009).
+    voided_at = db.Column(db.DateTime, nullable=True)
+    voided_by = db.Column(db.String(80))
+    void_reason = db.Column(db.String(500))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     unit = db.relationship("Unit")
     allocations = db.relationship("ReceiptAllocation", back_populates="receipt", cascade="all, delete-orphan")
+
+
+class ReceiptCounter(db.Model):
+    """Last official-receipt sequence number per year. Its row is locked (SELECT ... FOR UPDATE)
+    while a receipt is issued, so concurrent cashiers get consecutive, unique numbers."""
+    __tablename__ = "receipt_counter"
+    year = db.Column(db.Integer, primary_key=True, autoincrement=False)
+    last_seq = db.Column(db.Integer, nullable=False)
+
+
+class FormSubmission(db.Model):
+    """One row per submitted payment form (its one-time form token). A second submission of the
+    same form - double click, browser refresh, network retry - is refused instead of paying twice."""
+    __tablename__ = "form_submission"
+    token = db.Column(db.String(64), primary_key=True)
+    action = db.Column(db.String(60), nullable=False)
+    user_id = db.Column(db.Integer)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
 class ReceiptAllocation(db.Model):
@@ -1134,6 +1304,99 @@ class ReceiptAllocation(db.Model):
     advance_payment = db.relationship("AdvancePayment")
 
 
+class DuplicateSubmission(Exception):
+    """The same payment form was submitted twice; the first submission already took effect."""
+
+
+def reset_financial_caches():
+    """Forget per-request balance caches (after locking rows or changing payments)."""
+    for name in ("_billing_history_by_unit", "_bill_calc_cache", "_advance_balance_cache", "_advance_applied_cache"):
+        g.pop(name, None)
+
+
+def lock_row(model, row_id):
+    """Load a row with an exclusive row lock until commit (MariaDB/MySQL SELECT ... FOR UPDATE)."""
+    return db.session.query(model).filter_by(id=row_id).with_for_update().populate_existing().first()
+
+
+def claim_form_token(action):
+    """One payment per rendered form. The token is put into every POST form by _security_headers;
+    claiming it twice raises DuplicateSubmission (the second click/refresh changes nothing)."""
+    from sqlalchemy.exc import IntegrityError
+    token = (request.form.get("form_token") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{16,64}", token):
+        raise InputError("form_token", "This form is out of date. Reload the page and enter the payment again.")
+    try:
+        with db.session.begin_nested():
+            user = current_user()
+            db.session.add(FormSubmission(token=token, action=action, user_id=user.id if user else None))
+    except IntegrityError:
+        raise DuplicateSubmission() from None
+
+
+def books_closed_through():
+    """Last closed billing month (YYYY-MM) from Rates & Rules, or "" when no period is closed."""
+    value = (setting("books_closed_through", "") or "").strip()
+    return value if re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", value) else ""
+
+
+def check_open_period(month_or_date, what):
+    """Refuse changes dated in a closed period (InputError -> message, nothing saved)."""
+    closed = books_closed_through()
+    month = month_or_date.strftime("%Y-%m") if hasattr(month_or_date, "strftime") else str(month_or_date or "")[:7]
+    if closed and month and month <= closed:
+        raise InputError("period", f"The books are closed through {closed}. {what} dated {month} can't be changed; "
+                                   "record a correction in an open month instead.")
+
+
+def retry_on_deadlock(fn):
+    """Re-run a financial request when the database aborts it because of a lock conflict
+    (deadlock 1213 / lock wait timeout 1205). Each attempt starts from a clean transaction."""
+    from sqlalchemy.exc import OperationalError
+
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        for attempt in range(3):
+            try:
+                return fn(*args, **kwargs)
+            except OperationalError as exc:
+                db.session.rollback()
+                reset_financial_caches()
+                code = getattr(getattr(exc, "orig", None), "args", [None])[0]
+                if code not in (1205, 1213) or attempt == 2:
+                    app.logger.exception("Financial transaction failed")
+                    flash("The database was busy and nothing was saved. Please try again.", "danger")
+                    return redirect(request.referrer or url_for("index"))
+                time.sleep(0.05 * (attempt + 1))
+    return wrapper
+
+
+@app.errorhandler(DuplicateSubmission)
+def _duplicate_submission(_exc):
+    db.session.rollback()
+    flash("This form was already submitted, so it was not recorded again. Check the payment list below.", "warning")
+    back = request.referrer or ""
+    return redirect(back if back.startswith(request.host_url) else url_for("index"))
+
+
+def next_receipt_number(year):
+    """Next gap-free sequence number for `year`, under a row lock on its counter. The first receipt
+    of a year creates the counter row; if two cashiers do that at the same moment, one insert fails
+    on the primary key and simply waits for and continues from the other's row."""
+    from sqlalchemy.exc import IntegrityError
+    counter = db.session.query(ReceiptCounter).filter_by(year=year).with_for_update().first()
+    if counter is None:
+        start = db.session.query(func.max(Receipt.receipt_seq)).filter(Receipt.receipt_year == year).scalar() or 0
+        try:
+            with db.session.begin_nested():
+                db.session.add(ReceiptCounter(year=year, last_seq=start))
+        except IntegrityError:
+            pass
+        counter = db.session.query(ReceiptCounter).filter_by(year=year).with_for_update().populate_existing().first()
+    counter.last_seq += 1
+    return counter.last_seq
+
+
 def issue_receipt(unit_id, received_date, method, reference, remarks, parts, source="cashier", received_by=None):
     """Create the official receipt for money received, in the caller's transaction.
 
@@ -1146,9 +1409,8 @@ def issue_receipt(unit_id, received_date, method, reference, remarks, parts, sou
         return None
     db.session.flush()  # the paid records need their ids
     year = received_date.year
-    last = (db.session.query(func.max(Receipt.receipt_seq)).filter(Receipt.receipt_year == year)
-            .with_for_update().scalar()) or 0   # locks the year's numbers until commit (no duplicates)
-    receipt = Receipt(receipt_year=year, receipt_seq=last + 1, receipt_no=f"OR-{year}-{last + 1:06d}",
+    seq = next_receipt_number(year)   # counter row locked until commit: unique, consecutive numbers
+    receipt = Receipt(receipt_year=year, receipt_seq=seq, receipt_no=f"OR-{year}-{seq:06d}",
                       unit_id=unit_id, received_date=received_date, amount=total,
                       payment_method=(method or "CASH").upper(), reference=(reference or None),
                       remarks=((remarks or "").strip()[:300] or None), source=source,
@@ -1227,10 +1489,16 @@ class GatePass(db.Model):
 
 
 class AuditLog(db.Model):
+    __table_args__ = (db.Index("ix_audit_log_entity", "entity_type", "entity_id"),)
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80))
     action = db.Column(db.String(255))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    # Structured audit for financial events (migration 0009). details = JSON before/after values.
+    entity_type = db.Column(db.String(40))
+    entity_id = db.Column(db.Integer)
+    reason = db.Column(db.String(500))
+    details = db.Column(db.Text)
 
 
 class Setting(ChangeTracked, db.Model):
@@ -1441,6 +1709,109 @@ def app_login_url():
     return "/app/login" + (f"?{urlencode({'notice': reasons[-1]})}" if reasons else "")
 
 
+# ------------------------------------------------------------------ request-wide security
+# CSRF for the classic screens. The JSON API blueprints check X-CSRFToken themselves
+# (app.utils.auth.protect_api_blueprint) with the same per-session token.
+from app.utils.auth import csrf_token as _csrf_token  # noqa: E402
+import hmac  # noqa: E402
+
+UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+_FORM_TAG = re.compile(r"(<form\b[^>]*\bmethod\s*=\s*[\"']?post[\"']?[^>]*>)", re.IGNORECASE)
+# Endpoints a user who must change their password may still use.
+PASSWORD_CHANGE_ALLOWED = {"static", "logout", "login", "index", "change_password",
+                           "api_auth.get_csrf", "api_auth.login", "api_auth.logout", "api_auth.me", "api_auth.change_password"}
+
+
+@app.errorhandler(413)
+def _too_large(_exc):
+    limit = app.config["MAX_CONTENT_LENGTH"] // (1024 * 1024)
+    if request.path.startswith("/api/"):
+        response = jsonify({"error": {"status": 413, "message": f"The upload is larger than {limit} MB."}})
+        response.status_code = 413
+        return response
+    flash(f"The file is larger than {limit} MB (MAX_UPLOAD_MB in .env sets the limit).", "danger")
+    return redirect(url_for("settings") if can_access("settings") else url_for("index"))
+
+
+@app.errorhandler(500)
+def _server_error(exc):
+    """Unexpected failure: undo the half-done transaction, log the details with a reference,
+    and show the user a plain message (no internals) they can quote when reporting it."""
+    db.session.rollback()
+    ref = secrets.token_hex(4).upper()
+    original = getattr(exc, "original_exception", exc)
+    app.logger.error("Unhandled error ref=%s %s %s", ref, request.method, request.path, exc_info=original)
+    if request.path.startswith("/api/"):
+        response = jsonify({"error": {"status": 500, "message": f"Server error (reference {ref}). Nothing was saved."}})
+        response.status_code = 500
+        return response
+    return (f"<!doctype html><title>Something went wrong</title><div style='font-family:sans-serif;margin:2rem;max-width:40rem'>"
+            f"<h2>Something went wrong</h2><p>Nothing was saved. Please go back and try again. If it happens again, "
+            f"tell the administrator this reference: <b>{ref}</b>.</p></div>", 500)
+
+
+@app.errorhandler(InputError)
+def _invalid_input(exc):
+    """A typed value was rejected (app.core.numbers): nothing is saved, the user sees why."""
+    db.session.rollback()
+    if request.path.startswith("/api/"):
+        response = jsonify({"error": {"status": 400, "message": exc.message, "fields": {exc.field: exc.message}}})
+        response.status_code = 400
+        return response
+    flash(exc.message, "danger")
+    back = request.referrer or ""
+    same_site = back.startswith(request.host_url)
+    return redirect(back if same_site else url_for("index"))
+
+
+@app.before_request
+def _classic_csrf_check():
+    if request.method in UNSAFE_METHODS and not request.path.startswith("/api/"):
+        sent = request.form.get("csrf_token") or request.headers.get("X-CSRFToken", "")
+        expected = session.get("csrf_token", "")
+        if not expected or not sent or not hmac.compare_digest(str(sent), str(expected)):
+            app.logger.warning("CSRF rejected: %s %s", request.method, request.path)
+            return ("<!doctype html><title>Form expired</title><p style='font-family:sans-serif;margin:2rem'>"
+                    "This form has expired or was not sent from CityLand 9. Go back, reload the page and try again.</p>", 400)
+
+
+@app.before_request
+def _force_password_change():
+    if not session.get("user_id") or request.endpoint in PASSWORD_CHANGE_ALLOWED or (request.endpoint or "").startswith("react_app."):
+        return None
+    user = current_user()
+    if user and user.must_change_password:
+        if request.path.startswith("/api/"):
+            response = jsonify({"error": {"status": 403, "code": "password_change_required",
+                                          "message": "Please choose a new password before continuing."}})
+            response.status_code = 403
+            return response
+        return redirect(APP_URL)   # the new app shows the change-password screen
+
+
+@app.after_request
+def _security_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
+    response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    if request.is_secure:
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
+    ctype = response.mimetype or ""
+    if session.get("user_id") and ctype in ("text/html", "application/json"):
+        response.headers["Cache-Control"] = "no-store"   # signed-in pages/data are never cached
+    # Put the CSRF token into every POST form of classic pages (all 46 forms, and any future one).
+    if ctype == "text/html" and not response.direct_passthrough and request.endpoint != "react_app.serve" and response.status_code < 400:
+        body = response.get_data(as_text=True)
+        if "<form" in body.lower():
+            field = f'<input type="hidden" name="csrf_token" value="{_csrf_token()}">'
+            # Plus a one-time token per rendered form: payment routes accept each form only once.
+            response.set_data(_FORM_TAG.sub(
+                lambda m: m.group(1) + field + f'<input type="hidden" name="form_token" value="{secrets.token_urlsafe(24)}">', body))
+    return response
+
+
 @app.route("/")
 def index():
     return redirect(APP_URL if current_user() else app_login_url())
@@ -1481,26 +1852,38 @@ def dashboard():
 # -----------------------------
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    # Sign-in happens in the new app. A POST still works (old bookmarks, scripts, tests).
+    # Sign-in happens in the new app. A POST still works for scripts (CSRF token required,
+    # same throttling and generic errors as the API sign-in).
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
+        client = client_address()
+        if security.login_throttle.retry_after(username, client):
+            app.logger.warning("Sign-in throttled for %r from %s", username, client)
+            flash("Too many failed sign-in attempts. Please wait a few minutes and try again.", "danger")
+            return redirect(app_login_url())
         user = User.query.filter_by(username=username, active=True).first()
-
         if user and check_password_hash(user.password_hash, password):
-            session.clear()
-            session["user_id"] = user.id
-            session["username"] = user.username
+            security.login_throttle.success(username, client)
+            if any(password == d for d in security.SHIPPED_DEFAULT_PASSWORDS):
+                user.must_change_password = True
+                db.session.commit()
+            start_session(user)
             audit("Login")
             return redirect(APP_URL)
-
+        security.login_throttle.failure(username, client)
+        app.logger.warning("Failed sign-in for %r from %s", username, client)
         flash("Invalid username or password.", "danger")
 
     return redirect(app_login_url())
 
 
-@app.route("/logout")
+@app.route("/logout", methods=["GET", "POST"])
 def logout():
+    # Signing out changes state, so it requires POST (with the CSRF token). A GET never signs
+    # anyone out; it just returns to the app, where the Sign out button is.
+    if request.method == "GET":
+        return redirect(APP_URL)
     if session.get("user_id"):
         audit("Logout")
     session.clear()
@@ -1529,8 +1912,8 @@ def units():
             unit_no=unit_no,
             floor=d.get("floor", "").strip(),
             unit_type=d.get("unit_type", ""),
-            area_sqm=float(d.get("area_sqm") or 0),
-            unit_rate_per_sqm=float(d.get("unit_rate_per_sqm") or rate_for_type(d.get("unit_type"))),
+            area_sqm=float(form_decimal("area_sqm", "Area (sqm)", 2, minimum=Decimal("0"), maximum=Decimal("100000"), allow_empty=True, default=Decimal("0"))),
+            unit_rate_per_sqm=float(form_decimal("unit_rate_per_sqm", "Rate per sqm", 4, minimum=Decimal("0"), maximum=Decimal("100000"), allow_empty=True, default=None) or rate_for_type(d.get("unit_type"))),
             occupancy_type=d.get("occupancy_type", "Owner"),
             status=d.get("status", "Vacant"),
             include_parking=d.get("include_parking") == "on",
@@ -1539,7 +1922,7 @@ def units():
             assigned_storage_unit_id=(int(d.get("assigned_storage_unit_id") or 0) or None) if d.get("include_storage") == "on" else None,
             auto_rate=d.get("auto_rate") == "on",
             dues_mode=d.get("dues_mode", "per_sqm"),
-            manual_monthly_dues=money(d.get("manual_monthly_dues")),
+            manual_monthly_dues=form_amount("manual_monthly_dues", "Manual monthly dues", allow_zero=True, allow_empty=True),
             active=True,
         )
         if u.auto_rate:
@@ -1671,8 +2054,8 @@ def edit_unit(uid):
     d = request.form
     u.floor = d.get("floor", "")
     u.unit_type = d.get("unit_type", "")
-    u.area_sqm = float(d.get("area_sqm") or 0)
-    u.unit_rate_per_sqm = float(d.get("unit_rate_per_sqm") or rate_for_type(u.unit_type))
+    u.area_sqm = float(form_decimal("area_sqm", "Area (sqm)", 2, minimum=Decimal("0"), maximum=Decimal("100000"), allow_empty=True, default=Decimal("0")))
+    u.unit_rate_per_sqm = float(form_decimal("unit_rate_per_sqm", "Rate per sqm", 4, minimum=Decimal("0"), maximum=Decimal("100000"), allow_empty=True, default=None) or rate_for_type(u.unit_type))
     u.occupancy_type = d.get("occupancy_type", "Owner")
     u.status = d.get("status", "Vacant")
     u.include_parking = d.get("include_parking") == "on"
@@ -1681,7 +2064,7 @@ def edit_unit(uid):
     u.assigned_storage_unit_id = (int(d.get("assigned_storage_unit_id") or 0) or None) if u.include_storage else None
     u.auto_rate = d.get("auto_rate") == "on"
     u.dues_mode = d.get("dues_mode", "per_sqm")
-    u.manual_monthly_dues = money(d.get("manual_monthly_dues"))
+    u.manual_monthly_dues = form_amount("manual_monthly_dues", "Manual monthly dues", allow_zero=True, allow_empty=True)
     if u.auto_rate and u.dues_mode == "per_sqm":
         u.unit_rate_per_sqm = rate_for_type(u.unit_type)
 
@@ -1888,14 +2271,14 @@ def billing():
         if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month):
             flash("Invalid billing month.", "danger")
             return redirect(url_for("billing"))
-        due_day = 8
+        check_open_period(month, "Bills")
+        due_date = due_date_for(month)
         created = 0
         for u in Unit.query.filter_by(active=True).all():
             if u.unit_type in ("PARKING", "STORAGE"):
                 continue
             if Billing.query.filter_by(unit_id=u.id, billing_month=month).first():
                 continue
-            due_date = date.fromisoformat(f"{month}-01").replace(day=due_day)
             previous = previous_outstanding(u.id, month)
             penalty = penalty_for_unit(u.id, month)
             reading = WaterReading.query.filter_by(unit_id=u.id, reading_month=month).order_by(WaterReading.id.desc()).first()
@@ -1909,24 +2292,15 @@ def billing():
             db.session.add(bill)
             created += 1
         allocate_advances_for_month(month)
+        audit(f"Generated {created} detailed bills for {month}", entity_type="billing_month", reason=None,
+              details={"month": month, "created": created, "due_date": due_date.isoformat()}, commit=False)
         db.session.commit()
-        audit(f"Generated {created} detailed bills for {month}")
         flash(f"Generated {created} bills for {month}.", "success")
         return redirect(url_for("billing_email", month=month))
 
-    # GET must remain read-only and fast. Advance allocation and penalty
-    # refresh are performed when bills/payments are changed, not on every
-    # Billing/SOA page view.
-
-    # Normalize due dates only when necessary.
-    due_date_changed = False
-    month_due_date = date.fromisoformat(f"{month}-01").replace(day=8)
-    month_bills_for_sync = Billing.query.filter_by(billing_month=month).all()
-    for existing_bill in month_bills_for_sync:
-        if existing_bill.due_date != month_due_date:
-            existing_bill.due_date = month_due_date
-            due_date_changed = True
-
+    # GET is read-only: viewing the list never changes a bill. (It used to reset every bill's due
+    # date to the 8th and overwrite water amounts on each view; water is synchronized when a
+    # reading is saved, and each bill keeps the due date it was issued with.)
     # One query for the month's readings instead of one query per bill.
     current_readings = (
         WaterReading.query
@@ -1934,18 +2308,6 @@ def billing():
         .order_by(WaterReading.unit_id.asc(), WaterReading.id.desc())
         .all()
     )
-    reading_by_unit = {}
-    for r in current_readings:
-        reading_by_unit.setdefault(r.unit_id, r)
-    sync_changed = False
-    for b in month_bills_for_sync:
-        r = reading_by_unit.get(b.unit_id)
-        if r and money(b.water) != money(r.bill_amount):
-            b.water = money(r.bill_amount)
-            sync_changed = True
-    if due_date_changed or sync_changed:
-        db.session.commit()
-
     q = request.args.get("q", "").strip()
     status_filter = request.args.get("status", "").strip()
     unit_type_filter = request.args.get("unit_type", "").strip()
@@ -2012,10 +2374,11 @@ def billing():
 
 @app.route("/billing/advance", methods=["GET", "POST"])
 @guarded
+@retry_on_deadlock
 def advance_payments():
     if request.method == "POST":
         unit_id = request.form.get("unit_id", type=int)
-        amount = money(request.form.get("amount"))
+        amount = form_amount("amount", "Advance amount")
         start_month = (request.form.get("start_month") or "").strip()
         months = request.form.get("coverage_months", type=int) or 1
         method = (request.form.get("payment_method") or "CASH").upper()
@@ -2036,15 +2399,20 @@ def advance_payments():
         if method in ("CHECK", "ONLINE") and not reference:
             flash("Reference number is required for Check or Online payments.", "danger")
             return redirect(url_for("advance_payments"))
-        monthly = (amount / months).quantize(Decimal("0.01"))
+        check_open_period(payment_date, "Payments")
+        claim_form_token("advance_payment")
+        monthly = round_money(amount / months)
         adv = AdvancePayment(unit_id=unit_id, payment_date=payment_date, amount=amount, start_month=start_month, coverage_months=months, monthly_amount=monthly, payment_method=method, reference=reference, remarks=request.form.get("remarks", "").strip())
         db.session.add(adv)
         db.session.flush()
         allocate_advances_for_month(start_month, unit_id)
         receipt = issue_receipt(unit_id, payment_date, method, reference, request.form.get("remarks", ""),
                                 [("advance", adv, amount)])
+        audit(f"Issued {receipt.receipt_no} - Recorded {months}-month advance condo dues payment for unit {adv.unit.unit_no}: {amount:,.2f}",
+              entity_type="receipt", entity_id=receipt.id,
+              details={"advance_payment_id": adv.id, "amount": amount, "start_month": start_month, "months": months, "method": method},
+              commit=False)
         db.session.commit()
-        audit(f"Issued {receipt.receipt_no} - Recorded {months}-month advance condo dues payment for unit {adv.unit.unit_no}: {amount:,.2f}")
         flash(f"Advance payment of ₱{amount:,.2f} recorded for {months} month(s) (official receipt {receipt.receipt_no}).", "success")
         return redirect(url_for("advance_payments", unit_id=unit_id))
 
@@ -2107,14 +2475,16 @@ def billing_detail(bid):
 
 @app.route("/billing/<int:bid>/pay", methods=["POST"])
 @guarded
+@retry_on_deadlock
 def mark_bill_paid(bid):
-    b = db.session.get(Billing, bid)
+    # Lock the bill until commit: two cashiers paying the same bill are applied one after the other.
+    b = lock_row(Billing, bid)
     if not b:
         flash("Bill not found.", "danger")
         return redirect(url_for("billing"))
-
+    reset_financial_caches()
     balance_before = max(bill_balance(b), Decimal("0"))
-    amount = money(request.form.get("amount"))
+    amount = form_amount("amount", "Payment amount")
     payment_method = (request.form.get("payment_method") or "CASH").upper()
     payment_type = (request.form.get("payment_type") or "FULL").upper()
     reference = (request.form.get("reference") or "").strip()
@@ -2145,7 +2515,9 @@ def mark_bill_paid(bid):
     if payment_method in ("CHECK", "ONLINE") and not reference:
         flash("Reference number is required for Check or Online payments.", "danger")
         return redirect(url_for("billing", month=b.billing_month))
-
+    check_open_period(payment_date, "Payments")
+    claim_form_token("bill_payment")
+    paid_before, status_before = money(b.amount_paid), b.status
     if amount_to_bill > 0:
         b.amount_paid = money(b.amount_paid) + amount_to_bill
 
@@ -2193,13 +2565,16 @@ def mark_bill_paid(bid):
 
     receipt = issue_receipt(b.unit_id, payment_date, payment_method, reference, request.form.get("remarks", ""),
                             [("bill", bill_payment, amount_to_bill), ("advance", excess_adv, excess_amount)])
-    db.session.commit()
     audit(
         f"Issued {receipt.receipt_no} - "
         f"Recorded {payment_type.lower()} {payment_method.lower()} payment for unit "
         f"{b.unit.unit_no}, billing {b.billing_month}: applied ₱{amount_to_bill:,.2f}"
-        + (f", excess ₱{excess_amount:,.2f} moved to advance." if excess_amount > 0 else "")
+        + (f", excess ₱{excess_amount:,.2f} moved to advance." if excess_amount > 0 else ""),
+        entity_type="receipt", entity_id=receipt.id, commit=False,
+        details={"billing_id": b.id, "received": amount, "applied_to_bill": amount_to_bill, "excess_to_advance": excess_amount,
+                 "amount_paid": {"before": paid_before, "after": money(b.amount_paid)}, "status": {"before": status_before, "after": b.status}},
     )
+    db.session.commit()
     if excess_amount > 0:
         flash(
             f"Payment recorded (official receipt {receipt.receipt_no}). ₱{amount_to_bill:,.2f} applied to the SOA and "
@@ -2226,7 +2601,7 @@ def soa_email_contacts(unit):
 
 def send_soa_email_to_contact(bill, contact):
     host=setting("smtp_host","").strip(); port=int(setting("smtp_port","587") or 587); sender=setting("smtp_sender","").strip()
-    username=setting("smtp_username","").strip() or os.getenv("SMTP_USERNAME","").strip(); password=setting("smtp_password","") or os.getenv("SMTP_PASSWORD","")
+    username=setting("smtp_username","").strip() or os.getenv("SMTP_USERNAME","").strip(); password=get_smtp_password() or os.getenv("SMTP_PASSWORD","")
     if not host or not sender: raise RuntimeError("Configure SMTP Host and Sender Email under Rates & Rules before sending email.")
     water_reading=WaterReading.query.filter_by(unit_id=bill.unit_id,reading_month=bill.billing_month).order_by(WaterReading.id.desc()).first()
     body_html=render_template("soa_email_body.html",bill=bill,contact=contact,recipient_name=contact["name"],water_reading=water_reading)
@@ -2292,13 +2667,17 @@ def email_bill(bid):
 @app.route("/billing/<int:bid>/edit-soa", methods=["POST"])
 @guarded
 def edit_soa(bid):
-    b=db.session.get(Billing,bid)
+    b=lock_row(Billing,bid)
     if not b: flash("Bill not found.","danger"); return redirect(url_for("billing"))
+    check_open_period(b.billing_month, "Statements")
     before={k:getattr(b,k) for k in ["assessment","parking_dues","storage_dues","water","other","penalty","adjustment","previous_balance","due_date","soa_note"]}
-    b.assessment=money(request.form.get("assessment")); b.parking_dues=money(request.form.get("parking_dues")); b.storage_dues=money(request.form.get("storage_dues")); b.water=money(request.form.get("water")); b.other=money(request.form.get("other")); b.penalty=money(request.form.get("penalty")); b.adjustment=money(request.form.get("adjustment")); b.previous_balance=max(money(request.form.get("previous_balance")),Decimal("0")); b.due_date=parse_date(request.form.get("due_date")) or b.due_date; b.soa_note=request.form.get("soa_note","").strip(); b.soa_manual_override=True; b.status=bill_status(b)
-    db.session.commit()
+    nonneg = dict(allow_zero=True, allow_empty=True)
+    b.assessment=form_amount("assessment", "Condo dues", **nonneg); b.parking_dues=form_amount("parking_dues", "Parking", **nonneg); b.storage_dues=form_amount("storage_dues", "Storage", **nonneg); b.water=form_amount("water", "Water", **nonneg); b.other=form_amount("other", "Other charges", **nonneg); b.penalty=form_amount("penalty", "Penalty", **nonneg); b.adjustment=form_amount("adjustment", "Adjustment", allow_negative=True, **nonneg); b.previous_balance=form_amount("previous_balance", "Previous balance", **nonneg); b.due_date=parse_date(request.form.get("due_date")) or b.due_date; b.soa_note=request.form.get("soa_note","").strip(); b.soa_manual_override=True; b.status=bill_status(b)
     changes=[k for k in before if before[k]!=getattr(b,k)]
-    audit(f"Manual SOA correction for unit {b.unit.unit_no}, billing {b.billing_month}; fields changed: {', '.join(changes) if changes else 'none'}")
+    audit(f"Manual SOA correction for unit {b.unit.unit_no}, billing {b.billing_month}; fields changed: {', '.join(changes) if changes else 'none'}",
+          entity_type="billing", entity_id=b.id, reason=b.soa_note or None, commit=False,
+          details={k: {"before": before[k], "after": getattr(b, k)} for k in changes})
+    db.session.commit()
     flash("SOA corrections saved and recorded in Audit Logs.","success")
     return redirect(url_for("billing_detail",bid=bid))
 
@@ -2308,12 +2687,13 @@ def edit_soa(bid):
 def recalculate_soa(bid):
     """Re-price an issued bill from the unit's CURRENT rates (condo dues, parking, storage).
     Issued bills never change on their own; this is the explicit, audited way to correct one."""
-    b = db.session.get(Billing, bid)
+    b = lock_row(Billing, bid)
     if not b:
         flash("Bill not found.", "danger"); return redirect(url_for("billing"))
     if b.soa_manual_override:
         flash("This SOA was corrected by hand. Use Edit SOA to change its amounts.", "warning")
         return redirect(url_for("billing_detail", bid=bid))
+    check_open_period(b.billing_month, "Statements")
     before = (money(b.assessment), money(b.parking_dues), money(b.storage_dues))
     b.assessment = Decimal(str(unit_dues(b.unit)))
     b.parking_dues = Decimal(str(parking_dues(b.unit)))
@@ -2321,13 +2701,16 @@ def recalculate_soa(bid):
     after = (money(b.assessment), money(b.parking_dues), money(b.storage_dues))
     g.pop("_bill_calc_cache", None)
     b.status = bill_status(b)
-    db.session.commit()
     if before == after:
+        db.session.commit()
         flash("Recalculated: the current rates give the same amounts. Nothing changed.", "info")
     else:
         audit(f"Recalculated SOA for unit {b.unit.unit_no}, billing {b.billing_month} from current rates: "
               f"condo {before[0]:,.2f}->{after[0]:,.2f}, parking {before[1]:,.2f}->{after[1]:,.2f}, "
-              f"storage {before[2]:,.2f}->{after[2]:,.2f}")
+              f"storage {before[2]:,.2f}->{after[2]:,.2f}", entity_type="billing", entity_id=b.id, commit=False,
+              details={"condo": {"before": before[0], "after": after[0]}, "parking": {"before": before[1], "after": after[1]},
+                       "storage": {"before": before[2], "after": after[2]}})
+        db.session.commit()
         flash("SOA recalculated from the current rates and recorded in the Audit Logs.", "success")
     return redirect(url_for("billing_detail", bid=bid))
 
@@ -2357,9 +2740,12 @@ def receipts():
     if q:
         query = query.filter(or_(Receipt.receipt_no.ilike(f"%{q}%"), Unit.unit_no.ilike(f"%{q}%"), Receipt.reference.ilike(f"%{q}%")))
     rows = query.order_by(Receipt.receipt_year.desc(), Receipt.receipt_seq.desc()).limit(500).all()
-    total = sum((money(r.amount) for r in rows), Decimal("0"))
+    # Voided receipts stay in the list (numbers have no gaps) but are not counted as collected.
+    total = sum((money(r.amount) for r in rows if not r.voided_at), Decimal("0"))
     by_method = {}
     for r in rows:
+        if r.voided_at:
+            continue
         by_method[r.payment_method] = by_method.get(r.payment_method, Decimal("0")) + money(r.amount)
     return render_template("receipts.html", rows=rows, q=q, start=start.isoformat(), end=end.isoformat(),
                            total=total, by_method=by_method)
@@ -2373,7 +2759,72 @@ def receipt_detail(rid):
         flash("Receipt not found.", "danger"); return redirect(url_for("receipts"))
     contact = current_contact_for_unit(r.unit)
     name = getattr(contact, "tenant_name", None) or getattr(contact, "owner_name", None) or r.unit.owner_name or ""
-    return render_template("receipt.html", r=r, received_from=name)
+    return render_template("receipt.html", r=r, received_from=name, can_void=can_access("void_receipt"),
+                           closed_through=books_closed_through())
+
+
+@app.route("/receipts/<int:rid>/void", methods=["POST"])
+@guarded
+@retry_on_deadlock
+def void_receipt(rid):
+    """Void an official receipt and reverse what it paid. Nothing is deleted: the receipt keeps its
+    number (marked VOID with the reason), payment and advance rows are kept and marked reversed,
+    and bill / water balances go back up by exactly the receipt's amounts. One audit entry records
+    everything with before/after values."""
+    reason = (request.form.get("reason") or "").strip()
+    if len(reason) < 10:
+        raise InputError("reason", "Give the reason for voiding this receipt (at least 10 characters).")
+    r = lock_row(Receipt, rid)
+    if not r:
+        flash("Receipt not found.", "danger"); return redirect(url_for("receipts"))
+    if r.voided_at:
+        flash(f"{r.receipt_no} is already void.", "warning"); return redirect(url_for("receipt_detail", rid=rid))
+    check_open_period(r.received_date, "Receipts")
+    claim_form_token("void_receipt")
+    reset_financial_caches()
+    now = datetime.utcnow()
+    changes = []
+    for a in r.allocations:
+        amount = money(a.amount)
+        if a.kind == "bill":
+            payment = a.payment
+            bill = lock_row(Billing, payment.billing_id)
+            before = (money(bill.amount_paid), bill.status)
+            bill.amount_paid = max(money(bill.amount_paid) - amount, Decimal("0"))
+            payment.reversed_at = now
+            reset_financial_caches()
+            bill.status = bill_status(bill)
+            if bill.status != "Paid":
+                bill.paid_date = None
+            changes.append({"kind": "bill", "billing_id": bill.id, "month": bill.billing_month, "amount": amount,
+                            "amount_paid": {"before": before[0], "after": money(bill.amount_paid)},
+                            "status": {"before": before[1], "after": bill.status}})
+        elif a.kind == "water":
+            reading = lock_row(WaterReading, a.water_reading_id)
+            before = money(reading.paid_amount)
+            reading.paid_amount = max(before - amount, Decimal("0"))
+            reading.paid = money(reading.paid_amount) >= money(reading.bill_amount) and money(reading.paid_amount) > 0
+            if not reading.paid:
+                reading.paid_date = None
+            changes.append({"kind": "water", "water_reading_id": reading.id, "month": reading.reading_month, "amount": amount,
+                            "paid_amount": {"before": before, "after": money(reading.paid_amount)}})
+        else:
+            adv = lock_row(AdvancePayment, a.advance_payment_id)
+            applied = db.session.query(func.coalesce(func.sum(AdvanceApplication.amount), 0)).filter(
+                AdvanceApplication.advance_payment_id == adv.id).scalar() or 0
+            if money(applied) > 0:
+                db.session.rollback()
+                flash(f"{r.receipt_no} can't be voided: ₱{money(applied):,.2f} of its advance payment was already applied "
+                      "to later bills. Record a correcting entry instead and ask Accounting to review.", "danger")
+                return redirect(url_for("receipt_detail", rid=rid))
+            adv.reversed_at = now
+            changes.append({"kind": "advance", "advance_payment_id": adv.id, "amount": amount})
+    r.voided_at, r.voided_by, r.void_reason = now, session.get("username"), reason[:500]
+    audit(f"Voided {r.receipt_no} (₱{money(r.amount):,.2f}, unit {r.unit.unit_no})", entity_type="receipt", entity_id=r.id,
+          reason=reason, details={"receipt_no": r.receipt_no, "amount": money(r.amount), "reversed": changes}, commit=False)
+    db.session.commit()
+    flash(f"{r.receipt_no} was voided and its payments reversed. The receipt keeps its number.", "success")
+    return redirect(url_for("receipt_detail", rid=rid))
 
 
 @app.route("/billing/<int:bid>/qr")
@@ -2444,9 +2895,11 @@ def water():
             reading = WaterReading(unit_id=unit_id, reading_month=month)
             db.session.add(reading)
 
-        reading.previous_reading = float(request.form.get("previous_reading") or 0)
-        reading.current_reading = float(request.form.get("current_reading") or 0)
-        reading.rate = float(request.form.get("rate") or setting_float("water_rate", 50))
+        reading.previous_reading = float(form_decimal("previous_reading", "Previous reading", 3, minimum=Decimal("0"), maximum=Decimal("99999999"), allow_empty=True, default=Decimal("0")))
+        reading.current_reading = float(form_decimal("current_reading", "Current reading", 3, minimum=Decimal("0"), maximum=Decimal("99999999")))
+        reading.rate = float(form_decimal("rate", "Water rate", 4, minimum=Decimal("0"), maximum=Decimal("100000"), allow_empty=True, default=None) or Decimal(str(setting_float("water_rate", 50))))
+        if reading.current_reading < reading.previous_reading:
+            raise InputError("current_reading", "The current reading can't be lower than the previous reading.")
         reading.reading_date = parse_date(request.form.get("reading_date")) or date.today()
 
         # Keep an already-generated bill synchronized with the corrected/current
@@ -2508,8 +2961,9 @@ def water():
 
 @app.route("/water/<int:rid>/paid", methods=["POST"])
 @guarded
+@retry_on_deadlock
 def mark_water_paid(rid):
-    reading = db.session.get(WaterReading, rid)
+    reading = lock_row(WaterReading, rid)
     if not reading:
         flash("Water reading not found.", "danger")
         return redirect(url_for("water"))
@@ -2517,7 +2971,7 @@ def mark_water_paid(rid):
     total = money(reading.bill_amount)
     current_paid = money(getattr(reading, "paid_amount", 0))
     balance = max(total - current_paid, Decimal("0"))
-    amount = money(request.form.get("amount"))
+    amount = form_amount("amount", "Water payment amount")
     payment_method = (request.form.get("payment_method") or "CASH").upper()
     payment_type = (request.form.get("payment_type") or "FULL").upper()
     reference = (request.form.get("reference") or "").strip()
@@ -2539,6 +2993,8 @@ def mark_water_paid(rid):
     if payment_method in ("CHECK", "ONLINE") and not reference:
         flash("Reference number is required for Check or Online payments.", "danger")
         return redirect(url_for("water", month=reading.reading_month))
+    check_open_period(paid_date, "Payments")
+    claim_form_token("water_payment")
 
     reading.paid_amount = current_paid + amount
     reading.payment_method = payment_method
@@ -2548,8 +3004,10 @@ def mark_water_paid(rid):
     reading.paid = money(reading.paid_amount) >= total
 
     receipt = issue_receipt(reading.unit_id, paid_date, payment_method, reference, "", [("water", reading, amount)])
+    audit(f"Issued {receipt.receipt_no} - Recorded {payment_type.lower()} {payment_method.lower()} water payment for unit {reading.unit.unit_no} for {reading.reading_month}",
+          entity_type="receipt", entity_id=receipt.id, commit=False,
+          details={"water_reading_id": reading.id, "amount": amount, "paid_amount": {"before": current_paid, "after": money(reading.paid_amount)}})
     db.session.commit()
-    audit(f"Issued {receipt.receipt_no} - Recorded {payment_type.lower()} {payment_method.lower()} water payment for unit {reading.unit.unit_no} for {reading.reading_month}")
     flash(f"Water payment recorded (official receipt {receipt.receipt_no}).", "success")
     return redirect(url_for("water", month=reading.reading_month))
 
@@ -2564,9 +3022,11 @@ def edit_water(rid):
 
     if request.method == "POST":
         try:
-            previous_reading = float(request.form.get("previous_reading") or 0)
-            current_reading = float(request.form.get("current_reading") or 0)
-            rate = float(request.form.get("rate") or setting_float("water_rate", 50))
+            previous_reading = float(form_decimal("previous_reading", "Previous reading", 3, minimum=Decimal("0"), maximum=Decimal("99999999"), allow_empty=True, default=Decimal("0")))
+            current_reading = float(form_decimal("current_reading", "Current reading", 3, minimum=Decimal("0"), maximum=Decimal("99999999")))
+            rate = float(form_decimal("rate", "Water rate", 4, minimum=Decimal("0"), maximum=Decimal("100000"), allow_empty=True, default=None) or Decimal(str(setting_float("water_rate", 50))))
+            if current_reading < previous_reading:
+                raise InputError("current_reading", "The current reading can't be lower than the previous reading.")
         except (TypeError, ValueError):
             flash("Please enter valid numeric water readings and rate.", "danger")
             return redirect(url_for("edit_water", rid=rid))
@@ -2611,7 +3071,7 @@ def employees():
         db.session.add(Employee(employee_no=emp_no, full_name=request.form.get("full_name").strip(), position=request.form.get("position",""),
             department=request.form.get("department",""), employment_status=request.form.get("employment_status","Active"),
             contact_no=request.form.get("contact_no",""), email=request.form.get("email",""), date_hired=parse_date(request.form.get("date_hired")),
-            monthly_salary=money(request.form.get("monthly_salary")), notes=request.form.get("notes","")))
+            monthly_salary=form_amount("monthly_salary", "Monthly salary", allow_zero=True, allow_empty=True), notes=request.form.get("notes","")))
         db.session.commit(); audit(f"Added employee {emp_no}"); flash("Employee saved.", "success")
         return redirect(url_for("employees"))
     return render_template("employees.html", employees=Employee.query.order_by(Employee.full_name).all())
@@ -2639,7 +3099,7 @@ def expenses():
                 expense_date=parse_date(request.form.get("expense_date")) or date.today(),
                 category=request.form.get("category", ""),
                 description=request.form.get("description", ""),
-                amount=money(request.form.get("amount")),
+                amount=form_amount("amount", "Expense amount"),
             )
         )
         db.session.commit()
@@ -2845,6 +3305,20 @@ def database_import():
     if not f or not f.filename.lower().endswith((".xlsx", ".xlsm")):
         flash("Please select an Excel .xlsx file.", "danger")
         return redirect(url_for("settings"))
+    # An .xlsx file is a zip archive: check it before opening (unpacked size, number of parts).
+    import zipfile
+    try:
+        with zipfile.ZipFile(f.stream) as archive:
+            parts = archive.infolist()
+            unpacked = sum(p.file_size for p in parts)
+    except zipfile.BadZipFile:
+        flash("That file is not a valid Excel .xlsx workbook.", "danger")
+        return redirect(url_for("settings"))
+    if len(parts) > 2000 or unpacked > IMPORT_MAX_UNCOMPRESSED_MB * 1024 * 1024:
+        flash(f"That workbook is too large to import (over {IMPORT_MAX_UNCOMPRESSED_MB} MB when unpacked). "
+              "Split it or remove unused sheets.", "danger")
+        return redirect(url_for("settings"))
+    f.stream.seek(0)
 
     def as_bool(v, default=False):
         if v in (None, ""):
@@ -2878,7 +3352,12 @@ def database_import():
         except StopIteration:
             return
         headers = [str(x).strip() if x is not None else "" for x in header_row]
-        for values in iterator:
+        if len(headers) > IMPORT_MAX_COLUMNS:
+            raise InputError("excel_file", f"Sheet {sheet} has more than {IMPORT_MAX_COLUMNS} columns.")
+        for count, values in enumerate(iterator, start=1):
+            if count > IMPORT_MAX_ROWS:
+                raise InputError("excel_file", f"Sheet {sheet} has more than {IMPORT_MAX_ROWS:,} rows. "
+                                               "Import it in parts (IMPORT_MAX_ROWS in .env sets the limit).")
             if any(x not in (None, "") for x in values):
                 yield dict(zip(headers, values))
 
@@ -3327,12 +3806,12 @@ def reports():
     start_dt = datetime.combine(start_date, datetime.min.time())
 
     bills = Billing.query.filter(Billing.created_at >= start_dt, Billing.created_at <= end_dt).all()
-    payments = Payment.query.filter(Payment.payment_date >= start_date, Payment.payment_date <= end_date).all()
+    payments = Payment.query.filter(Payment.payment_date >= start_date, Payment.payment_date <= end_date, Payment.reversed_at.is_(None)).all()
     water_paid = WaterReading.query.filter(
         WaterReading.paid_date >= start_date, WaterReading.paid_date <= end_date,
         WaterReading.paid_amount > 0
     ).all()
-    advances = AdvancePayment.query.filter(AdvancePayment.payment_date >= start_date, AdvancePayment.payment_date <= end_date).all()
+    advances = AdvancePayment.query.filter(AdvancePayment.payment_date >= start_date, AdvancePayment.payment_date <= end_date, AdvancePayment.reversed_at.is_(None)).all()
     expenses = Expense.query.filter(Expense.expense_date >= start_date, Expense.expense_date <= end_date).all()
 
     def dec_sum(items, attr):
@@ -3393,9 +3872,9 @@ def reports_export():
     end_date = parse_date(request.args.get("end_date")) or start_date
     if end_date < start_date:
         start_date, end_date = end_date, start_date
-    payments = Payment.query.filter(Payment.payment_date >= start_date, Payment.payment_date <= end_date).all()
+    payments = Payment.query.filter(Payment.payment_date >= start_date, Payment.payment_date <= end_date, Payment.reversed_at.is_(None)).all()
     water_paid = WaterReading.query.filter(WaterReading.paid_date >= start_date, WaterReading.paid_date <= end_date, WaterReading.paid_amount > 0).all()
-    advances = AdvancePayment.query.filter(AdvancePayment.payment_date >= start_date, AdvancePayment.payment_date <= end_date).all()
+    advances = AdvancePayment.query.filter(AdvancePayment.payment_date >= start_date, AdvancePayment.payment_date <= end_date, AdvancePayment.reversed_at.is_(None)).all()
     expenses = Expense.query.filter(Expense.expense_date >= start_date, Expense.expense_date <= end_date).all()
 
     if Workbook is None:
@@ -3432,6 +3911,22 @@ def reports_export():
 # -----------------------------
 # Settings / Rates & Rules
 # -----------------------------
+# Rates & Rules numbers: (key, label, decimal places, minimum, maximum).
+SETTINGS_NUMBERS = [
+    ("water_rate", "Water rate", 4, "0", "100000"),
+    ("studio_rate_per_sqm", "Studio rate per sqm", 4, "0", "100000"),
+    ("one_bed_rate_per_sqm", "1 bedroom rate per sqm", 4, "0", "100000"),
+    ("two_bed_rate_per_sqm", "2 bedroom rate per sqm", 4, "0", "100000"),
+    ("three_bed_rate_per_sqm", "3 bedroom rate per sqm", 4, "0", "100000"),
+    ("parking_rate_per_sqm", "Parking rate per sqm", 4, "0", "100000"),
+    ("storage_rate_per_sqm", "Storage rate per sqm", 4, "0", "100000"),
+    ("penalty_rate", "Penalty rate (%)", 4, "0", "100"),
+    ("penalty_rate_per_sqm", "Penalty rate per sqm", 4, "0", "100000"),
+    ("due_day", "Due day", 0, "1", "31"),
+    ("penalty_day", "Penalty day", 0, "1", "31"),
+]
+
+
 @app.route("/settings", methods=["GET", "POST"])
 @guarded
 def settings():
@@ -3462,6 +3957,7 @@ def settings():
         "smtp_sender": "",
         "smtp_username": "",
         "smtp_password": "",
+        "books_closed_through": "",
     }
 
     if request.method == "POST":
@@ -3469,10 +3965,28 @@ def settings():
             "penalty_include_condo", "penalty_include_parking",
             "penalty_include_storage", "penalty_include_water",
         }
+        # Numbers are validated before anything is saved (InputError -> message, nothing changed).
+        numeric = {key: parse_decimal(request.form.get(key), label=label, places=places, minimum=Decimal(lo), maximum=Decimal(hi))
+                   for key, label, places, lo, hi in SETTINGS_NUMBERS if request.form.get(key) not in (None, "")}
         for key, default in defaults.items():
+            if key == "smtp_password":
+                continue  # write-only secret, handled below
+            if key in numeric:
+                row = Setting.query.filter_by(key=key).first() or Setting(key=key)
+                row.value = format(numeric[key].normalize(), "f")
+                db.session.add(row)
+                continue
             row = Setting.query.filter_by(key=key).first() or Setting(key=key)
             if key in checkbox_keys:
                 row.value = "1" if request.form.get(key) == "1" else "0"
+            elif key == "books_closed_through":
+                value = (request.form.get(key) or "").strip()
+                if value and not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", value):
+                    raise InputError(key, "Books closed through must look like 2026-09, or be empty.")
+                if value != (row.value or ""):
+                    audit(f"Books closed through changed: {row.value or 'none'} -> {value or 'none'}", entity_type="setting",
+                          details={"books_closed_through": {"before": row.value or "", "after": value}}, commit=False)
+                row.value = value
             elif key == "storage_in_total_from":
                 value = (request.form.get(key) or "").strip()
                 if re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", value):
@@ -3484,13 +3998,19 @@ def settings():
             else:
                 row.value = request.form.get(key, default)
             db.session.add(row)
+        # SMTP password: never shown; replaced only when a new one is typed, removed on request.
+        new_smtp_password = request.form.get("smtp_password", "")
+        if request.form.get("smtp_password_clear") == "1":
+            set_smtp_password("")
+        elif new_smtp_password:
+            set_smtp_password(new_smtp_password)
         db.session.commit()
         audit("Updated Rates & Rules")
         flash("Rates & Rules saved successfully.", "success")
         return redirect(url_for("settings"))
 
-    vals = {k: setting(k, v) for k, v in defaults.items()}
-    return render_template("settings.html", settings=vals, **vals)
+    vals = {k: setting(k, v) for k, v in defaults.items() if k != "smtp_password"}
+    return render_template("settings.html", settings=vals, smtp_password_set=bool(get_smtp_password()), **vals)
 
 
 # -----------------------------
@@ -3508,8 +4028,9 @@ def change_password():
         if not check_password_hash(u.password_hash, current_password):
             flash("Current password is incorrect.", "danger")
             return redirect(url_for("change_password"))
-        if len(new_password) < 8:
-            flash("New password must be at least 8 characters.", "danger")
+        problem = security.password_problem(new_password, u.username)
+        if problem:
+            flash(problem, "danger")
             return redirect(url_for("change_password"))
         if new_password != confirm_password:
             flash("New password and confirmation do not match.", "danger")
@@ -3518,7 +4039,8 @@ def change_password():
             flash("New password must be different from the current password.", "danger")
             return redirect(url_for("change_password"))
 
-        u.password_hash = generate_password_hash(new_password)
+        # Ends the account's other sessions; this one stays signed in.
+        set_password(u, new_password, temporary=False, keep_current_session=True)
         db.session.commit()
         audit(f"Changed password for user {u.username}")
         flash("Your password has been changed successfully.", "success")
@@ -3543,14 +4065,16 @@ def reset_user_password(user_id):
 
     new_password = request.form.get("new_password", "")
     confirm_password = request.form.get("confirm_password", "")
-    if len(new_password) < 8:
-        flash("Reset password must be at least 8 characters.", "danger")
+    problem = security.password_problem(new_password, target.username)
+    if problem:
+        flash(problem, "danger")
         return redirect(url_for("users"))
     if new_password != confirm_password:
         flash("Reset password and confirmation do not match.", "danger")
         return redirect(url_for("users"))
 
-    target.password_hash = generate_password_hash(new_password)
+    # Temporary password: the user must change it at next sign-in; their sessions end now.
+    set_password(target, new_password, temporary=True)
     db.session.commit()
     audit(f"Reset password for user {target.username}")
     flash(f"Password for {target.username} has been reset successfully.", "success")
@@ -3607,6 +4131,10 @@ def users():
         if role not in ALL_ROLES:
             flash("Please choose a valid role.", "danger")
             return redirect(url_for("users"))
+        problem = security.password_problem(password, username)
+        if problem:
+            flash(problem, "danger")
+            return redirect(url_for("users"))
 
         db.session.add(
             User(
@@ -3614,6 +4142,7 @@ def users():
                 password_hash=generate_password_hash(password),
                 role=role,
                 active=True,
+                must_change_password=True,   # temporary password chosen by the administrator
             )
         )
         db.session.commit()
@@ -3652,7 +4181,12 @@ def resident_users():
         if User.query.filter_by(username=username).first():
             flash("That username already exists.", "danger")
             return redirect(url_for("resident_users"))
-        user=User(username=username, password_hash=generate_password_hash(password), role="resident", active=True)
+        problem = security.password_problem(password, username)
+        if problem:
+            flash(problem, "danger")
+            return redirect(url_for("resident_users"))
+        user=User(username=username, password_hash=generate_password_hash(password), role="resident", active=True,
+                  must_change_password=True)
         db.session.add(user); db.session.flush()
         db.session.add(ResidentProfile(user_id=user.id, unit_id=unit_id, person_type=person_type, person_id=person_id, display_name=display_name))
         db.session.commit(); audit(f"Created resident portal user {username} for unit {unit_id}")
@@ -3746,176 +4280,214 @@ def documents():
 # -----------------------------
 # Database initialization / migration
 # -----------------------------
+def schema_managed():
+    """True on MariaDB/MySQL, where only versioned migrations change the schema."""
+    return db.engine.url.drivername.startswith("mysql")
+
+
+def ensure_table(model):
+    """Create a table on the SQLite development database only. On MariaDB/MySQL tables come from
+    migrations (the application account has no CREATE right)."""
+    if not schema_managed():
+        model.__table__.create(db.engine, checkfirst=True)
+
+
+def verify_schema_present():
+    """Refuse to start with a missing table instead of creating it (migrations do that)."""
+    from sqlalchemy import inspect as sa_inspect
+    existing = set(sa_inspect(db.engine).get_table_names())
+    missing = sorted(set(db.metadata.tables) - existing)
+    if missing:
+        raise RuntimeError("The database is missing table(s): " + ", ".join(missing) +
+                           ". New installation: python database/db_migrate.py install; "
+                           "existing one: python database/db_migrate.py upgrade")
+
+
 def init_db():
-    """Create missing tables and safely upgrade the bundled SQLite schema."""
+    """Startup checks and defaults.
+
+    MariaDB/MySQL (production): the schema is changed ONLY by versioned migrations
+    (database/db_migrate.py), run with the migration account. Startup never creates or alters
+    tables; it only verifies they exist. SQLite (development/tests): tables and columns are
+    created and upgraded here, as before."""
     with app.app_context():
-        db.create_all()
+        if schema_managed():
+            verify_schema_present()
+        else:
+            db.create_all()
 
-        # Add performance indexes to databases that already existed before this build.
-        for table in (Billing, Payment, AdvanceApplication, WaterReading):
-            for index in table.__table__.indexes:
-                try:
-                    index.create(bind=db.engine, checkfirst=True)
-                except Exception as exc:
-                    print(f"Index {index.name} could not be created: {exc}")
-
-        # Add performance indexes for tables that are queried on nearly every page
-        # but were created before explicit index declarations were added.
-        with db.engine.begin() as conn:
-            dialect = db.engine.dialect.name
-            idx_defs = [
-                ("ix_owner_unit_id",        "owner",    "unit_id"),
-                ("ix_tenant_unit_id",        "tenant",   "unit_id"),
-                ("ix_tenant_status",         "tenant",   "status"),
-                ("ix_audit_log_created_at",  "audit_log","created_at"),
-            ]
-            existing_indexes = set()
-            try:
-                inspector = inspect(db.engine)
-                for _, tbl, _ in idx_defs:
-                    for idx in inspector.get_indexes(tbl):
-                        existing_indexes.add(idx["name"])
-            except Exception:
-                pass
-            for idx_name, tbl, col in idx_defs:
-                if idx_name not in existing_indexes:
+            # Add performance indexes to databases that already existed before this build.
+            for table in (Billing, Payment, AdvanceApplication, WaterReading):
+                for index in table.__table__.indexes:
                     try:
-                        conn.exec_driver_sql(
-                            f'CREATE INDEX IF NOT EXISTS "{idx_name}" ON "{tbl}" ("{col}")'
-                        )
+                        index.create(bind=db.engine, checkfirst=True)
                     except Exception as exc:
-                        print(f"Index {idx_name} could not be created: {exc}")
+                        print(f"Index {index.name} could not be created: {exc}")
 
-        if db.engine.dialect.name == "sqlite":
-            # Better read concurrency and much less lock contention for the LAN web app.
-            with db.engine.connect() as conn:
-                conn.exec_driver_sql("PRAGMA journal_mode=WAL")
-                conn.exec_driver_sql("PRAGMA synchronous=NORMAL")
-                conn.exec_driver_sql("PRAGMA busy_timeout=30000")
+            # Add performance indexes for tables that are queried on nearly every page
+            # but were created before explicit index declarations were added.
+            with db.engine.begin() as conn:
+                dialect = db.engine.dialect.name
+                idx_defs = [
+                    ("ix_owner_unit_id",        "owner",    "unit_id"),
+                    ("ix_tenant_unit_id",        "tenant",   "unit_id"),
+                    ("ix_tenant_status",         "tenant",   "status"),
+                    ("ix_audit_log_created_at",  "audit_log","created_at"),
+                ]
+                existing_indexes = set()
+                try:
+                    inspector = inspect(db.engine)
+                    for _, tbl, _ in idx_defs:
+                        for idx in inspector.get_indexes(tbl):
+                            existing_indexes.add(idx["name"])
+                except Exception:
+                    pass
+                for idx_name, tbl, col in idx_defs:
+                    if idx_name not in existing_indexes:
+                        try:
+                            conn.exec_driver_sql(
+                                f'CREATE INDEX IF NOT EXISTS "{idx_name}" ON "{tbl}" ("{col}")'
+                            )
+                        except Exception as exc:
+                            print(f"Index {idx_name} could not be created: {exc}")
 
-            # SQLite/SQLAlchemy create_all() does not add columns to existing
-            # tables. These are the columns introduced by later V4/V10 builds.
-            migrations = {
+            if db.engine.dialect.name == "sqlite":
+                # Better read concurrency and much less lock contention for the LAN web app.
+                with db.engine.connect() as conn:
+                    conn.exec_driver_sql("PRAGMA journal_mode=WAL")
+                    conn.exec_driver_sql("PRAGMA synchronous=NORMAL")
+                    conn.exec_driver_sql("PRAGMA busy_timeout=30000")
+
+                # SQLite/SQLAlchemy create_all() does not add columns to existing
+                # tables. These are the columns introduced by later V4/V10 builds.
+                migrations = {
+                    "unit": {
+                        "area_sqm": "FLOAT DEFAULT 0",
+                        "unit_rate_per_sqm": "FLOAT DEFAULT 0",
+                        "include_parking": "BOOLEAN DEFAULT 0",
+                        "auto_rate": "BOOLEAN DEFAULT 1",
+                        "dues_mode": "VARCHAR(20) DEFAULT 'per_sqm'",
+                        "manual_monthly_dues": "NUMERIC(12,2) DEFAULT 0",
+                        "occupancy_type": "VARCHAR(20) DEFAULT 'Owner'",
+                        "include_storage": "BOOLEAN DEFAULT 0",
+                        "assigned_parking_unit_id": "INTEGER",
+                        "assigned_storage_unit_id": "INTEGER",
+                    },
+                    "tenant": {
+                        "representative": "BOOLEAN DEFAULT 0",
+                        "receive_soa_email": "BOOLEAN DEFAULT 0",
+                        "include_in_soa": "BOOLEAN DEFAULT 1",
+                    },
+                    "owner": {
+                        "receive_soa_email": "BOOLEAN DEFAULT 0",
+                        "include_in_soa": "BOOLEAN DEFAULT 1",
+                    },
+                    "billing": {
+                        "parking_dues": "NUMERIC(12,2) DEFAULT 0",
+                        "storage_dues": "NUMERIC(12,2) DEFAULT 0",
+                        "paid_date": "DATE",
+                        "status": "VARCHAR(30) DEFAULT 'Unpaid'",
+                        "soa_note": "VARCHAR(1000) DEFAULT ''",
+                        "soa_manual_override": "BOOLEAN DEFAULT 0",
+                    },
+                    "water_reading": {
+                        "paid": "BOOLEAN DEFAULT 0",
+                        "paid_date": "DATE",
+                    },
+                    # Payment integrity (MySQL: migration 0009).
+                    "receipt": {"voided_at": "DATETIME", "voided_by": "VARCHAR(80)", "void_reason": "VARCHAR(500)"},
+                    "payment": {"reversed_at": "DATETIME"},
+                    "advance_payment": {"reversed_at": "DATETIME"},
+                    "audit_log": {"entity_type": "VARCHAR(40)", "entity_id": "INTEGER", "reason": "VARCHAR(500)", "details": "TEXT"},
+                    # Session security (MySQL: migration 0008).
+                    "user": {
+                        "session_version": "INTEGER NOT NULL DEFAULT 0",
+                        "must_change_password": "BOOLEAN NOT NULL DEFAULT 0",
+                        "password_changed_at": "DATETIME",
+                    },
+                    # Resident gate pass / move requests (MySQL: migration 0007).
+                    "gate_pass": {
+                        "pass_type": "VARCHAR(20)",
+                        "unit_id": "INTEGER REFERENCES unit(id)",
+                        "requested_by": "VARCHAR(80)",
+                        "requested_at": "DATETIME",
+                        "reviewed_by": "VARCHAR(80)",
+                        "reviewed_at": "DATETIME",
+                        "review_note": "VARCHAR(300)",
+                    },
+                }
+                for tracked_model in ChangeTracked.__subclasses__():
+                    migrations.setdefault(tracked_model.__tablename__, {}).update({"updated_at": "DATETIME", "updated_by": "VARCHAR(80)"})
+                pending = []
+                with db.engine.connect() as conn:
+                    for table, columns in migrations.items():
+                        existing = {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})").fetchall()}
+                        if not existing:
+                            continue  # table not created yet (HR tables are created on first use)
+                        pending.extend((table, name, definition) for name, definition in columns.items() if name not in existing)
+
+                if pending:
+                    db_path = db.engine.url.database
+                    if db_path and os.path.isfile(db_path):
+                        backup = db_path + ".before_v10_cleanup.bak"
+                        if not os.path.exists(backup):
+                            shutil.copy2(db_path, backup)
+                            print(f"Database backup created: {backup}")
+                    with db.engine.begin() as conn:
+                        for table, name, definition in pending:
+                            conn.exec_driver_sql(f'ALTER TABLE "{table}" ADD COLUMN "{name}" {definition}')
+
+            # Cross-database schema upgrades for newer fields. SQLAlchemy create_all() does
+            # not add columns to an existing SQL Server/PostgreSQL database.
+            generic_migrations = {
                 "unit": {
-                    "area_sqm": "FLOAT DEFAULT 0",
-                    "unit_rate_per_sqm": "FLOAT DEFAULT 0",
-                    "include_parking": "BOOLEAN DEFAULT 0",
-                    "auto_rate": "BOOLEAN DEFAULT 1",
-                    "dues_mode": "VARCHAR(20) DEFAULT 'per_sqm'",
-                    "manual_monthly_dues": "NUMERIC(12,2) DEFAULT 0",
-                    "occupancy_type": "VARCHAR(20) DEFAULT 'Owner'",
-                    "include_storage": "BOOLEAN DEFAULT 0",
+                    "include_storage": "BIT DEFAULT 0" if db.engine.dialect.name == "mssql" else ("BOOLEAN DEFAULT FALSE" if db.engine.dialect.name == "postgresql" else "BOOLEAN DEFAULT 0"),
                     "assigned_parking_unit_id": "INTEGER",
                     "assigned_storage_unit_id": "INTEGER",
                 },
-                "tenant": {
-                    "representative": "BOOLEAN DEFAULT 0",
-                    "receive_soa_email": "BOOLEAN DEFAULT 0",
-                    "include_in_soa": "BOOLEAN DEFAULT 1",
+                "billing": {
+                    "storage_dues": "NUMERIC(12,2) DEFAULT 0",
+                    "soa_note": "NVARCHAR(1000) DEFAULT ''" if db.engine.dialect.name == "mssql" else "VARCHAR(1000) DEFAULT ''",
+                    "soa_manual_override": "BIT DEFAULT 0" if db.engine.dialect.name == "mssql" else ("BOOLEAN DEFAULT FALSE" if db.engine.dialect.name == "postgresql" else "BOOLEAN DEFAULT 0"),
                 },
                 "owner": {
-                    "receive_soa_email": "BOOLEAN DEFAULT 0",
-                    "include_in_soa": "BOOLEAN DEFAULT 1",
+                    "receive_soa_email": "BIT DEFAULT 0" if db.engine.dialect.name == "mssql" else ("BOOLEAN DEFAULT FALSE" if db.engine.dialect.name == "postgresql" else "BOOLEAN DEFAULT 0"),
+                    "include_in_soa": "BIT DEFAULT 1" if db.engine.dialect.name == "mssql" else ("BOOLEAN DEFAULT TRUE" if db.engine.dialect.name == "postgresql" else "BOOLEAN DEFAULT 1"),
                 },
-                "billing": {
-                    "parking_dues": "NUMERIC(12,2) DEFAULT 0",
-                    "storage_dues": "NUMERIC(12,2) DEFAULT 0",
-                    "paid_date": "DATE",
-                    "status": "VARCHAR(30) DEFAULT 'Unpaid'",
-                    "soa_note": "VARCHAR(1000) DEFAULT ''",
-                    "soa_manual_override": "BOOLEAN DEFAULT 0",
+                "tenant": {
+                    "receive_soa_email": "BIT DEFAULT 0" if db.engine.dialect.name == "mssql" else ("BOOLEAN DEFAULT FALSE" if db.engine.dialect.name == "postgresql" else "BOOLEAN DEFAULT 0"),
+                    "include_in_soa": "BIT DEFAULT 1" if db.engine.dialect.name == "mssql" else ("BOOLEAN DEFAULT TRUE" if db.engine.dialect.name == "postgresql" else "BOOLEAN DEFAULT 1"),
                 },
                 "water_reading": {
-                    "paid": "BOOLEAN DEFAULT 0",
+                    "paid": "BIT DEFAULT 0" if db.engine.dialect.name == "mssql" else ("BOOLEAN DEFAULT FALSE" if db.engine.dialect.name == "postgresql" else "BOOLEAN DEFAULT 0"),
+                    "paid_amount": "NUMERIC(12,2) DEFAULT 0",
+                    "payment_method": "VARCHAR(20) DEFAULT 'CASH'",
+                    "payment_type": "VARCHAR(20) DEFAULT 'FULL'",
+                    "payment_reference": "VARCHAR(100)",
                     "paid_date": "DATE",
                 },
-                # Resident gate pass / move requests (MySQL: migration 0007).
-                "gate_pass": {
-                    "pass_type": "VARCHAR(20)",
-                    "unit_id": "INTEGER REFERENCES unit(id)",
-                    "requested_by": "VARCHAR(80)",
-                    "requested_at": "DATETIME",
-                    "reviewed_by": "VARCHAR(80)",
-                    "reviewed_at": "DATETIME",
-                    "review_note": "VARCHAR(300)",
-                },
+                "payment": {
+                    "payment_method": "VARCHAR(20) DEFAULT 'CASH'",
+                    "payment_type": "VARCHAR(20) DEFAULT 'FULL'",
+                }
             }
-            for tracked_model in ChangeTracked.__subclasses__():
-                migrations.setdefault(tracked_model.__tablename__, {}).update({"updated_at": "DATETIME", "updated_by": "VARCHAR(80)"})
-            pending = []
-            with db.engine.connect() as conn:
-                for table, columns in migrations.items():
-                    existing = {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})").fetchall()}
-                    if not existing:
-                        continue  # table not created yet (HR tables are created on first use)
-                    pending.extend((table, name, definition) for name, definition in columns.items() if name not in existing)
-
-            if pending:
-                db_path = db.engine.url.database
-                if db_path and os.path.isfile(db_path):
-                    backup = db_path + ".before_v10_cleanup.bak"
-                    if not os.path.exists(backup):
-                        shutil.copy2(db_path, backup)
-                        print(f"Database backup created: {backup}")
-                with db.engine.begin() as conn:
-                    for table, name, definition in pending:
-                        conn.exec_driver_sql(f'ALTER TABLE "{table}" ADD COLUMN "{name}" {definition}')
-
-        # Cross-database schema upgrades for newer fields. SQLAlchemy create_all() does
-        # not add columns to an existing SQL Server/PostgreSQL database.
-        generic_migrations = {
-            "unit": {
-                "include_storage": "BIT DEFAULT 0" if db.engine.dialect.name == "mssql" else ("BOOLEAN DEFAULT FALSE" if db.engine.dialect.name == "postgresql" else "BOOLEAN DEFAULT 0"),
-                "assigned_parking_unit_id": "INTEGER",
-                "assigned_storage_unit_id": "INTEGER",
-            },
-            "billing": {
-                "storage_dues": "NUMERIC(12,2) DEFAULT 0",
-                "soa_note": "NVARCHAR(1000) DEFAULT ''" if db.engine.dialect.name == "mssql" else "VARCHAR(1000) DEFAULT ''",
-                "soa_manual_override": "BIT DEFAULT 0" if db.engine.dialect.name == "mssql" else ("BOOLEAN DEFAULT FALSE" if db.engine.dialect.name == "postgresql" else "BOOLEAN DEFAULT 0"),
-            },
-            "owner": {
-                "receive_soa_email": "BIT DEFAULT 0" if db.engine.dialect.name == "mssql" else ("BOOLEAN DEFAULT FALSE" if db.engine.dialect.name == "postgresql" else "BOOLEAN DEFAULT 0"),
-                "include_in_soa": "BIT DEFAULT 1" if db.engine.dialect.name == "mssql" else ("BOOLEAN DEFAULT TRUE" if db.engine.dialect.name == "postgresql" else "BOOLEAN DEFAULT 1"),
-            },
-            "tenant": {
-                "receive_soa_email": "BIT DEFAULT 0" if db.engine.dialect.name == "mssql" else ("BOOLEAN DEFAULT FALSE" if db.engine.dialect.name == "postgresql" else "BOOLEAN DEFAULT 0"),
-                "include_in_soa": "BIT DEFAULT 1" if db.engine.dialect.name == "mssql" else ("BOOLEAN DEFAULT TRUE" if db.engine.dialect.name == "postgresql" else "BOOLEAN DEFAULT 1"),
-            },
-            "water_reading": {
-                "paid": "BIT DEFAULT 0" if db.engine.dialect.name == "mssql" else ("BOOLEAN DEFAULT FALSE" if db.engine.dialect.name == "postgresql" else "BOOLEAN DEFAULT 0"),
-                "paid_amount": "NUMERIC(12,2) DEFAULT 0",
-                "payment_method": "VARCHAR(20) DEFAULT 'CASH'",
-                "payment_type": "VARCHAR(20) DEFAULT 'FULL'",
-                "payment_reference": "VARCHAR(100)",
-                "paid_date": "DATE",
-            },
-            "payment": {
-                "payment_method": "VARCHAR(20) DEFAULT 'CASH'",
-                "payment_type": "VARCHAR(20) DEFAULT 'FULL'",
-            }
-        }
-        inspector = inspect(db.engine)
-        with db.engine.begin() as conn:
-            for table, columns in generic_migrations.items():
-                if table not in inspector.get_table_names():
-                    continue
-                existing = {c["name"] for c in inspector.get_columns(table)}
-                for name, definition in columns.items():
-                    if name not in existing:
-                        conn.exec_driver_sql(f'ALTER TABLE "{table}" ADD "{name}" {definition}')
+            inspector = inspect(db.engine)
+            with db.engine.begin() as conn:
+                for table, columns in generic_migrations.items():
+                    if table not in inspector.get_table_names():
+                        continue
+                    existing = {c["name"] for c in inspector.get_columns(table)}
+                    for name, definition in columns.items():
+                        if name not in existing:
+                            conn.exec_driver_sql(f'ALTER TABLE "{table}" ADD "{name}" {definition}')
 
         # Normalize the legacy Studio label to the new Unit Type option.
         for legacy_unit in Unit.query.filter_by(unit_type="Studio").all():
             legacy_unit.unit_type = "STUDIO TYPE"
         db.session.commit()
 
-        # Enforce the condominium billing rule: every statement is due on the 8th.
-        for b in Billing.query.all():
-            if b.billing_month:
-                try: b.due_date = date.fromisoformat(b.billing_month + "-08")
-                except ValueError: pass
-        db.session.commit()
+        # (Removed: startup used to reset EVERY bill's due date to the 8th. Each bill now keeps
+        # the due date it was issued with; new bills use the configured due day.)
 
         defaults = {
             "corporation_name": "CITYLAND 9 CONDOMINIUM CORPORATION",
@@ -3943,14 +4515,11 @@ def init_db():
             if not Setting.query.filter_by(key=key).first():
                 db.session.add(Setting(key=key, value=value))
 
-        if not User.query.first():
-            db.session.add(User(
-                username="superadmin",
-                password_hash=generate_password_hash("admin123"),
-                role="super_admin",
-                active=True,
-            ))
-            print("Created default account: superadmin / admin123")
+        # No default administrator is created any more (it used to be superadmin / admin123).
+        # The first Superadmin is created on the server with:  python database\create_admin.py
+        if not User.query.filter_by(role="super_admin", active=True).first():
+            print("No active Superadmin account yet. Create one on this PC with:  "
+                  r".venv\Scripts\python.exe database\create_admin.py")
 
         db.session.commit()
 
@@ -3992,8 +4561,8 @@ class EmployeePayroll(ChangeTracked, db.Model):
 
 def _v1039_ensure_tables():
     try:
-        EmployeeAttendance.__table__.create(db.engine, checkfirst=True)
-        EmployeePayroll.__table__.create(db.engine, checkfirst=True)
+        ensure_table(EmployeeAttendance)
+        ensure_table(EmployeePayroll)
     except Exception:
         db.session.rollback()
 
@@ -4143,12 +4712,12 @@ def employee_payroll():
         # Active recurring loans/deductions are included automatically for the period.
         recurring_loans = EmployeeHRLoan.query.filter_by(employee_id=emp.id, status="ACTIVE").all() if "EmployeeHRLoan" in globals() else []
         loan_deduction = sum(min(_v1039_money(x.monthly_deduction), _v1039_money(x.balance)) for x in recurring_loans)
-        manual_deduction = _v1039_money(request.form.get("deductions"))
+        manual_deduction = float(form_amount("deductions", "Deductions", allow_zero=True, allow_empty=True))
         total_other_deduction = manual_deduction + loan_deduction
         p = EmployeePayroll(
             employee_id=emp.id, period_start=start, period_end=end,
             basic_salary=basic, overtime_pay=_v1039_money(ot_input),
-            allowances=_v1039_money(request.form.get("allowances")),
+            allowances=float(form_amount("allowances", "Allowances", allow_zero=True, allow_empty=True)),
             deductions=total_other_deduction,
             absences=absence_ded, late_undertime=late_ded, net_pay=net,
             status=request.form.get("status") or "DRAFT",
@@ -4157,7 +4726,7 @@ def employee_payroll():
         db.session.add(p); db.session.commit()
         # Automatically prepare the Philippine statutory breakdown for the payroll.
         try:
-            EmployeePayrollStatutory.__table__.create(db.engine,checkfirst=True)
+            ensure_table(EmployeePayrollStatutory)
             gross=_v1039_money(p.basic_salary)+_v1039_money(p.overtime_pay)+_v1039_money(p.allowances)
             sc=_v1040_calc(gross,p.basic_salary,p.deductions,p.absences,p.late_undertime)
             row=EmployeePayrollStatutory(payroll_id=p.id)
@@ -4190,7 +4759,7 @@ def employee_payroll_print(payroll_id):
     if not p:
         abort(404)
     emp = db.session.get(Employee, p.employee_id)
-    EmployeePayrollStatutory.__table__.create(db.engine,checkfirst=True) if "EmployeePayrollStatutory" in globals() else None
+    ensure_table(EmployeePayrollStatutory) if "EmployeePayrollStatutory" in globals() else None
     statutory=EmployeePayrollStatutory.query.filter_by(payroll_id=p.id).first() if "EmployeePayrollStatutory" in globals() else None
     if not statutory:
         class O: pass
@@ -4293,7 +4862,7 @@ def _v1040_calc(gross, basic, other=0, absences=0, late_undertime=0):
 @app.route("/employees/payroll/<int:payroll_id>/statutory",methods=["GET","POST"])
 @guarded
 def employee_payroll_statutory(payroll_id):
-    EmployeePayrollStatutory.__table__.create(db.engine,checkfirst=True)
+    ensure_table(EmployeePayrollStatutory)
     p=db.session.get(EmployeePayroll,payroll_id)
     if not p: abort(404)
     emp=db.session.get(Employee,p.employee_id)
@@ -4301,7 +4870,7 @@ def employee_payroll_statutory(payroll_id):
     if request.method=="POST":
         row=EmployeePayrollStatutory.query.filter_by(payroll_id=p.id).first()
         if not row: row=EmployeePayrollStatutory(payroll_id=p.id); db.session.add(row)
-        for k in c: setattr(row,k,_v1039_money(request.form.get(k,c[k])))
+        for k in c: setattr(row,k,float(parse_amount(request.form.get(k, c[k]), label=k.replace("_"," ").capitalize(), allow_zero=True, allow_empty=True)))
         db.session.commit(); flash("Philippine statutory payroll saved.","success")
         return redirect(url_for("employee_payroll_statutory",payroll_id=p.id))
     row=EmployeePayrollStatutory.query.filter_by(payroll_id=p.id).first()
@@ -4381,7 +4950,7 @@ class EmployeeHRSetting(ChangeTracked, db.Model):
 
 def _v1041_ensure_tables():
     for model in (EmployeeLeave, EmployeeOvertime, EmployeeHRLoan, EmployeeHRSetting):
-        try: model.__table__.create(db.engine,checkfirst=True)
+        try: ensure_table(model)
         except Exception: db.session.rollback()
 
 
@@ -4403,7 +4972,7 @@ def employee_edit(eid):
         e.full_name=request.form.get("full_name","").strip(); e.position=request.form.get("position","").strip()
         e.department=request.form.get("department","").strip(); e.employment_status=request.form.get("employment_status","Active")
         e.contact_no=request.form.get("contact_no","").strip(); e.email=request.form.get("email","").strip()
-        e.date_hired=parse_date(request.form.get("date_hired")); e.monthly_salary=money(request.form.get("monthly_salary")); e.notes=request.form.get("notes","").strip()
+        e.date_hired=parse_date(request.form.get("date_hired")); e.monthly_salary=form_amount("monthly_salary", "Monthly salary", allow_zero=True, allow_empty=True); e.notes=request.form.get("notes","").strip()
         db.session.commit(); audit(f"Updated employee {e.employee_no}"); flash("Employee changes saved.","success")
         return redirect(url_for("employees"))
     return render_template("employee_edit.html",employee=e)
@@ -4434,7 +5003,7 @@ def employee_leave_status(lid):
 def employee_overtime():
     _v1041_ensure_tables(); employees=Employee.query.order_by(Employee.full_name).all()
     if request.method=="POST":
-        eid=int(request.form.get("employee_id")); emp=_v1041_emp(eid); od=parse_date(request.form.get("ot_date")) or date.today(); hours=_v1039_money(request.form.get("hours")); mult=_v1039_money(request.form.get("rate_multiplier") or 1.25)
+        eid=int(request.form.get("employee_id")); emp=_v1041_emp(eid); od=parse_date(request.form.get("ot_date")) or date.today(); hours=float(form_decimal("hours", "Hours", 2, minimum=Decimal("0"), maximum=Decimal("24"))); mult=float(parse_decimal(request.form.get("rate_multiplier") or "1.25", label="Rate multiplier", places=3, minimum=Decimal("1"), maximum=Decimal("5")))
         amount=round(_v1041_hourly(emp)*hours*mult,2) if emp else 0
         row=EmployeeOvertime(employee_id=eid,ot_date=od,hours=hours,rate_multiplier=mult,amount=amount,status=request.form.get("status","PENDING"),reason=request.form.get("reason",""))
         db.session.add(row); db.session.commit(); audit(f"Added overtime for employee {eid}"); flash("Overtime request saved.","success"); return redirect(url_for("employee_overtime"))
@@ -4455,8 +5024,8 @@ def employee_overtime_status(oid):
 def employee_hr_loans():
     _v1041_ensure_tables(); employees=Employee.query.order_by(Employee.full_name).all()
     if request.method=="POST":
-        eid=int(request.form.get("employee_id")); original=_v1039_money(request.form.get("original_amount")); balance=_v1039_money(request.form.get("balance") or original)
-        db.session.add(EmployeeHRLoan(employee_id=eid,loan_type=request.form.get("loan_type","OTHER"),reference_no=request.form.get("reference_no",""),original_amount=original,balance=balance,monthly_deduction=_v1039_money(request.form.get("monthly_deduction")),status=request.form.get("status","ACTIVE"),notes=request.form.get("notes","")))
+        eid=int(request.form.get("employee_id")); original=float(form_amount("original_amount", "Loan amount")); balance=float(parse_amount(request.form.get("balance") or original, label="Balance", allow_zero=True))
+        db.session.add(EmployeeHRLoan(employee_id=eid,loan_type=request.form.get("loan_type","OTHER"),reference_no=request.form.get("reference_no",""),original_amount=original,balance=balance,monthly_deduction=float(form_amount("monthly_deduction", "Monthly deduction", allow_zero=True, allow_empty=True)),status=request.form.get("status","ACTIVE"),notes=request.form.get("notes","")))
         db.session.commit(); flash("HR loan/deduction saved.","success"); return redirect(url_for("employee_hr_loans"))
     rows=EmployeeHRLoan.query.order_by(EmployeeHRLoan.id.desc()).all()
     return render_template("employee_hr_loans.html",employees=employees,rows=rows)
@@ -4518,6 +5087,7 @@ except Exception: pass
 # ============================================================
 from app.routes.auth import make_auth_blueprint  # noqa: E402
 from app.routes.resident import make_resident_blueprint  # noqa: E402
+from app.routes.users import make_users_blueprint  # noqa: E402
 from app.routes.spa import make_spa_blueprint  # noqa: E402
 from app.utils.auth import init_auth  # noqa: E402
 
@@ -4555,11 +5125,25 @@ def resident_unit_id(user):
 init_auth(app, current_user=current_user, resident_unit_id=resident_unit_id,
           resident_access_problem=resident_access_problem)
 app.register_blueprint(make_auth_blueprint(
-    User=User, audit=audit, check_password_hash=check_password_hash,
-    generate_password_hash=generate_password_hash, commit=db.session.commit,
+    User=User, audit=audit, check_password_hash=check_password_hash, commit=db.session.commit,
     home_endpoint=home_endpoint, resident_access_problem=resident_access_problem,
+    start_session=start_session, set_password=set_password, client_address=client_address,
 ))
 app.register_blueprint(make_resident_blueprint(sys.modules[__name__]))
+def _expected_schema_revision():
+    """Latest migration revision shipped with this code (None if the migration scripts are absent)."""
+    try:
+        from alembic.config import Config as _AlembicConfig
+        from alembic.script import ScriptDirectory
+        return ScriptDirectory.from_config(_AlembicConfig(os.path.join(BASE_DIR, "database", "alembic.ini"))).get_current_head()
+    except Exception:
+        return None
+
+
+from app.routes.health import make_health_blueprint  # noqa: E402
+app.register_blueprint(make_health_blueprint(db=db, root=BASE_DIR, expected_revision=_expected_schema_revision()))
+app.register_blueprint(make_users_blueprint(db=db, User=User, audit=audit, generate_password_hash=generate_password_hash,
+                                            set_password=set_password, end_sessions=end_other_sessions))
 app.register_blueprint(make_spa_blueprint(os.path.join(BASE_DIR, "frontend", "dist")))
 
 # ============================================================
@@ -4569,5 +5153,5 @@ app.register_blueprint(make_spa_blueprint(os.path.join(BASE_DIR, "frontend", "di
 # Preferred entry point: backend/run.py
 # ============================================================
 if __name__ == "__main__":
-    init_db()
-    app.run(host=os.getenv("FLASK_HOST", "0.0.0.0"), port=int(os.getenv("FLASK_PORT", "5000")), debug=os.getenv("FLASK_DEBUG", "1") == "1")
+    # Start through backend/run.py, which applies the production/development rules.
+    sys.exit("Start the server with:  python backend/run.py --lan   (see docs/run-guide/03-BACKEND_SETUP.md)")

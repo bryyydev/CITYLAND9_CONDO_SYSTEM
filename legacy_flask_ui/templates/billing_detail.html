@@ -59,7 +59,7 @@
 
   {% if advance_applied|float > 0 %}<div class="card soa-advance-note"><strong>💳 Advance Payment Applied</strong><p>₱{{advance_applied|currency}} of this month's Condo Dues was covered by an advance payment. Water, parking and other charges remain payable unless separately covered.</p></div>{% endif %}
 
-  <section class="soa-payment"><h2>▤ &nbsp; PAYMENT HISTORY</h2><table class="soa-payment-history"><thead><tr><th>DATE</th><th>OR NO.</th><th>REFERENCE</th><th>AMOUNT</th><th>PAYMENT TYPE</th></tr></thead><tbody>{% for p in bill.payments %}<tr><td>{{p.payment_date}}</td><td>{% set orn = receipt_no_for('bill', p.id) %}{{orn or '—'}}</td><td>{{p.reference or '—'}}</td><td>{{p.amount|currency}}</td><td>{{p.remarks or 'Cash / Manual'}}</td></tr>{% else %}<tr><td colspan="5">No payments recorded.</td></tr>{% endfor %}</tbody></table></section>
+  <section class="soa-payment"><h2>▤ &nbsp; PAYMENT HISTORY</h2><table class="soa-payment-history"><thead><tr><th>DATE</th><th>OR NO.</th><th>REFERENCE</th><th>AMOUNT</th><th>PAYMENT TYPE</th></tr></thead><tbody>{% for p in bill.payments %}<tr><td>{{p.payment_date}}</td><td>{% set orn = receipt_no_for('bill', p.id) %}{{orn or '—'}}</td><td>{{p.reference or '—'}}</td><td>{% if p.reversed_at %}<s>{{p.amount|currency}}</s> <strong style="color:#b3261e">REVERSED</strong>{% else %}{{p.amount|currency}}{% endif %}</td><td>{{p.remarks or 'Cash / Manual'}}</td></tr>{% else %}<tr><td colspan="5">No payments recorded.</td></tr>{% endfor %}</tbody></table></section>
   <div class="soa-footer">Thank you for your continued support. <span>CITYLAND 9 SYSTEM</span></div>
 {% if bill.soa_note %}<div class="card no-print"><strong>Admin Correction Note:</strong> {{bill.soa_note}}</div>{% endif %}
 {% if can_access('edit_soa') %}

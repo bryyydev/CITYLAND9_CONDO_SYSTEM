@@ -23,6 +23,9 @@ export interface SessionUser {
   displayName?: string;
   email?: string;
   subtitle?: string;
+  /** Temporary password: a new one must be chosen before anything else. */
+  mustChangePassword?: boolean;
+  passwordPolicy?: { minLength: number; maxLength: number };
 }
 
 // ---------------------------------------------------------------- resident portal (live API)
@@ -61,6 +64,8 @@ export interface SoaPayment {
   method: PaymentMethod;
   type: string;
   reference: string;
+  /** The payment's official receipt was voided; it no longer counts toward the bill. */
+  reversed?: boolean;
 }
 
 export interface SoaDetail extends SoaRow {
@@ -111,6 +116,9 @@ export interface ReceiptRow {
   method: PaymentMethod;
   reference: string;
   items: ReceiptItem[];
+  /** Voided receipts keep their number but are not money received. */
+  voided?: boolean;
+  voidReason?: string;
 }
 
 export interface ReceiptDetail {
@@ -435,8 +443,46 @@ export interface UserAccount {
   id: number;
   username: string;
   role: Role;
+  roleLabel: string;
   active: boolean;
-  createdAt: IsoDateTime;
+  createdAt: IsoDateTime | null;
+  /** Temporary password (new account or reset): a new one must be chosen at the next sign-in. */
+  mustChangePassword: boolean;
+  passwordChangedAt: IsoDateTime | null;
+  /** The signed-in user's own account. */
+  isSelf: boolean;
+  /** Decided by the server; the reason explains a protected account. */
+  canEdit: boolean;
+  editBlockedReason: string | null;
+  canResetPassword: boolean;
+  resetBlockedReason: string | null;
+  canDelete: boolean;
+  deleteBlockedReason: string | null;
+}
+
+export interface UserQuery {
+  q: string;
+  role: Role | "";
+  status: "active" | "inactive" | "";
+  page: number;
+  perPage: number;
+}
+
+/** Change an account's role and/or status. The note is kept in the audit log. */
+export interface UserUpdate {
+  role?: Role;
+  active?: boolean;
+  reason?: string;
+}
+
+export interface UserPage {
+  users: UserAccount[];
+  total: number;
+  page: number;
+  perPage: number;
+  roles: { value: Role; label: string }[];
+  creatableRoles: { value: Role; label: string }[];
+  minPasswordLength: number;
 }
 
 export interface ResidentAccount {

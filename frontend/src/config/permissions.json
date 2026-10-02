@@ -283,6 +283,10 @@
       "admin",
       "super_admin"
     ],
+    "void_receipt": [
+      "accounting",
+      "super_admin"
+    ],
     "water": [
       "admin",
       "super_admin"

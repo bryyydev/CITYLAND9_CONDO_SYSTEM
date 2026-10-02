@@ -38,7 +38,7 @@ def test_parking_page_lists_parking_units_and_who_has_them(app_module):
 
 def test_old_parking_lot_routes_are_gone(app_module):
     m = app_module
-    admin, _ = login(m, "superadmin", "admin123")
+    admin, _ = login(m, "superadmin", "Test-Admin-Pass-1")
     with m.app.app_context():
         uid = unit(m, "TEST-501").id
     assert admin.post(f"/unit/{uid}/parking/add", data={}).status_code == 404
@@ -49,7 +49,7 @@ def test_soa_shows_the_parking_line_it_charges(app_module):
     """Before B3 the line was hidden unless a parking lot had an 'include in SOA' flag,
     while the amount was still in the total."""
     m = app_module
-    admin, _ = login(m, "superadmin", "admin123")
+    admin, _ = login(m, "superadmin", "Test-Admin-Pass-1")
     admin.post("/billing", data={"month": "2034-01"})
     with m.app.app_context():
         bill = m.Billing.query.filter_by(unit_id=unit(m, "TEST-501").id, billing_month="2034-01").first()
@@ -61,7 +61,7 @@ def test_soa_shows_the_parking_line_it_charges(app_module):
 
 def test_unit_page_shows_the_assigned_parking_unit(app_module):
     m = app_module
-    admin, _ = login(m, "superadmin", "admin123")
+    admin, _ = login(m, "superadmin", "Test-Admin-Pass-1")
     with m.app.app_context():
         uid = unit(m, "TEST-502").id
     page = admin.get(f"/unit/{uid}").get_data(as_text=True)

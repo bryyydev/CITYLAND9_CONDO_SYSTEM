@@ -7,9 +7,12 @@ let csrfToken: string | null = null;
 
 export class ApiError extends Error {
   readonly status: number;
-  constructor(status: number, message: string) {
+  /** Per-field messages for forms (e.g. {"username": "That username is already taken."}). */
+  readonly fields: Record<string, string>;
+  constructor(status: number, message: string, fields: Record<string, string> = {}) {
     super(message);
     this.status = status;
+    this.fields = fields;
   }
 }
 
@@ -32,7 +35,7 @@ async function ensureCsrf(): Promise<string> {
   return csrfToken;
 }
 
-type Method = "GET" | "POST" | "PUT" | "DELETE";
+type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 export async function http<T>(path: string, { method = "GET", body }: { method?: Method; body?: unknown } = {}): Promise<T> {
   const headers: Record<string, string> = { Accept: "application/json" };
@@ -52,10 +55,10 @@ export async function http<T>(path: string, { method = "GET", body }: { method?:
   }
 
   if (res.status === 204) return null as T;
-  const data = (await res.json().catch(() => null)) as { error?: { message?: string } } | null;
+  const data = (await res.json().catch(() => null)) as { error?: { message?: string; fields?: Record<string, string> } } | null;
   if (!res.ok) {
     if (res.status === 403 && data?.error?.message?.includes("CSRF")) csrfToken = null; // refetch next time
-    throw new ApiError(res.status, data?.error?.message || `Request failed (${res.status}).`);
+    throw new ApiError(res.status, data?.error?.message || `Request failed (${res.status}).`, data?.error?.fields ?? {});
   }
   return data as T;
 }

@@ -1,0 +1,3 @@
+# Optional extras, NOT needed to run CityLand 9.
+-r requirements.txt
+pyodbc==5.3.0              # only for migrate_sqlite_to_sqlserver.py (old SQL Server option)

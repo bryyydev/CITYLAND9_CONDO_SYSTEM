@@ -30,7 +30,7 @@ def test_edit_unit_keeps_the_owner(app_module):
     """The Edit Unit form has no owner fields; saving it used to blank the owner copy."""
     m = app_module
     uid, _ = ids(m, "TEST-504")
-    client, _ = login(m, "superadmin", "admin123")
+    client, _ = login(m, "superadmin", "Test-Admin-Pass-1")
     client.post(f"/unit/{uid}/edit", data={"floor": "6F", "unit_type": "3 BEDROOM", "area_sqm": "80", "unit_rate_per_sqm": "125",
                                             "dues_mode": "per_sqm", "manual_monthly_dues": "0", "status": "Occupied"})
     assert "Ana Garcia" in client.get("/units?q=TEST-504").get_data(as_text=True)
@@ -39,7 +39,7 @@ def test_edit_unit_keeps_the_owner(app_module):
 def test_owner_edits_show_everywhere_and_past_owners_drop_out(app_module):
     m = app_module
     uid, oid = ids(m, "TEST-503")
-    client, _ = login(m, "superadmin", "admin123")
+    client, _ = login(m, "superadmin", "Test-Admin-Pass-1")
     form = {"owner_name": "Pedro Reyes Jr.", "contact_no": "0917", "email": "pedro.jr@example.com", "status": "Current"}
     client.post(f"/unit/{uid}/owner/{oid}/edit", data=form)
     assert "Pedro Reyes Jr." in client.get("/units?q=Reyes").get_data(as_text=True)
@@ -53,7 +53,7 @@ def test_owner_edits_show_everywhere_and_past_owners_drop_out(app_module):
 
 def test_billing_search_uses_the_owner_record(app_module):
     m = app_module
-    admin, _ = login(m, "superadmin", "admin123")
+    admin, _ = login(m, "superadmin", "Test-Admin-Pass-1")
     admin.post("/billing", data={"month": "2035-01"})
     page = admin.get("/billing?month=2035-01&q=Garcia").get_data(as_text=True)
     assert "TEST-504" in page and "TEST-501" not in page

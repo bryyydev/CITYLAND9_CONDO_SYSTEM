@@ -79,7 +79,7 @@ def test_moving_out_ends_access_everywhere(app_module, renter):
     assert legacy.get("/maintenance").status_code == 200
 
     # The admin marks the tenant Inactive ("Past") on the unit page, the normal move-out step.
-    admin, _ = login(app_module, "superadmin", "admin123")
+    admin, _ = login(app_module, "superadmin", "Test-Admin-Pass-1")
     admin.post(f"/tenant/{renter['tenant']}/status", data={"status": "Past"})
 
     # Open React session: data refused with the reason, and the session is ended.

@@ -51,6 +51,7 @@ PERMISSIONS = {
     "recalculate_soa": BILLING_RW,    # NEW (Phase B1): re-price an issued bill from current rates
     "receipts": BILLING_RW,           # NEW (Phase B2): official receipts ledger
     "receipt_detail": BILLING_RW,     # NEW (Phase B2): printable official receipt
+    "void_receipt": {SA, ACC},        # NEW: void a receipt + reverse its payments (reason required)  CONFIRM
     "advance_payments": BILLING_RW,   # CHANGED: + accounting
     "billing_email": PROPERTY, "send_billing_emails": PROPERTY, "email_bill": PROPERTY,  # CONFIRM: SOA email not given to accounting
 
@@ -103,6 +104,9 @@ PERMISSIONS = {
 
 # Pages every signed-in user may open (no matrix entry needed).
 ANY_SIGNED_IN = {"index", "change_password"}
+
+# Pages that need NO sign-in: health checks for monitoring (no sensitive data in them).
+PUBLIC_ENDPOINTS = {"health.healthz", "health.readyz"}
 
 
 def allowed_roles(permission):

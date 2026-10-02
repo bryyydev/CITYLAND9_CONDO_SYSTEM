@@ -182,7 +182,7 @@ export function ResidentPayments() {
           empty={{ icon: "receipt-line", title: "No payments yet", text: "Payments received at the Admin Office will be listed here with their official receipt." }}
           columns={[
             { key: "d", header: "Date", cell: (r) => dateLabel(r.date) },
-            { key: "o", header: "OR No.", cell: (r) => <b className="text-ink-900">{r.receiptNo}</b> },
+            { key: "o", header: "OR No.", cell: (r) => <><b className="text-ink-900">{r.receiptNo}</b>{r.voided && <span className="ml-2"><Badge tone="bad">VOID</Badge></span>}</> },
             { key: "f", header: "Paid for", cell: (r) => r.items.map(itemLabel).join(", ") },
             { key: "m", header: "Method", cell: (r) => <>{r.method}{r.reference && <span className="block text-[12px] text-ink-500">Ref. {r.reference}</span>}</> },
             { key: "a", header: "Amount", align: "right", cell: (r) => <b>{peso(r.amount)}</b> },

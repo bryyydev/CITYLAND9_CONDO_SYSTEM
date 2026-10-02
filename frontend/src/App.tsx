@@ -10,6 +10,7 @@ import { MODULES, MODULE_CATALOG, type ModuleId } from "./config/modules";
 import { ROLES, ROLE_ORDER } from "./config/roles";
 import { AccountingDashboard, BillingAdvancesPage, CollectionsPage, FinancialReportsPage } from "./pages/accounting/AccountingPages";
 import { AttendanceEntryPage, AttendancePage, EmployeesPage, HrDashboard, LeavePage, PayrollPage, StaffDashboard, TaxRulesPage } from "./pages/hr/HrPages";
+import ForcedPasswordChange from "./pages/ForcedPasswordChange";
 import Login from "./pages/Login";
 import { AnnouncementsPage, CertificatesPage, DocumentsPage, ExpensesPage, GatePassesPage, MaintenancePage, VendorsPage } from "./pages/operations/OperationsPages";
 import BillingPage from "./pages/property/Billing";
@@ -19,7 +20,8 @@ import {
   ResidentGatePass, ResidentHome, ResidentMaintenance, ResidentNotices, ResidentPayments, ResidentProfilePage,
   ResidentReceipt, ResidentSoaDetail, ResidentSoaList, ResidentWater,
 } from "./pages/resident/ResidentPages";
-import { AuditLogsPage, ModulesLauncher, ResidentAccountsPage, RatesRulesPage, SystemDashboard, SystemSettingsPage, UsersPage } from "./pages/system/SystemPages";
+import { AuditLogsPage, ModulesLauncher, ResidentAccountsPage, RatesRulesPage, SystemDashboard, SystemSettingsPage } from "./pages/system/SystemPages";
+import UsersPage from "./pages/system/UsersPage";
 import WorkspaceHome from "./pages/WorkspaceHome";
 import { IS_MOCK } from "./services/api";
 import type { Role } from "./services/types";
@@ -58,6 +60,7 @@ function Workspace({ role }: { role: Role }) {
   if (user === undefined) return <FullPageLoading />;
   if (!user) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
   if (user.role !== role) return <Navigate to={`/${ROLES[user.role].portal}`} replace />;
+  if (user.mustChangePassword) return <ForcedPasswordChange />;
   return <AppShell />;
 }
 

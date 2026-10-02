@@ -13,7 +13,7 @@ MONTH = "2032-03"
 def bill(app_module):
     """A fresh unpaid bill for TEST-503."""
     m = app_module
-    admin, _ = login(m, "superadmin", "admin123")
+    admin, _ = login(m, "superadmin", "Test-Admin-Pass-1")
     admin.post("/billing", data={"month": MONTH})
     with m.app.app_context():
         unit = m.Unit.query.filter_by(unit_no="TEST-503").first()

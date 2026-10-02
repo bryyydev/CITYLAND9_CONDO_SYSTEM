@@ -63,7 +63,7 @@ export const SoaDocument = forwardRef<HTMLElement, { corporation: string; unitNo
           <thead><tr className="text-left text-[11px] tracking-wide text-ink-500"><th className="py-1.5">DATE</th><th>OR NO.</th><th>REFERENCE</th><th>METHOD</th><th className="text-right">AMOUNT</th></tr></thead>
           <tbody>
             {s.payments.map((p, i) => (
-              <tr key={i} className="border-t border-ink-100"><td className="py-2">{dateLabel(p.date)}</td><td>{p.receiptNo ?? "—"}</td><td>{p.reference || "—"}</td><td>{p.type} · {p.method}</td><td className="text-right tabular">{peso(p.amount)}</td></tr>
+              <tr key={i} className="border-t border-ink-100"><td className="py-2">{dateLabel(p.date)}</td><td>{p.receiptNo ?? "—"}</td><td>{p.reference || "—"}</td><td>{p.type} · {p.method}</td><td className="text-right tabular">{p.reversed ? <><s>{peso(p.amount)}</s> <b className="text-red-700">REVERSED</b></> : peso(p.amount)}</td></tr>
             ))}
           </tbody>
         </table>
@@ -81,10 +81,11 @@ export function itemLabel(item: ReceiptItem) {
 
 export function ReceiptDocument({ corporation, address, unitNo, receivedFrom, receipt: r }: {
   corporation: string; address: string; unitNo: string; receivedFrom: string;
-  receipt: { receiptNo: string; date: string; amount: string; method: string; reference: string; remarks?: string; receivedBy?: string; backfilled?: boolean; items: ReceiptItem[] };
+  receipt: { receiptNo: string; date: string; amount: string; method: string; reference: string; remarks?: string; receivedBy?: string; backfilled?: boolean; voided?: boolean; voidReason?: string; items: ReceiptItem[] };
 }) {
   return (
     <article className={sheet} aria-label="Official receipt">
+      {r.voided && <p className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-2 font-semibold text-red-800">VOID — {r.voidReason || "this receipt was cancelled"}. The payment it recorded was reversed.</p>}
       <header className="flex items-start justify-between gap-4 border-b-[3px] border-brand-600 pb-3">
         <div><h2 className="text-[18px] font-bold text-ink-900">{corporation}</h2>{address && <p className="text-ink-500">{address}</p>}</div>
         <div className="text-right"><p className="text-[11px] font-semibold tracking-[0.12em] text-ink-500">OFFICIAL RECEIPT</p><p className="font-display text-[18px] font-bold text-ink-900">{r.receiptNo}</p></div>
