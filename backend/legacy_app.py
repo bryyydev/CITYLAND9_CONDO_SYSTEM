@@ -378,14 +378,18 @@ def guarded(fn):
     return wrapper
 
 
+# Unit type -> Rates & Rules rate key. Matched without regard to case or extra spaces, so the
+# types the Units form saves ("1 BEDROOM") and older spellings ("1 Bedroom", "Studio") all find
+# their rate. (Fix 2026-10-04: "1/2/3 BEDROOM" used to find no rate, so auto-rate units billed ₱0.)
+TYPE_RATE_KEYS = {
+    "STUDIO": "studio_rate_per_sqm", "STUDIO TYPE": "studio_rate_per_sqm",
+    "1 BEDROOM": "one_bed_rate_per_sqm", "2 BEDROOM": "two_bed_rate_per_sqm", "3 BEDROOM": "three_bed_rate_per_sqm",
+}
+
+
 def rate_for_type(unit_type):
-    return {
-        "Studio": setting_float("studio_rate_per_sqm", 0),
-        "STUDIO TYPE": setting_float("studio_rate_per_sqm", 0),
-        "1 Bedroom": setting_float("one_bed_rate_per_sqm", 0),
-        "2 Bedroom": setting_float("two_bed_rate_per_sqm", 0),
-        "3 Bedroom": setting_float("three_bed_rate_per_sqm", 0),
-    }.get(unit_type, 0)
+    key = TYPE_RATE_KEYS.get(" ".join(str(unit_type or "").upper().split()))
+    return setting_float(key, 0) if key else 0
 
 
 def due_day_setting():
@@ -414,7 +418,12 @@ def dec(value):
 # Pricing rule (documented): amounts are computed in Decimal and rounded ONCE, to the centavo,
 # half up (0.005 -> 0.01). Previously float math + round() could round a half-centavo down.
 def unit_dues(unit):
-    """Condo dues = total unit area × applicable rate per sqm."""
+    """Condo dues = the unit's manual monthly amount when it is set to "manual" (and the amount is
+    above zero), otherwise total unit area × applicable rate per sqm.
+    (Fix 2026-10-04: the manual amount was saved but ignored for residential units.)"""
+    manual = money(getattr(unit, "manual_monthly_dues", 0) or 0)
+    if getattr(unit, "dues_mode", "per_sqm") == "manual" and manual > 0:
+        return round_money(manual)
     rate = dec(unit.unit_rate_per_sqm) or dec(rate_for_type(unit.unit_type))
     return round_money(dec(unit.area_sqm) * rate)
 
@@ -571,19 +580,12 @@ def _prepare_bill_calculation_cache():
     # Billing/SOA only needs the selected month's water reading. Historical
     # bills already store their water charge, so loading every historical
     # water-reading row here creates unnecessary work on large imports.
+    # (The retired classic Billing list loaded only its month's readings here, so older bills there
+    # used their stored water; every screen now loads all readings and shows the same figures.)
     water_map = {}
-    if request.endpoint == "billing":
-        target_month = request.args.get("month") or datetime.now().strftime("%Y-%m")
-        water_rows = (
-            WaterReading.query
-            .filter_by(reading_month=target_month)
-            .order_by(WaterReading.unit_id.asc(), WaterReading.id.desc())
-            .all()
-        )
-    else:
-        water_rows = WaterReading.query.order_by(
-            WaterReading.unit_id.asc(), WaterReading.reading_month.asc(), WaterReading.id.desc()
-        ).all()
+    water_rows = WaterReading.query.order_by(
+        WaterReading.unit_id.asc(), WaterReading.reading_month.asc(), WaterReading.id.desc()
+    ).all()
     for r in water_rows:
         water_map.setdefault((r.unit_id, r.reading_month), r)
 
@@ -654,6 +656,11 @@ def _prepare_bill_calculation_cache():
                 reading = water_map.get((bill.unit_id, bill.billing_month))
                 if reading and getattr(reading, "paid", False):
                     current -= water
+                # Other charges and the adjustment (negative = discount/credit) entered with Edit SOA.
+                # Fix 2026-10-04: they were stored but never counted in the total.
+                other = money(getattr(bill, "other", 0))
+                adjustment = money(getattr(bill, "adjustment", 0))
+                current += other + adjustment
 
                 advance = min(
                     advance_map.get(bill.id, Decimal("0")),
@@ -667,6 +674,8 @@ def _prepare_bill_calculation_cache():
                     "parking": parking,
                     "storage": storage,
                     "water": water,
+                    "other": other,
+                    "adjustment": adjustment,
                     "penalty": penalty,
                     "previous": previous,
                     "advance": advance,
@@ -726,6 +735,8 @@ def _bill_calc(bill):
         "parking": Decimal("0.00"),
         "storage": Decimal("0.00"),
         "water": money(bill.water),
+        "other": Decimal("0.00"),
+        "adjustment": Decimal("0.00"),
         "penalty": money(bill.penalty),
         "previous": money(bill.previous_balance),
         "advance": Decimal("0.00"),
@@ -959,6 +970,8 @@ def soa_bill_total(bill, include_paid_water=False, penalty_amount=None):
     reading = _water_reading_for_bill(bill)
     if reading and getattr(reading, "paid", False) and not include_paid_water:
         current -= water
+    calc = _bill_calc(bill)
+    current += calc["other"] + calc["adjustment"]      # counted, as in _bill_calc (fix 2026-10-04)
     applied_penalty = penalty if penalty_amount is None else penalty_amount
     advance = min(advance_for_bill(bill), current)
     return (current + previous + applied_penalty - advance).quantize(Decimal("0.01"))
@@ -1319,11 +1332,12 @@ def lock_row(model, row_id):
     return db.session.query(model).filter_by(id=row_id).with_for_update().populate_existing().first()
 
 
-def claim_form_token(action):
-    """One payment per rendered form. The token is put into every POST form by _security_headers;
-    claiming it twice raises DuplicateSubmission (the second click/refresh changes nothing)."""
+def claim_form_token(action, token=None):
+    """One payment per rendered form. The token is put into every POST form by _security_headers
+    (the React app sends its own per-form token); claiming it twice raises DuplicateSubmission
+    (the second click/refresh changes nothing)."""
     from sqlalchemy.exc import IntegrityError
-    token = (request.form.get("form_token") or "").strip()
+    token = ((request.form.get("form_token") if token is None else token) or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9_-]{16,64}", token):
         raise InputError("form_token", "This form is out of date. Reload the page and enter the payment again.")
     try:
@@ -1374,6 +1388,11 @@ def retry_on_deadlock(fn):
 @app.errorhandler(DuplicateSubmission)
 def _duplicate_submission(_exc):
     db.session.rollback()
+    if request.path.startswith("/api/"):
+        response = jsonify({"error": {"status": 409, "duplicate": True,
+                                      "message": "This payment was already recorded, so it was not recorded again."}})
+        response.status_code = 409
+        return response
     flash("This form was already submitted, so it was not recorded again. Check the payment list below.", "warning")
     back = request.referrer or ""
     return redirect(back if back.startswith(request.host_url) else url_for("index"))
@@ -1893,630 +1912,240 @@ def logout():
 # -----------------------------
 # Units
 # -----------------------------
+# Units Directory moved to the React app (/app/<workspace>/units, API /api/units,
+# backend/app/routes/units.py): units, owners, tenants, parking and storage. Same permission keys.
+# The old URLs stay (bookmarks, links from classic Billing pages) and only redirect; a form posted
+# from an old open tab changes nothing and says so.
+REACT_PORTALS = {"super_admin": "superadmin", "admin": "admin", "manager": "hr", "staff": "staff",
+                 "accounting": "accounting", "resident": "resident"}
+
+
+def react_url(path, **params):
+    """/app/<the signed-in user's workspace><path>?params (classic URL -> its React page)."""
+    u = current_user()
+    url = f"/app/{REACT_PORTALS.get(u.role if u else '', '')}{path}"
+    params = {k: v for k, v in params.items() if v not in (None, "")}
+    return url + (f"?{urlencode(params)}" if params else "")
+
+
+def _units_moved(unit_id=None, **params):
+    if request.method == "POST":
+        app.logger.info("Classic Units form posted from an old page by %s; nothing changed", session.get("username"))
+        return redirect(react_url("/units", unit=unit_id, moved="form"), code=303)
+    return redirect(react_url("/units", unit=unit_id, **params))
+
+
 @app.route("/units", methods=["GET", "POST"])
 @guarded
 def units():
-    if request.method == "POST":
-        d = request.form
-        unit_no = d.get("unit_no", "").strip()
-
-        if not unit_no:
-            flash("Unit number is required.", "danger")
-            return redirect(url_for("units"))
-
-        if Unit.query.filter_by(unit_no=unit_no).first():
-            flash("Unit number already exists.", "danger")
-            return redirect(url_for("units"))
-
-        u = Unit(
-            unit_no=unit_no,
-            floor=d.get("floor", "").strip(),
-            unit_type=d.get("unit_type", ""),
-            area_sqm=float(form_decimal("area_sqm", "Area (sqm)", 2, minimum=Decimal("0"), maximum=Decimal("100000"), allow_empty=True, default=Decimal("0"))),
-            unit_rate_per_sqm=float(form_decimal("unit_rate_per_sqm", "Rate per sqm", 4, minimum=Decimal("0"), maximum=Decimal("100000"), allow_empty=True, default=None) or rate_for_type(d.get("unit_type"))),
-            occupancy_type=d.get("occupancy_type", "Owner"),
-            status=d.get("status", "Vacant"),
-            include_parking=d.get("include_parking") == "on",
-            include_storage=d.get("include_storage") == "on",
-            assigned_parking_unit_id=(int(d.get("assigned_parking_unit_id") or 0) or None) if d.get("include_parking") == "on" else None,
-            assigned_storage_unit_id=(int(d.get("assigned_storage_unit_id") or 0) or None) if d.get("include_storage") == "on" else None,
-            auto_rate=d.get("auto_rate") == "on",
-            dues_mode=d.get("dues_mode", "per_sqm"),
-            manual_monthly_dues=form_amount("manual_monthly_dues", "Manual monthly dues", allow_zero=True, allow_empty=True),
-            active=True,
-        )
-        if u.auto_rate:
-            u.unit_rate_per_sqm = rate_for_type(u.unit_type)
-
-        db.session.add(u)
-        db.session.commit()
-
-        # Optional first owner
-        if d.get("owner_name", "").strip():
-            db.session.add(
-                Owner(
-                    unit_id=u.id,
-                    owner_name=d["owner_name"].strip(),
-                    contact_no=d.get("contact_no", "").strip(),
-                    email=d.get("email", "").strip(),
-                    status="Current",
-                    receive_soa_email=d.get("owner_receive_soa_email") == "on",
-                    include_in_soa=d.get("owner_include_in_soa") == "on",
-                )
-            )
-
-        # Optional first tenant
-        tenant_name = d.get("tenant_name", "").strip()
-        if tenant_name:
-            db.session.add(
-                Tenant(
-                    unit_id=u.id,
-                    tenant_name=tenant_name,
-                    contact_no=d.get("tenant_contact", "").strip(),
-                    email=d.get("tenant_email", "").strip(),
-                    move_in=parse_date(d.get("tenant_move_in")),
-                    status="Current",
-                    receive_soa_email=d.get("tenant_receive_soa_email") == "on",
-                    include_in_soa=d.get("tenant_include_in_soa") == "on",
-                )
-            )
-
-        db.session.commit()
-        audit(f"Created unit {unit_no}")
-        flash(f"Unit {unit_no} created successfully.", "success")
-        return redirect(url_for("unit_detail", uid=u.id))
-
-    q = request.args.get("q", "").strip()
-    floor = request.args.get("floor", "")
-    unit_type = request.args.get("unit_type", "")
-    status = request.args.get("status", "")
-
-    query = Unit.query.options(
-        selectinload(Unit.tenants),
-        selectinload(Unit.owners),
-        selectinload(Unit.assigned_parking_unit),
-        selectinload(Unit.assigned_storage_unit),
-    ).filter_by(active=True)
-
-    if q:
-        query = query.filter(
-            or_(
-                Unit.unit_no.ilike(f"%{q}%"),
-                Unit.owners.any((Owner.status == "Current") & Owner.owner_name.ilike(f"%{q}%")),
-                Unit.tenants.any((Tenant.status == "Current") & Tenant.tenant_name.ilike(f"%{q}%")),
-            )
-        )
-    if floor:
-        query = query.filter_by(floor=floor)
-    if unit_type:
-        query = query.filter_by(unit_type=unit_type)
-    if status:
-        query = query.filter_by(status=status)
-
-    # Server-side pagination keeps the browser responsive even with 800+ units.
-    page = max(int(request.args.get("page", 1) or 1), 1)
-    pagination = db.paginate(query.order_by(Unit.unit_no), page=page, per_page=20, error_out=False)
-    units_list = pagination.items
-    floors = [x[0] for x in db.session.query(Unit.floor).filter(Unit.floor.isnot(None)).distinct().all() if x[0]]
-
-    # Fetch SOAs only for the visible page instead of the entire billing history.
-    page_unit_ids = [u.id for u in units_list]
-    latest_bills = {}
-    if page_unit_ids:
-        for b in Billing.query.filter(Billing.unit_id.in_(page_unit_ids)).order_by(Billing.billing_month.desc(), Billing.id.desc()).all():
-            if b.unit_id not in latest_bills:
-                latest_bills[b.unit_id] = b
-
-    return render_template(
-        "units.html",
-        units=units_list,
-        pagination=pagination,
-        floors=sorted(floors),
-        q=q,
-        selected_floor=floor,
-        selected_type=unit_type,
-        selected_status=status,
-        parking_units=Unit.query.filter_by(active=True, unit_type="PARKING").order_by(Unit.unit_no).all(),
-        storage_units=Unit.query.filter_by(active=True, unit_type="STORAGE").order_by(Unit.unit_no).all(),
-        latest_bills=latest_bills,
-    )
+    return _units_moved(q=request.args.get("q"), kind=request.args.get("unit_type") if request.args.get("unit_type") in ("PARKING", "STORAGE") else None)
 
 
 @app.route("/unit/<int:uid>")
 @guarded
 def unit_detail(uid):
-    u = db.session.get(Unit, uid)
-    if not u:
-        flash("Unit not found.", "danger")
-        return redirect(url_for("units"))
-
-    return render_template(
-        "unit_detail.html",
-        unit=u,
-        assigned_parking=assigned_asset(u, "assigned_parking_unit_id"),
-        assigned_storage=assigned_asset(u, "assigned_storage_unit_id"),
-        parking_units=Unit.query.filter_by(active=True, unit_type="PARKING").order_by(Unit.unit_no).all(),
-        storage_units=Unit.query.filter_by(active=True, unit_type="STORAGE").order_by(Unit.unit_no).all(),
-        tenants=Tenant.query.filter_by(unit_id=uid).order_by(Tenant.status.desc(), Tenant.id.desc()).all(),
-        owners=Owner.query.filter_by(unit_id=uid).order_by(Owner.id.desc()).all(),
-        bills=Billing.query.filter_by(unit_id=uid).order_by(Billing.billing_month.desc()).all(),
-    )
+    return _units_moved(uid)
 
 
 @app.route("/unit/<int:uid>/edit", methods=["POST"])
 @guarded
 def edit_unit(uid):
-    u = db.session.get(Unit, uid)
-    if not u:
-        flash("Unit not found.", "danger")
-        return redirect(url_for("units"))
-
-    d = request.form
-    u.floor = d.get("floor", "")
-    u.unit_type = d.get("unit_type", "")
-    u.area_sqm = float(form_decimal("area_sqm", "Area (sqm)", 2, minimum=Decimal("0"), maximum=Decimal("100000"), allow_empty=True, default=Decimal("0")))
-    u.unit_rate_per_sqm = float(form_decimal("unit_rate_per_sqm", "Rate per sqm", 4, minimum=Decimal("0"), maximum=Decimal("100000"), allow_empty=True, default=None) or rate_for_type(u.unit_type))
-    u.occupancy_type = d.get("occupancy_type", "Owner")
-    u.status = d.get("status", "Vacant")
-    u.include_parking = d.get("include_parking") == "on"
-    u.include_storage = d.get("include_storage") == "on"
-    u.assigned_parking_unit_id = (int(d.get("assigned_parking_unit_id") or 0) or None) if u.include_parking else None
-    u.assigned_storage_unit_id = (int(d.get("assigned_storage_unit_id") or 0) or None) if u.include_storage else None
-    u.auto_rate = d.get("auto_rate") == "on"
-    u.dues_mode = d.get("dues_mode", "per_sqm")
-    u.manual_monthly_dues = form_amount("manual_monthly_dues", "Manual monthly dues", allow_zero=True, allow_empty=True)
-    if u.auto_rate and u.dues_mode == "per_sqm":
-        u.unit_rate_per_sqm = rate_for_type(u.unit_type)
-
-    db.session.commit()
-    audit(f"Updated unit {u.unit_no}")
-    flash("Unit updated successfully.", "success")
-    return redirect(url_for("unit_detail", uid=uid))
+    return _units_moved(uid)
 
 
-# -----------------------------
-# Multiple tenants
-# -----------------------------
 @app.route("/unit/<int:uid>/tenant/add", methods=["POST"])
 @guarded
 def add_tenant(uid):
-    u = db.session.get(Unit, uid)
-    if not u:
-        flash("Unit not found.", "danger")
-        return redirect(url_for("units"))
-
-    name = request.form.get("tenant_name", "").strip()
-    if not name:
-        flash("Tenant name is required.", "danger")
-        return redirect(url_for("unit_detail", uid=uid))
-
-    is_rep = request.form.get("representative") == "1"
-    if is_rep:
-        Tenant.query.filter_by(unit_id=uid, representative=True).update({"representative": False}, synchronize_session=False)
-    tenant = Tenant(
-        unit_id=uid,
-        tenant_name=name,
-        contact_no=request.form.get("contact_no", "").strip(),
-        email=request.form.get("email", "").strip(),
-        move_in=parse_date(request.form.get("move_in")),
-        move_out=parse_date(request.form.get("move_out")),
-        notes=request.form.get("notes", "").strip(),
-        status="Past" if request.form.get("move_out") else "Current",
-        representative=is_rep,
-        receive_soa_email=request.form.get("receive_soa_email") == "on",
-    )
-    db.session.add(tenant)
-    u.status = "Occupied"
-    db.session.commit()
-
-    audit(f"Added tenant {name} to unit {u.unit_no}")
-    flash("Tenant added. Existing tenants were preserved.", "success")
-    return redirect(url_for("unit_detail", uid=uid))
+    return _units_moved(uid)
 
 
 @app.route("/tenants")
 @guarded
 def tenants():
-    q = request.args.get("q", "").strip()
-    status = request.args.get("status", "Current")
-    query = Tenant.query
-    if q:
-        like = f"%{q}%"
-        query = query.join(Unit).filter(or_(Tenant.tenant_name.ilike(like), Tenant.contact_no.ilike(like), Tenant.email.ilike(like), Unit.unit_no.ilike(like)))
-    if status in ("Current", "Past"):
-        query = query.filter(Tenant.status == status)
-    rows = query.order_by(Tenant.tenant_name).all()
-    return render_template("tenants.html", tenants=rows, q=q, status=status)
+    return _units_moved(q=request.args.get("q"), past="1")
 
 
 @app.route("/unit/<int:uid>/tenant/<int:tid>/edit", methods=["POST"])
 @guarded
 def edit_tenant(uid, tid):
-    tenant = db.session.get(Tenant, tid)
-    if not tenant or tenant.unit_id != uid:
-        flash("Tenant not found.", "danger")
-        return redirect(url_for("unit_detail", uid=uid))
-    name = request.form.get("tenant_name", "").strip()
-    if not name:
-        flash("Tenant name is required.", "danger")
-        return redirect(url_for("unit_detail", uid=uid))
-    is_rep = request.form.get("representative") == "1"
-    if is_rep:
-        Tenant.query.filter(Tenant.unit_id == uid, Tenant.id != tid, Tenant.representative == True).update({"representative": False}, synchronize_session=False)
-    tenant.representative = is_rep
-    tenant.tenant_name = name
-    tenant.contact_no = request.form.get("contact_no", "").strip()
-    tenant.email = request.form.get("email", "").strip()
-    tenant.receive_soa_email = request.form.get("receive_soa_email") == "on"
-    tenant.include_in_soa = request.form.get("include_in_soa") == "on"
-    tenant.move_in = parse_date(request.form.get("move_in"))
-    tenant.move_out = parse_date(request.form.get("move_out"))
-    tenant.notes = request.form.get("notes", "").strip()
-    tenant.status = request.form.get("status", tenant.status)
-    if tenant.status == "Past" and not tenant.move_out:
-        tenant.move_out = date.today()
-    if tenant.status == "Current":
-        tenant.move_out = None
-    db.session.commit()
-    audit(f"Updated tenant {tenant.tenant_name} in unit {tenant.unit.unit_no}")
-    flash("Tenant updated.", "success")
-    return redirect(url_for("unit_detail", uid=uid))
+    return _units_moved(uid)
 
 
 @app.route("/tenant/<int:tid>/status", methods=["POST"])
 @guarded
 def tenant_status(tid):
     tenant = db.session.get(Tenant, tid)
-    if not tenant:
-        flash("Tenant not found.", "danger")
-        return redirect(url_for("units"))
-
-    new_status = request.form.get("status", "Current")
-    tenant.status = new_status
-    if new_status == "Past":
-        tenant.representative = False
-    if new_status == "Past" and not tenant.move_out:
-        tenant.move_out = date.today()
-
-    db.session.commit()
-    audit(f"Changed tenant {tenant.tenant_name} status to {new_status}")
-    return redirect(url_for("unit_detail", uid=tenant.unit_id))
+    return _units_moved(tenant.unit_id if tenant else None)
 
 
-# -----------------------------
-# Owners
-# -----------------------------
 @app.route("/unit/<int:uid>/owner/add", methods=["POST"])
 @guarded
 def add_owner(uid):
-    u = db.session.get(Unit, uid)
-    if not u:
-        flash("Unit not found.", "danger")
-        return redirect(url_for("units"))
-
-    name = request.form.get("owner_name", "").strip()
-    if not name:
-        flash("Owner name is required.", "danger")
-        return redirect(url_for("unit_detail", uid=uid))
-
-    db.session.add(
-        Owner(
-            unit_id=uid,
-            owner_name=name,
-            contact_no=request.form.get("contact_no", ""),
-            email=request.form.get("email", ""),
-            move_in=parse_date(request.form.get("move_in")),
-            status="Current",
-            receive_soa_email=request.form.get("receive_soa_email") == "on",
-        )
-    )
-    db.session.commit()
-    audit(f"Added owner {name} to unit {u.unit_no}")
-    flash("Owner added.", "success")
-    return redirect(url_for("unit_detail", uid=uid))
+    return _units_moved(uid)
 
 
 @app.route("/unit/<int:uid>/owner/<int:oid>/edit", methods=["POST"])
 @guarded
 def edit_owner(uid, oid):
-    owner = db.session.get(Owner, oid)
-    if not owner or owner.unit_id != uid:
-        flash("Owner not found.", "danger")
-        return redirect(url_for("unit_detail", uid=uid))
-    owner.owner_name = request.form.get("owner_name", "").strip()
-    owner.contact_no = request.form.get("contact_no", "").strip()
-    owner.email = request.form.get("email", "").strip()
-    owner.status = request.form.get("status", owner.status)
-    owner.receive_soa_email = request.form.get("receive_soa_email") == "on"
-    owner.include_in_soa = request.form.get("include_in_soa") == "on"
-    if owner.status == "Past" and not owner.move_out:
-        owner.move_out = date.today()
-    if owner.status == "Current":
-        owner.move_out = None
-    unit = db.session.get(Unit, uid)
-    db.session.commit()
-    audit(f"Updated owner {owner.owner_name} in unit {unit.unit_no if unit else uid}; SOA email opt-in={'Yes' if owner.receive_soa_email else 'No'}")
-    flash("Owner updated.", "success")
-    return redirect(url_for("unit_detail", uid=uid))
+    return _units_moved(uid)
 
 
-# -----------------------------
-# Parking
-# -----------------------------
 @app.route("/parking")
 @guarded
 def parking():
-    """Parking = PARKING-type units assigned to residential units (Phase B3)."""
-    assigned_to = {u.assigned_parking_unit_id: u for u in
-                   Unit.query.filter(Unit.assigned_parking_unit_id.isnot(None)).all()}
-    rows = []
-    for asset in Unit.query.filter_by(unit_type="PARKING").order_by(Unit.unit_no).all():
-        rate = float(asset.unit_rate_per_sqm or setting_float("parking_rate_per_sqm", 0))
-        rows.append({"asset": asset, "unit": assigned_to.get(asset.id), "rate": rate,
-                     "charge": round(float(asset.area_sqm or 0) * rate, 2)})
-    return render_template("parking.html", rows=rows)
+    return _units_moved(kind="PARKING")
 
 
 
 # -----------------------------
 # Billing
 # -----------------------------
+# Billing & SOA moved to the React app (/app/<workspace>/billing, API /api/billing,
+# backend/app/routes/billing.py). The money logic below is the classic screen's, now as plain
+# functions (one implementation, same rules): generate_bills, record_bill_payment, correct_soa,
+# recalculate_bill. The old URLs only redirect; a form posted from an old tab changes nothing.
+def _billing_moved(bill_id=None, month=None):
+    if request.method == "POST":
+        app.logger.info("Classic Billing form posted from an old page by %s; nothing changed", session.get("username"))
+        return redirect(react_url("/billing", bill=bill_id, month=month, moved="form"), code=303)
+    return redirect(react_url("/billing", bill=bill_id, month=month))
+
+
 @app.route("/billing", methods=["GET", "POST"])
 @guarded
 def billing():
-    month = request.args.get("month") or datetime.now().strftime("%Y-%m")
-
-    if request.method == "POST":
-        month = request.form.get("month") or month
-        if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month):
-            flash("Invalid billing month.", "danger")
-            return redirect(url_for("billing"))
-        check_open_period(month, "Bills")
-        due_date = due_date_for(month)
-        created = 0
-        for u in Unit.query.filter_by(active=True).all():
-            if u.unit_type in ("PARKING", "STORAGE"):
-                continue
-            if Billing.query.filter_by(unit_id=u.id, billing_month=month).first():
-                continue
-            previous = previous_outstanding(u.id, month)
-            penalty = penalty_for_unit(u.id, month)
-            reading = WaterReading.query.filter_by(unit_id=u.id, reading_month=month).order_by(WaterReading.id.desc()).first()
-            water = water_amount_for_reading(reading)
-            condo = Decimal(str(unit_dues(u)))
-            parking = Decimal(str(parking_dues(u)))
-            storage = Decimal(str(storage_dues(u)))
-            bill = Billing(unit_id=u.id, billing_month=month, assessment=condo, parking_dues=parking,
-                storage_dues=storage, water=water, other=0, penalty=penalty, adjustment=0, previous_balance=max(previous, Decimal("0")),
-                amount_paid=0, due_date=due_date, status="Unpaid")
-            db.session.add(bill)
-            created += 1
-        allocate_advances_for_month(month)
-        audit(f"Generated {created} detailed bills for {month}", entity_type="billing_month", reason=None,
-              details={"month": month, "created": created, "due_date": due_date.isoformat()}, commit=False)
-        db.session.commit()
-        flash(f"Generated {created} bills for {month}.", "success")
-        return redirect(url_for("billing_email", month=month))
-
-    # GET is read-only: viewing the list never changes a bill. (It used to reset every bill's due
-    # date to the 8th and overwrite water amounts on each view; water is synchronized when a
-    # reading is saved, and each bill keeps the due date it was issued with.)
-    # One query for the month's readings instead of one query per bill.
-    current_readings = (
-        WaterReading.query
-        .filter_by(reading_month=month)
-        .order_by(WaterReading.unit_id.asc(), WaterReading.id.desc())
-        .all()
-    )
-    q = request.args.get("q", "").strip()
-    status_filter = request.args.get("status", "").strip()
-    unit_type_filter = request.args.get("unit_type", "").strip()
-    try:
-        page = max(int(request.args.get("page", 1)), 1)
-    except ValueError:
-        page = 1
-    try:
-        per_page = min(max(int(request.args.get("per_page", 20)), 10), 100)
-    except ValueError:
-        per_page = 20
-
-    bill_query = Billing.query.join(Unit).outerjoin(Tenant, Tenant.unit_id == Unit.id).filter(Billing.billing_month == month)
-    if q:
-        like = f"%{q}%"
-        bill_query = bill_query.filter(or_(Unit.unit_no.ilike(like), Unit.owners.any((Owner.status == "Current") & Owner.owner_name.ilike(like)), Tenant.tenant_name.ilike(like)))
-    if unit_type_filter:
-        bill_query = bill_query.filter(Unit.unit_type == unit_type_filter)
-    bills_base = bill_query.distinct().order_by(Billing.id.desc()).all()
-
-    # Status is calculated from the current balance/due date. Keep KPI counts based
-    # on the search/month/unit-type selection, then apply the selected KPI tab to
-    # the displayed rows. Pending combines unpaid and partially paid bills.
-    kpi_paid = sum(1 for b in bills_base if bill_status(b) == "Paid")
-    kpi_partial = sum(1 for b in bills_base if bill_status(b) == "Partially Paid")
-    kpi_overdue = sum(1 for b in bills_base if bill_status(b) == "Overdue")
-    kpi_pending = sum(1 for b in bills_base if bill_status(b) in ("Unpaid", "Partially Paid"))
-
-    bills_all = bills_base
-    if status_filter == "Pending":
-        bills_all = [b for b in bills_all if bill_status(b) in ("Unpaid", "Partially Paid")]
-    elif status_filter:
-        bills_all = [b for b in bills_all if bill_status(b) == status_filter]
-
-    total_count = len(bills_all)
-    total_pages = max((total_count + per_page - 1) // per_page, 1)
-    page = min(page, total_pages)
-    start = (page - 1) * per_page
-    bills = bills_all[start:start + per_page]
-
-    previous_map = {b.id: unpaid_previous_bills(b.unit_id, month) for b in bills}
-    current_readings = {r.unit_id: r for r in current_readings}
-    reading_map = {b.unit_id: current_readings.get(b.unit_id) for b in bills}
-    return render_template(
-        "billing.html",
-        bills=bills,
-        month=month,
-        q=q,
-        status_filter=status_filter,
-        unit_type_filter=unit_type_filter,
-        previous_map=previous_map,
-        reading_map=reading_map,
-        total_count=total_count,
-        page=page,
-        per_page=per_page,
-        total_pages=total_pages,
-        kpi_paid=kpi_paid,
-        kpi_partial=kpi_partial,
-        kpi_overdue=kpi_overdue,
-        kpi_pending=kpi_pending,
-        today=date.today().isoformat(),
-    )
+    return _billing_moved(month=request.args.get("month"))
 
 
+def generate_bills(month):
+    """Create the missing bills of billing month YYYY-MM, one per active residential unit (bills
+    that exist are skipped). Returns (created, skipped, due_date). Commits."""
+    if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month or ""):
+        raise InputError("month", "Choose a valid billing month.")
+    check_open_period(month, "Bills")
+    due_date = due_date_for(month)
+    created = skipped = 0
+    for u in Unit.query.filter_by(active=True).all():
+        if u.unit_type in ("PARKING", "STORAGE"):
+            continue
+        if Billing.query.filter_by(unit_id=u.id, billing_month=month).first():
+            skipped += 1
+            continue
+        previous = previous_outstanding(u.id, month)
+        penalty = penalty_for_unit(u.id, month)
+        reading = WaterReading.query.filter_by(unit_id=u.id, reading_month=month).order_by(WaterReading.id.desc()).first()
+        water = water_amount_for_reading(reading)
+        condo = Decimal(str(unit_dues(u)))
+        parking = Decimal(str(parking_dues(u)))
+        storage = Decimal(str(storage_dues(u)))
+        bill = Billing(unit_id=u.id, billing_month=month, assessment=condo, parking_dues=parking,
+            storage_dues=storage, water=water, other=0, penalty=penalty, adjustment=0, previous_balance=max(previous, Decimal("0")),
+            amount_paid=0, due_date=due_date, status="Unpaid")
+        db.session.add(bill)
+        created += 1
+    allocate_advances_for_month(month)
+    audit(f"Generated {created} detailed bills for {month}", entity_type="billing_month", reason=None,
+          details={"month": month, "created": created, "due_date": due_date.isoformat()}, commit=False)
+    db.session.commit()
+    return created, skipped, due_date
+
+
+# Advance Payments moved to the React app (/app/<workspace>/advances, API /api/advances,
+# backend/app/routes/advances.py). The rules are below as one function (record_advance_payment).
 @app.route("/billing/advance", methods=["GET", "POST"])
 @guarded
-@retry_on_deadlock
 def advance_payments():
     if request.method == "POST":
-        unit_id = request.form.get("unit_id", type=int)
-        amount = form_amount("amount", "Advance amount")
-        start_month = (request.form.get("start_month") or "").strip()
-        months = request.form.get("coverage_months", type=int) or 1
-        method = (request.form.get("payment_method") or "CASH").upper()
-        reference = (request.form.get("reference") or "").strip()
-        payment_date = parse_date(request.form.get("payment_date")) or date.today()
-        if not unit_id or not db.session.get(Unit, unit_id):
-            flash("Please select a valid unit.", "danger")
-            return redirect(url_for("advance_payments"))
-        if amount <= 0 or months < 1:
-            flash("Advance amount and coverage months are required.", "danger")
-            return redirect(url_for("advance_payments"))
-        if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", start_month):
-            flash("Please enter a valid start billing month.", "danger")
-            return redirect(url_for("advance_payments"))
-        if method not in ("CASH", "CHECK", "ONLINE"):
-            flash("Invalid payment method.", "danger")
-            return redirect(url_for("advance_payments"))
-        if method in ("CHECK", "ONLINE") and not reference:
-            flash("Reference number is required for Check or Online payments.", "danger")
-            return redirect(url_for("advance_payments"))
-        check_open_period(payment_date, "Payments")
-        claim_form_token("advance_payment")
-        monthly = round_money(amount / months)
-        adv = AdvancePayment(unit_id=unit_id, payment_date=payment_date, amount=amount, start_month=start_month, coverage_months=months, monthly_amount=monthly, payment_method=method, reference=reference, remarks=request.form.get("remarks", "").strip())
-        db.session.add(adv)
-        db.session.flush()
-        allocate_advances_for_month(start_month, unit_id)
-        receipt = issue_receipt(unit_id, payment_date, method, reference, request.form.get("remarks", ""),
-                                [("advance", adv, amount)])
-        audit(f"Issued {receipt.receipt_no} - Recorded {months}-month advance condo dues payment for unit {adv.unit.unit_no}: {amount:,.2f}",
-              entity_type="receipt", entity_id=receipt.id,
-              details={"advance_payment_id": adv.id, "amount": amount, "start_month": start_month, "months": months, "method": method},
-              commit=False)
-        db.session.commit()
-        flash(f"Advance payment of ₱{amount:,.2f} recorded for {months} month(s) (official receipt {receipt.receipt_no}).", "success")
-        return redirect(url_for("advance_payments", unit_id=unit_id))
+        app.logger.info("Classic advance payment form posted from an old page by %s; nothing changed", session.get("username"))
+        return redirect(react_url("/advances", moved="form"), code=303)
+    return redirect(react_url("/advances", unit=request.args.get("unit_id")))
 
-    units = Unit.query.options(selectinload(Unit.owners)).filter(Unit.active.is_(True), ~Unit.unit_type.in_(["PARKING", "STORAGE"])).order_by(Unit.unit_no).all()
-    advances = AdvancePayment.query.join(Unit).order_by(AdvancePayment.id.desc()).all()
-    rows = [(a, advance_balance(a)) for a in advances]
-    return render_template("advance_payments.html", units=units, advances=rows, today=date.today().isoformat(), selected_unit=request.args.get("unit_id", type=int), current_month=datetime.now().strftime("%Y-%m"))
+
+def record_advance_payment(*, unit_id, amount, start_month, months, method, reference, remarks, payment_date, form_token):
+    """Record prepaid condo dues and issue the official receipt (the classic rules): split evenly per
+    month, applied automatically to the unit's bills from start_month (condo dues only). One payment
+    per form token; refused in a closed period. Returns (advance, receipt). Commits."""
+    unit = db.session.get(Unit, unit_id) if unit_id else None
+    if not unit or not unit.active or unit.unit_type in ("PARKING", "STORAGE"):
+        raise InputError("unitId", "Choose an active residential unit.")
+    if amount <= 0:
+        raise InputError("amount", "Enter the amount received.")
+    if not isinstance(months, int) or not 1 <= months <= 120:
+        raise InputError("months", "Months covered must be between 1 and 120.")
+    if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", start_month or ""):
+        raise InputError("startMonth", "Choose the first billing month it covers.")
+    method = (method or "CASH").upper()
+    if method not in ("CASH", "CHECK", "ONLINE"):
+        raise InputError("method", "Choose Cash, Check or Online.")
+    reference = (reference or "").strip()
+    remarks = (remarks or "").strip()
+    if method in ("CHECK", "ONLINE") and not reference:
+        raise InputError("reference", "Reference number is required for Check or Online payments.")
+    payment_date = payment_date or date.today()
+    check_open_period(payment_date, "Payments")
+    claim_form_token("advance_payment", form_token)
+    monthly = round_money(amount / months)
+    adv = AdvancePayment(unit_id=unit.id, payment_date=payment_date, amount=amount, start_month=start_month, coverage_months=months,
+                         monthly_amount=monthly, payment_method=method, reference=reference, remarks=remarks)
+    db.session.add(adv)
+    db.session.flush()
+    allocate_advances_for_month(start_month, unit.id)
+    receipt = issue_receipt(unit.id, payment_date, method, reference, remarks, [("advance", adv, amount)])
+    audit(f"Issued {receipt.receipt_no} - Recorded {months}-month advance condo dues payment for unit {unit.unit_no}: {amount:,.2f}",
+          entity_type="receipt", entity_id=receipt.id,
+          details={"advance_payment_id": adv.id, "amount": amount, "start_month": start_month, "months": months, "method": method},
+          commit=False)
+    db.session.commit()
+    return adv, receipt
 
 
 @app.route("/billing/<int:bid>")
 @guarded
 def billing_detail(bid):
-    b=db.session.get(Billing,bid)
-    if not b: return "Bill not found",404
-
-    # Every SOA is due on the 8th of its billing month.
-    expected_due_date = date.fromisoformat(f"{b.billing_month}-01").replace(day=8)
-    if b.due_date != expected_due_date:
-        b.due_date = expected_due_date
-        db.session.commit()
-
-    # A water reading may have been entered after the bill was generated.
-    # Synchronize the bill here as well so the SOA never silently omits the
-    # current month's water charge.
-    water_reading = WaterReading.query.filter_by(
-        unit_id=b.unit_id, reading_month=b.billing_month
-    ).order_by(WaterReading.id.desc()).first()
-    if water_reading:
-        expected_water = money(water_reading.bill_amount)
-        if money(b.water) != expected_water:
-            b.water = expected_water
-
-    # Keep the stored penalty aligned with the detailed SOA computation.
-    # The calculation covers prior outstanding monthly balances and includes
-    # the current bill only after it becomes overdue. A water reading marked
-    # Paid is excluded from the current SOA balance.
-    computed_penalty = soa_penalty_amount(b)
-    if not b.soa_manual_override and money(b.penalty) != computed_penalty:
-        b.penalty = computed_penalty
-
-    allocate_advances_for_month(b.billing_month, b.unit_id)
-    b.status = bill_status(b)
-    db.session.commit()
-
-    water_history = WaterReading.query.filter_by(unit_id=b.unit_id).order_by(
-        WaterReading.reading_month.desc(), WaterReading.id.desc()
-    ).all()
-    water_bill_map = {(x.unit_id, x.billing_month): x for x in Billing.query.filter_by(unit_id=b.unit_id).all()}
-    water_reading_map = {(x.unit_id, x.reading_month): x for x in water_history}
-
-    return render_template(
-        "billing_detail.html", bill=b, previous=unpaid_previous_bills(b.unit_id,b.billing_month),
-        contact=current_contact_for_unit(b.unit),
-        assigned_parking=assigned_asset(b.unit, "assigned_parking_unit_id"), assigned_storage=assigned_asset(b.unit, "assigned_storage_unit_id"),
-        unit_overdue=overdue_months_for_unit(b.unit_id,b.billing_month),
-        water_reading=water_reading, water_history=water_history, water_bill_map=water_bill_map, water_reading_map=water_reading_map,
-        advance_applied=advance_for_bill(b),
-    )
+    return _billing_moved(bill_id=bid)
 
 
 @app.route("/billing/<int:bid>/pay", methods=["POST"])
 @guarded
-@retry_on_deadlock
 def mark_bill_paid(bid):
-    # Lock the bill until commit: two cashiers paying the same bill are applied one after the other.
+    return _billing_moved(bill_id=bid)
+
+
+def record_bill_payment(bid, *, amount, payment_method, payment_type, reference, remarks, payment_date, form_token):
+    """Record money received for a bill and issue its official receipt (the classic cashier rules).
+
+    amount: Decimal > 0 (validated by the caller). The part needed to clear the bill is applied to
+    it; any excess becomes an advance payment for the same unit from this billing month. One
+    payment per form token (a second submit raises DuplicateSubmission). The bill row is locked
+    until commit, so two cashiers paying the same bill are applied one after the other.
+    Returns None when the bill doesn't exist, else a dict (bill, receipt, applied, excess). Commits."""
     b = lock_row(Billing, bid)
     if not b:
-        flash("Bill not found.", "danger")
-        return redirect(url_for("billing"))
+        return None
     reset_financial_caches()
     balance_before = max(bill_balance(b), Decimal("0"))
-    amount = form_amount("amount", "Payment amount")
-    payment_method = (request.form.get("payment_method") or "CASH").upper()
-    payment_type = (request.form.get("payment_type") or "FULL").upper()
-    reference = (request.form.get("reference") or "").strip()
-    payment_date = parse_date(request.form.get("payment_date")) or date.today()
-
+    payment_method = (payment_method or "CASH").upper()
+    payment_type = (payment_type or "FULL").upper()
+    reference = (reference or "").strip()
+    remarks = (remarks or "").strip()
+    payment_date = payment_date or date.today()
     if payment_method not in ("CASH", "CHECK", "ONLINE"):
-        flash("Invalid payment method.", "danger")
-        return redirect(url_for("billing", month=b.billing_month))
+        raise InputError("method", "Choose Cash, Check or Online.")
     if payment_type not in ("FULL", "PARTIAL"):
-        flash("Invalid payment type.", "danger")
-        return redirect(url_for("billing", month=b.billing_month))
+        raise InputError("type", "Choose a full or partial payment.")
     if amount <= 0:
-        flash("Please enter a payment amount.", "danger")
-        return redirect(url_for("billing", month=b.billing_month))
-    # Payments may exceed the current SOA. The amount needed to clear the
-    # bill is applied to the bill, while the excess is automatically recorded
-    # as an advance payment for the same unit starting on this billing month.
+        raise InputError("amount", "Please enter a payment amount.")
+    # Payments may exceed the current SOA: the excess is recorded as an advance payment.
     if balance_before <= 0:
         excess_amount = amount
         amount_to_bill = Decimal("0.00")
     else:
         amount_to_bill = min(amount, balance_before)
         excess_amount = max(amount - balance_before, Decimal("0.00"))
-
-    if amount_to_bill <= 0 and excess_amount <= 0:
-        flash("This bill has no remaining balance.", "warning")
-        return redirect(url_for("billing", month=b.billing_month))
     if payment_method in ("CHECK", "ONLINE") and not reference:
-        flash("Reference number is required for Check or Online payments.", "danger")
-        return redirect(url_for("billing", month=b.billing_month))
+        raise InputError("reference", "Reference number is required for Check or Online payments.")
     check_open_period(payment_date, "Payments")
-    claim_form_token("bill_payment")
+    claim_form_token("bill_payment", form_token)
     paid_before, status_before = money(b.amount_paid), b.status
     if amount_to_bill > 0:
         b.amount_paid = money(b.amount_paid) + amount_to_bill
@@ -2528,42 +2157,23 @@ def mark_bill_paid(bid):
     else:
         b.status = "Partially Paid"
 
-    # Keep the billing payment record limited to the amount actually applied
-    # to this SOA. The excess is tracked separately as an advance so it can
-    # be automatically applied to future condo dues.
     bill_payment = excess_adv = None
     if amount_to_bill > 0:
-        bill_payment = Payment(
-            billing_id=b.id,
-            amount=amount_to_bill,
-            payment_date=payment_date,
-            payment_method=payment_method,
-            payment_type=payment_type,
-            reference=reference,
-            remarks=request.form.get("remarks", "")
-        )
+        bill_payment = Payment(billing_id=b.id, amount=amount_to_bill, payment_date=payment_date, payment_method=payment_method,
+                               payment_type=payment_type, reference=reference, remarks=remarks)
         db.session.add(bill_payment)
 
     if excess_amount > 0:
         excess_adv = AdvancePayment(
-            unit_id=b.unit_id,
-            payment_date=payment_date,
-            amount=excess_amount,
-            start_month=b.billing_month,
-            coverage_months=1,
-            monthly_amount=excess_amount,
-            payment_method=payment_method,
-            reference=reference,
-            remarks=(request.form.get("remarks", "").strip() + " " if request.form.get("remarks", "").strip() else "") +
-                    f"Automatic advance from excess payment for {b.billing_month}."
-        )
+            unit_id=b.unit_id, payment_date=payment_date, amount=excess_amount, start_month=b.billing_month,
+            coverage_months=1, monthly_amount=excess_amount, payment_method=payment_method, reference=reference,
+            remarks=(remarks + " " if remarks else "") + f"Automatic advance from excess payment for {b.billing_month}.")
         db.session.add(excess_adv)
         db.session.flush()
-        # The bill is already settled above, so this advance remains available
-        # for the next eligible billing month.
+        # The bill is already settled above, so this advance remains available for the next month.
         allocate_advances_for_month(b.billing_month, b.unit_id)
 
-    receipt = issue_receipt(b.unit_id, payment_date, payment_method, reference, request.form.get("remarks", ""),
+    receipt = issue_receipt(b.unit_id, payment_date, payment_method, reference, remarks,
                             [("bill", bill_payment, amount_to_bill), ("advance", excess_adv, excess_amount)])
     audit(
         f"Issued {receipt.receipt_no} - "
@@ -2575,15 +2185,7 @@ def mark_bill_paid(bid):
                  "amount_paid": {"before": paid_before, "after": money(b.amount_paid)}, "status": {"before": status_before, "after": b.status}},
     )
     db.session.commit()
-    if excess_amount > 0:
-        flash(
-            f"Payment recorded (official receipt {receipt.receipt_no}). ₱{amount_to_bill:,.2f} applied to the SOA and "
-            f"₱{excess_amount:,.2f} automatically added to Advance Payment.",
-            "success"
-        )
-    else:
-        flash(f"Payment recorded (official receipt {receipt.receipt_no}).", "success")
-    return redirect(url_for("billing", month=b.billing_month, status="Paid" if b.status == "Paid" else "Partially Paid"))
+    return {"bill": b, "receipt": receipt, "applied": money(amount_to_bill), "excess": money(excess_amount)}
 
 
 def soa_email_contacts(unit):
@@ -2616,103 +2218,111 @@ def send_soa_email_to_contact(bill, contact):
 @app.route("/billing/email")
 @guarded
 def billing_email():
-    month=request.args.get("month") or datetime.now().strftime("%Y-%m")
-    bills=Billing.query.join(Unit).filter(Billing.billing_month==month).order_by(Unit.unit_no).all()
-    email_rows=[]; opted_in=0
-    for b in bills:
-        contacts=soa_email_contacts(b.unit); opted_in += len(contacts); email_rows.append({"bill":b,"contacts":contacts})
-    return render_template("billing_email.html",month=month,email_rows=email_rows,opted_in=opted_in,smtp_configured=bool(setting("smtp_host","").strip() and setting("smtp_sender","").strip()))
+    return _billing_moved(month=request.args.get("month"))
 
 
 @app.route("/billing/email/send", methods=["POST"])
 @guarded
 def send_billing_emails():
-    month=request.form.get("month") or datetime.now().strftime("%Y-%m"); selected_ids=request.form.getlist("bill_ids"); send_all=request.form.get("send_all")=="1"
-    all_bills=Billing.query.join(Unit).filter(Billing.billing_month==month).order_by(Unit.unit_no).all()
-    bills=all_bills if send_all else [b for b in all_bills if str(b.id) in selected_ids]
-    sent=failed=skipped=0; errors=[]
-    for bill in bills:
-        contacts=soa_email_contacts(bill.unit)
-        if not contacts: skipped+=1; continue
-        for contact in contacts:
-            try:
-                send_soa_email_to_contact(bill,contact); sent+=1
-                audit(f"Emailed SOA for unit {bill.unit.unit_no}, billing {month} to {contact['email']} ({contact['type']})")
-            except Exception as exc:
-                failed+=1; errors.append(f"Unit {bill.unit.unit_no} / {contact['email']}: {exc}"); app.logger.exception("SOA email failed")
-    if sent: flash(f"SOA email sending completed: {sent} email(s) sent.","success")
-    if skipped: flash(f"{skipped} unit(s) skipped because no owner/tenant email was opted in.","warning")
-    if failed: flash(f"{failed} email(s) failed. First error: {errors[0]}","danger")
-    return redirect(url_for("billing_email",month=month))
+    return _billing_moved(month=request.form.get("month"))
 
 
 @app.route("/billing/<int:bid>/email", methods=["POST"])
 @guarded
 def email_bill(bid):
-    b=db.session.get(Billing,bid)
-    if not b: flash("Bill not found.","danger"); return redirect(url_for("billing"))
-    contacts=soa_email_contacts(b.unit)
-    if not contacts:
-        flash("No owner/tenant email address is opted in for this unit. Enable 'Receive SOA by Email' under Unit → Owners/Tenants.","warning")
-        return redirect(url_for("billing_detail",bid=bid))
-    sent=failed=0; errors=[]
-    for contact in contacts:
-        try: send_soa_email_to_contact(b,contact); sent+=1; audit(f"Emailed SOA for unit {b.unit.unit_no}, billing {b.billing_month} to {contact['email']} ({contact['type']})")
-        except Exception as exc: failed+=1; errors.append(str(exc)); app.logger.exception("SOA email failed")
-    if sent: flash(f"SOA emailed to {sent} opted-in recipient(s).","success")
-    if failed: flash(f"{failed} email(s) failed. {errors[0]}","danger")
-    return redirect(url_for("billing_detail",bid=bid))
+    return _billing_moved(bill_id=bid)
 
 
 @app.route("/billing/<int:bid>/edit-soa", methods=["POST"])
 @guarded
 def edit_soa(bid):
-    b=lock_row(Billing,bid)
-    if not b: flash("Bill not found.","danger"); return redirect(url_for("billing"))
-    check_open_period(b.billing_month, "Statements")
-    before={k:getattr(b,k) for k in ["assessment","parking_dues","storage_dues","water","other","penalty","adjustment","previous_balance","due_date","soa_note"]}
-    nonneg = dict(allow_zero=True, allow_empty=True)
-    b.assessment=form_amount("assessment", "Condo dues", **nonneg); b.parking_dues=form_amount("parking_dues", "Parking", **nonneg); b.storage_dues=form_amount("storage_dues", "Storage", **nonneg); b.water=form_amount("water", "Water", **nonneg); b.other=form_amount("other", "Other charges", **nonneg); b.penalty=form_amount("penalty", "Penalty", **nonneg); b.adjustment=form_amount("adjustment", "Adjustment", allow_negative=True, **nonneg); b.previous_balance=form_amount("previous_balance", "Previous balance", **nonneg); b.due_date=parse_date(request.form.get("due_date")) or b.due_date; b.soa_note=request.form.get("soa_note","").strip(); b.soa_manual_override=True; b.status=bill_status(b)
-    changes=[k for k in before if before[k]!=getattr(b,k)]
-    audit(f"Manual SOA correction for unit {b.unit.unit_no}, billing {b.billing_month}; fields changed: {', '.join(changes) if changes else 'none'}",
-          entity_type="billing", entity_id=b.id, reason=b.soa_note or None, commit=False,
-          details={k: {"before": before[k], "after": getattr(b, k)} for k in changes})
-    db.session.commit()
-    flash("SOA corrections saved and recorded in Audit Logs.","success")
-    return redirect(url_for("billing_detail",bid=bid))
+    return _billing_moved(bill_id=bid)
 
 
 @app.route("/billing/<int:bid>/recalculate", methods=["POST"])
 @guarded
 def recalculate_soa(bid):
-    """Re-price an issued bill from the unit's CURRENT rates (condo dues, parking, storage).
-    Issued bills never change on their own; this is the explicit, audited way to correct one."""
+    return _billing_moved(bill_id=bid)
+
+
+def email_soas(bills):
+    """Email each bill's SOA to the unit's opted-in owners/tenants. Returns (sent, skipped, failed, errors)."""
+    sent = failed = skipped = 0
+    errors = []
+    for bill in bills:
+        contacts = soa_email_contacts(bill.unit)
+        if not contacts:
+            skipped += 1
+            continue
+        for contact in contacts:
+            try:
+                send_soa_email_to_contact(bill, contact)
+                sent += 1
+                audit(f"Emailed SOA for unit {bill.unit.unit_no}, billing {bill.billing_month} to {contact['email']} ({contact['type']})")
+            except Exception as exc:
+                failed += 1
+                errors.append(f"Unit {bill.unit.unit_no} / {contact['email']}: {exc}")
+                app.logger.exception("SOA email failed")
+    return sent, skipped, failed, errors
+
+
+SOA_FIELDS = ("assessment", "parking_dues", "storage_dues", "water", "other", "penalty", "adjustment", "previous_balance")
+
+
+def correct_soa(bid, amounts, due_date, note):
+    """Manual SOA correction (classic Edit SOA): amounts = {field: Decimal} for any of SOA_FIELDS. Marks the
+    bill as corrected by hand (it is then never re-priced or re-synced automatically). The change
+    and its audit entry (before/after, the note as reason) are saved together. Returns the bill or None."""
     b = lock_row(Billing, bid)
     if not b:
-        flash("Bill not found.", "danger"); return redirect(url_for("billing"))
+        return None
+    check_open_period(b.billing_month, "Statements")
+    before = {k: getattr(b, k) for k in SOA_FIELDS + ("due_date", "soa_note")}
+    for k in SOA_FIELDS:
+        if k in amounts:          # fields not sent keep their value
+            setattr(b, k, amounts[k])
+    b.due_date = due_date or b.due_date
+    b.soa_note = (note or "").strip()
+    b.soa_manual_override = True
+    reset_financial_caches()
+    b.status = bill_status(b)
+    changes = [k for k in before if before[k] != getattr(b, k)]
+    audit(f"Manual SOA correction for unit {b.unit.unit_no}, billing {b.billing_month}; fields changed: {', '.join(changes) if changes else 'none'}",
+          entity_type="billing", entity_id=b.id, reason=b.soa_note or None, commit=False,
+          details={k: {"before": before[k], "after": getattr(b, k)} for k in changes})
+    db.session.commit()
+    return b
+
+
+class SoaCorrectedByHand(Exception):
+    """The SOA was corrected by hand, so it can't be re-priced from rates."""
+
+
+def recalculate_bill(bid):
+    """Re-price an issued bill from the unit's CURRENT rates (condo dues, parking, storage): the
+    explicit, audited way to correct one (issued bills never change on their own).
+    Returns (bill, changed) or None; raises SoaCorrectedByHand for a hand-corrected SOA. Commits."""
+    b = lock_row(Billing, bid)
+    if not b:
+        return None
     if b.soa_manual_override:
-        flash("This SOA was corrected by hand. Use Edit SOA to change its amounts.", "warning")
-        return redirect(url_for("billing_detail", bid=bid))
+        raise SoaCorrectedByHand()
     check_open_period(b.billing_month, "Statements")
     before = (money(b.assessment), money(b.parking_dues), money(b.storage_dues))
     b.assessment = Decimal(str(unit_dues(b.unit)))
     b.parking_dues = Decimal(str(parking_dues(b.unit)))
     b.storage_dues = Decimal(str(storage_dues(b.unit)))
     after = (money(b.assessment), money(b.parking_dues), money(b.storage_dues))
-    g.pop("_bill_calc_cache", None)
+    reset_financial_caches()
     b.status = bill_status(b)
-    if before == after:
-        db.session.commit()
-        flash("Recalculated: the current rates give the same amounts. Nothing changed.", "info")
-    else:
+    if before != after:
         audit(f"Recalculated SOA for unit {b.unit.unit_no}, billing {b.billing_month} from current rates: "
               f"condo {before[0]:,.2f}->{after[0]:,.2f}, parking {before[1]:,.2f}->{after[1]:,.2f}, "
               f"storage {before[2]:,.2f}->{after[2]:,.2f}", entity_type="billing", entity_id=b.id, commit=False,
               details={"condo": {"before": before[0], "after": after[0]}, "parking": {"before": before[1], "after": after[1]},
                        "storage": {"before": before[2], "after": after[2]}})
-        db.session.commit()
-        flash("SOA recalculated from the current rates and recorded in the Audit Logs.", "success")
-    return redirect(url_for("billing_detail", bid=bid))
+    db.session.commit()
+    return b, before != after
 
 
 # -----------------------------
@@ -2728,59 +2338,55 @@ def receipt_no_for(kind, record_id):
     return row[0] if row else ""
 
 
+# Payments & ORs moved to the React app (/app/<workspace>/payments, API /api/receipts,
+# backend/app/routes/receipts.py). The void rules are below as one function (void_receipt_record).
+# The old URLs only redirect; a void posted from an old tab changes nothing and says so.
+def _receipts_moved(receipt_id=None):
+    if request.method == "POST":
+        app.logger.info("Classic receipt form posted from an old page by %s; nothing changed", session.get("username"))
+        return redirect(react_url("/payments", receipt=receipt_id, moved="form"), code=303)
+    return redirect(react_url("/payments", receipt=receipt_id))
+
+
 @app.route("/receipts")
 @guarded
 def receipts():
-    q = request.args.get("q", "").strip()
-    start = parse_date(request.args.get("start")) or date.today().replace(day=1)
-    end = parse_date(request.args.get("end")) or date.today()
-    if end < start:
-        start, end = end, start
-    query = Receipt.query.join(Unit).filter(Receipt.received_date >= start, Receipt.received_date <= end)
-    if q:
-        query = query.filter(or_(Receipt.receipt_no.ilike(f"%{q}%"), Unit.unit_no.ilike(f"%{q}%"), Receipt.reference.ilike(f"%{q}%")))
-    rows = query.order_by(Receipt.receipt_year.desc(), Receipt.receipt_seq.desc()).limit(500).all()
-    # Voided receipts stay in the list (numbers have no gaps) but are not counted as collected.
-    total = sum((money(r.amount) for r in rows if not r.voided_at), Decimal("0"))
-    by_method = {}
-    for r in rows:
-        if r.voided_at:
-            continue
-        by_method[r.payment_method] = by_method.get(r.payment_method, Decimal("0")) + money(r.amount)
-    return render_template("receipts.html", rows=rows, q=q, start=start.isoformat(), end=end.isoformat(),
-                           total=total, by_method=by_method)
+    return _receipts_moved()
 
 
 @app.route("/receipts/<int:rid>")
 @guarded
 def receipt_detail(rid):
-    r = db.session.get(Receipt, rid)
-    if not r:
-        flash("Receipt not found.", "danger"); return redirect(url_for("receipts"))
-    contact = current_contact_for_unit(r.unit)
-    name = getattr(contact, "tenant_name", None) or getattr(contact, "owner_name", None) or r.unit.owner_name or ""
-    return render_template("receipt.html", r=r, received_from=name, can_void=can_access("void_receipt"),
-                           closed_through=books_closed_through())
+    return _receipts_moved(rid)
 
 
 @app.route("/receipts/<int:rid>/void", methods=["POST"])
 @guarded
-@retry_on_deadlock
 def void_receipt(rid):
+    return _receipts_moved(rid)
+
+
+class VoidRefused(Exception):
+    """The receipt can't be voided (already void, or its advance was already applied); message says why."""
+
+
+def void_receipt_record(rid, reason, form_token):
     """Void an official receipt and reverse what it paid. Nothing is deleted: the receipt keeps its
     number (marked VOID with the reason), payment and advance rows are kept and marked reversed,
     and bill / water balances go back up by exactly the receipt's amounts. One audit entry records
-    everything with before/after values."""
-    reason = (request.form.get("reason") or "").strip()
+    everything with before/after values. Refused in a closed period. Returns the receipt or None. Commits."""
+    reason = (reason or "").strip()
     if len(reason) < 10:
         raise InputError("reason", "Give the reason for voiding this receipt (at least 10 characters).")
+    if len(reason) > 500:
+        raise InputError("reason", "Keep the reason under 500 characters.")
     r = lock_row(Receipt, rid)
     if not r:
-        flash("Receipt not found.", "danger"); return redirect(url_for("receipts"))
+        return None
     if r.voided_at:
-        flash(f"{r.receipt_no} is already void.", "warning"); return redirect(url_for("receipt_detail", rid=rid))
+        raise VoidRefused(f"{r.receipt_no} is already void.")
     check_open_period(r.received_date, "Receipts")
-    claim_form_token("void_receipt")
+    claim_form_token("void_receipt", form_token)
     reset_financial_caches()
     now = datetime.utcnow()
     changes = []
@@ -2814,17 +2420,15 @@ def void_receipt(rid):
                 AdvanceApplication.advance_payment_id == adv.id).scalar() or 0
             if money(applied) > 0:
                 db.session.rollback()
-                flash(f"{r.receipt_no} can't be voided: ₱{money(applied):,.2f} of its advance payment was already applied "
-                      "to later bills. Record a correcting entry instead and ask Accounting to review.", "danger")
-                return redirect(url_for("receipt_detail", rid=rid))
+                raise VoidRefused(f"{r.receipt_no} can't be voided: ₱{money(applied):,.2f} of its advance payment was already applied "
+                                  "to later bills. Record a correcting entry instead and ask Accounting to review.")
             adv.reversed_at = now
             changes.append({"kind": "advance", "advance_payment_id": adv.id, "amount": amount})
     r.voided_at, r.voided_by, r.void_reason = now, session.get("username"), reason[:500]
     audit(f"Voided {r.receipt_no} (₱{money(r.amount):,.2f}, unit {r.unit.unit_no})", entity_type="receipt", entity_id=r.id,
           reason=reason, details={"receipt_no": r.receipt_no, "amount": money(r.amount), "reversed": changes}, commit=False)
     db.session.commit()
-    flash(f"{r.receipt_no} was voided and its payments reversed. The receipt keeps its number.", "success")
-    return redirect(url_for("receipt_detail", rid=rid))
+    return r
 
 
 @app.route("/billing/<int:bid>/qr")
@@ -2867,190 +2471,117 @@ def water_previous():
                         "source_month": r.reading_month})
     return jsonify({"previous_reading": 0, "found": False})
 
+# Water Readings moved to the React app (/app/<workspace>/water-readings, API /api/water,
+# backend/app/routes/water.py). The rules are below as functions (save_water_reading,
+# record_water_payment). The old URLs only redirect; a form posted from an old tab changes nothing.
+def _water_moved(month=None):
+    if request.method == "POST":
+        app.logger.info("Classic water form posted from an old page by %s; nothing changed", session.get("username"))
+        return redirect(react_url("/water-readings", month=month, moved="form"), code=303)
+    return redirect(react_url("/water-readings", month=month))
+
+
 @app.route("/water", methods=["GET", "POST"])
 @guarded
 def water():
-    month = request.args.get("month") or datetime.now().strftime("%Y-%m")
-
-    if request.method == "POST":
-        month = request.form.get("month") or month
-        if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month):
-            flash("Invalid reading month.", "danger")
-            return redirect(url_for("water"))
-        try:
-            unit_id = int(request.form.get("unit_id"))
-        except (TypeError, ValueError):
-            flash("Invalid unit.", "danger")
-            return redirect(url_for("water", month=month))
-        u = db.session.get(Unit, unit_id)
-        if not u:
-            flash("Unit not found.", "danger")
-            return redirect(url_for("water"))
-
-        reading = WaterReading.query.filter_by(
-            unit_id=unit_id, reading_month=month
-        ).first()
-
-        if not reading:
-            reading = WaterReading(unit_id=unit_id, reading_month=month)
-            db.session.add(reading)
-
-        reading.previous_reading = float(form_decimal("previous_reading", "Previous reading", 3, minimum=Decimal("0"), maximum=Decimal("99999999"), allow_empty=True, default=Decimal("0")))
-        reading.current_reading = float(form_decimal("current_reading", "Current reading", 3, minimum=Decimal("0"), maximum=Decimal("99999999")))
-        reading.rate = float(form_decimal("rate", "Water rate", 4, minimum=Decimal("0"), maximum=Decimal("100000"), allow_empty=True, default=None) or Decimal(str(setting_float("water_rate", 50))))
-        if reading.current_reading < reading.previous_reading:
-            raise InputError("current_reading", "The current reading can't be lower than the previous reading.")
-        reading.reading_date = parse_date(request.form.get("reading_date")) or date.today()
-
-        # Keep an already-generated bill synchronized with the corrected/current
-        # water reading. This fixes the common workflow where water is entered
-        # after monthly bills have already been generated.
-        existing_bill = Billing.query.filter_by(unit_id=unit_id, billing_month=month).first()
-        if existing_bill:
-            existing_bill.water = money(reading.bill_amount)
-            existing_bill.status = bill_status(existing_bill)
-
-        db.session.commit()
-        audit(f"Saved water reading for unit {u.unit_no} for {month}")
-        flash("Water reading saved and the monthly bill was updated." if existing_bill else "Water reading saved.", "success")
-        return redirect(url_for("water", month=month))
-
-    selected_unit_id = request.args.get("unit_id", type=int)
-    show_form = request.args.get("add") == "1"
-    selected_previous = 0
-    if show_form and selected_unit_id:
-        prev = WaterReading.query.filter(
-            WaterReading.unit_id == selected_unit_id,
-            WaterReading.reading_month < month,
-        ).order_by(WaterReading.reading_month.desc(), WaterReading.id.desc()).first()
-        if prev:
-            selected_previous = float(prev.current_reading or 0)
-
-    readings = (
-        WaterReading.query
-        .options(selectinload(WaterReading.unit))
-        .filter_by(reading_month=month)
-        .order_by(WaterReading.id.desc())
-        .all()
-    )
-    history = (
-        WaterReading.query
-        .options(selectinload(WaterReading.unit))
-        .order_by(WaterReading.reading_month.desc(), WaterReading.unit_id, WaterReading.id.desc())
-        .all()
-    )
-
-    # Do not load/calculate every Billing record just to render water status.
-    # Water payment state is stored directly on WaterReading.
-    outstanding_history = [
-        r for r in history
-        if water_history_status(r) in ("Unpaid", "Partially Paid", "Overdue")
-    ]
-
-    return render_template(
-        "water.html",
-        month=month,
-        units=Unit.query.options(selectinload(Unit.owners), selectinload(Unit.tenants)).filter_by(active=True).order_by(Unit.unit_no).all(),
-        readings=readings, history=history, bill_map={},
-        outstanding_history=outstanding_history,
-        show_form=show_form, selected_unit_id=selected_unit_id,
-        selected_previous=selected_previous,
-        today=date.today().isoformat(),
-    )
+    return _water_moved(request.values.get("month"))
 
 
 @app.route("/water/<int:rid>/paid", methods=["POST"])
 @guarded
-@retry_on_deadlock
 def mark_water_paid(rid):
+    return _water_moved()
+
+
+@app.route("/water/<int:rid>/edit", methods=["GET", "POST"])
+@guarded
+def edit_water(rid):
+    r = db.session.get(WaterReading, rid)
+    return _water_moved(r.reading_month if r else None)
+
+
+def previous_water_reading(unit_id, month):
+    """The unit's latest reading before `month` (its current reading is this month's previous)."""
+    return WaterReading.query.filter(WaterReading.unit_id == unit_id, WaterReading.reading_month < month) \
+        .order_by(WaterReading.reading_month.desc(), WaterReading.id.desc()).first()
+
+
+def save_water_reading(*, unit_id, month, previous, current, rate, reading_date):
+    """Create or correct the unit's reading for `month` (one per unit and month; the classic rules).
+    previous/current/rate: Decimals already validated (rate None = Rates & Rules water rate).
+    An already-generated bill for that month gets the new water amount, so it is refused when the
+    books are closed for that month. Returns (reading, created, bill_updated). Commits."""
+    if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month or ""):
+        raise InputError("month", "Choose the reading month.")
+    unit = db.session.get(Unit, unit_id) if unit_id else None
+    if not unit or not unit.active:
+        raise InputError("unitId", "Choose an active unit.")
+    if current < previous:
+        raise InputError("current", "The current reading can't be lower than the previous reading.")
+    existing_bill = Billing.query.filter_by(unit_id=unit.id, billing_month=month).first()
+    if existing_bill:
+        check_open_period(month, "Water readings")
+    reading = WaterReading.query.filter_by(unit_id=unit.id, reading_month=month).first()
+    created = reading is None
+    before = None if created else {"previous": reading.previous_reading, "current": reading.current_reading, "rate": reading.rate}
+    if created:
+        reading = WaterReading(unit_id=unit.id, reading_month=month)
+        db.session.add(reading)
+    reading.previous_reading = float(previous)
+    reading.current_reading = float(current)
+    reading.rate = float(rate if rate is not None else Decimal(str(setting_float("water_rate", 50))))
+    reading.reading_date = reading_date or date.today()
+    if existing_bill:
+        existing_bill.water = money(reading.bill_amount)
+        reset_financial_caches()
+        existing_bill.status = bill_status(existing_bill)
+    after = {"previous": reading.previous_reading, "current": reading.current_reading, "rate": reading.rate}
+    db.session.flush()
+    audit(f"{'Saved' if created else 'Edited'} water reading for unit {unit.unit_no} for {month}", entity_type="water_reading",
+          entity_id=reading.id, details={"before": before, "after": after, "bill_updated": bool(existing_bill)}, commit=False)
+    db.session.commit()
+    return reading, created, bool(existing_bill)
+
+
+def record_water_payment(rid, *, amount, payment_method, payment_type, reference, paid_date, form_token):
+    """Record a water payment and issue its official receipt (the classic rules): at most the
+    remaining balance is applied; one payment per form token; refused in a closed period; the
+    reading row is locked until commit. Returns None (not found) or (reading, receipt, applied). Commits."""
     reading = lock_row(WaterReading, rid)
     if not reading:
-        flash("Water reading not found.", "danger")
-        return redirect(url_for("water"))
-
+        return None
     total = money(reading.bill_amount)
     current_paid = money(getattr(reading, "paid_amount", 0))
     balance = max(total - current_paid, Decimal("0"))
-    amount = form_amount("amount", "Water payment amount")
-    payment_method = (request.form.get("payment_method") or "CASH").upper()
-    payment_type = (request.form.get("payment_type") or "FULL").upper()
-    reference = (request.form.get("reference") or "").strip()
-    paid_date = parse_date(request.form.get("paid_date")) or date.today()
-
+    payment_method = (payment_method or "CASH").upper()
+    payment_type = (payment_type or "FULL").upper()
+    reference = (reference or "").strip()
+    paid_date = paid_date or date.today()
     if payment_method not in ("CASH", "CHECK", "ONLINE"):
-        flash("Invalid payment method.", "danger")
-        return redirect(url_for("water", month=reading.reading_month))
+        raise InputError("method", "Choose Cash, Check or Online.")
     if payment_type not in ("FULL", "PARTIAL"):
-        flash("Invalid payment type.", "danger")
-        return redirect(url_for("water", month=reading.reading_month))
+        raise InputError("type", "Choose a full or partial payment.")
     if amount <= 0:
-        flash("Please enter a payment amount.", "danger")
-        return redirect(url_for("water", month=reading.reading_month))
+        raise InputError("amount", "Please enter a payment amount.")
+    if balance <= 0:
+        raise InputError("amount", "This water reading has no remaining balance.")
     amount = min(amount, balance)
-    if amount <= 0:
-        flash("This water reading has no remaining balance.", "warning")
-        return redirect(url_for("water", month=reading.reading_month))
     if payment_method in ("CHECK", "ONLINE") and not reference:
-        flash("Reference number is required for Check or Online payments.", "danger")
-        return redirect(url_for("water", month=reading.reading_month))
+        raise InputError("reference", "Reference number is required for Check or Online payments.")
     check_open_period(paid_date, "Payments")
-    claim_form_token("water_payment")
-
+    claim_form_token("water_payment", form_token)
     reading.paid_amount = current_paid + amount
     reading.payment_method = payment_method
     reading.payment_type = payment_type
     reading.payment_reference = reference
     reading.paid_date = paid_date
     reading.paid = money(reading.paid_amount) >= total
-
     receipt = issue_receipt(reading.unit_id, paid_date, payment_method, reference, "", [("water", reading, amount)])
     audit(f"Issued {receipt.receipt_no} - Recorded {payment_type.lower()} {payment_method.lower()} water payment for unit {reading.unit.unit_no} for {reading.reading_month}",
           entity_type="receipt", entity_id=receipt.id, commit=False,
           details={"water_reading_id": reading.id, "amount": amount, "paid_amount": {"before": current_paid, "after": money(reading.paid_amount)}})
     db.session.commit()
-    flash(f"Water payment recorded (official receipt {receipt.receipt_no}).", "success")
-    return redirect(url_for("water", month=reading.reading_month))
-
-
-@app.route("/water/<int:rid>/edit", methods=["GET", "POST"])
-@guarded
-def edit_water(rid):
-    reading = db.session.get(WaterReading, rid)
-    if not reading:
-        flash("Water reading not found.", "danger")
-        return redirect(url_for("water"))
-
-    if request.method == "POST":
-        try:
-            previous_reading = float(form_decimal("previous_reading", "Previous reading", 3, minimum=Decimal("0"), maximum=Decimal("99999999"), allow_empty=True, default=Decimal("0")))
-            current_reading = float(form_decimal("current_reading", "Current reading", 3, minimum=Decimal("0"), maximum=Decimal("99999999")))
-            rate = float(form_decimal("rate", "Water rate", 4, minimum=Decimal("0"), maximum=Decimal("100000"), allow_empty=True, default=None) or Decimal(str(setting_float("water_rate", 50))))
-            if current_reading < previous_reading:
-                raise InputError("current_reading", "The current reading can't be lower than the previous reading.")
-        except (TypeError, ValueError):
-            flash("Please enter valid numeric water readings and rate.", "danger")
-            return redirect(url_for("edit_water", rid=rid))
-
-        if previous_reading < 0 or current_reading < 0 or rate < 0:
-            flash("Water readings and rate cannot be negative.", "danger")
-            return redirect(url_for("edit_water", rid=rid))
-
-        reading.previous_reading = previous_reading
-        reading.current_reading = current_reading
-        reading.rate = rate
-        reading.reading_date = parse_date(request.form.get("reading_date")) or date.today()
-
-        existing_bill = Billing.query.filter_by(unit_id=reading.unit_id, billing_month=reading.reading_month).first()
-        if existing_bill:
-            existing_bill.water = money(reading.bill_amount)
-            existing_bill.status = bill_status(existing_bill)
-
-        db.session.commit()
-        audit(f"Edited water reading for unit {reading.unit.unit_no} for {reading.reading_month}")
-        flash("Water reading updated and the monthly bill was synchronized." if existing_bill else "Water reading updated.", "success")
-        return redirect(url_for("water", month=reading.reading_month))
-
-    return render_template("water_edit.html", reading=reading)
+    return reading, receipt, money(amount)
 
 
 
@@ -3090,160 +2621,44 @@ def delete_employee(eid):
 # -----------------------------
 # Expenses / Gate Pass
 # -----------------------------
+# Front-desk screens moved to the React app: Expense Logs (/expenses), Move In/Out Certificates
+# (/certificates), Gate Passes (/gate-passes). APIs: backend/app/routes/operations.py. Same
+# permission keys. The old URLs only redirect; a form posted from an old tab changes nothing.
+def _moved(path, **params):
+    if request.method == "POST":
+        app.logger.info("Classic form %s posted from an old page by %s; nothing changed", request.path, session.get("username"))
+        return redirect(react_url(path, moved="form"), code=303)
+    return redirect(react_url(path, **params))
+
+
 @app.route("/expenses", methods=["GET", "POST"])
 @guarded
 def expenses():
-    if request.method == "POST":
-        db.session.add(
-            Expense(
-                expense_date=parse_date(request.form.get("expense_date")) or date.today(),
-                category=request.form.get("category", ""),
-                description=request.form.get("description", ""),
-                amount=form_amount("amount", "Expense amount"),
-            )
-        )
-        db.session.commit()
-        audit("Added expense")
-        flash("Expense saved.", "success")
-        return redirect(url_for("expenses"))
-
-    return render_template("expenses.html", expenses=Expense.query.order_by(Expense.id.desc()).all())
+    return _moved("/expenses")
 
 
 @app.route("/move-certificate", methods=["GET", "POST"])
 @guarded
 def move_certificate():
-    units_list = Unit.query.filter_by(active=True).order_by(Unit.unit_no).all()
-    selected_unit = None
-    people = []
-    certificate = None
-
-    if request.method == "GET" and request.args.get("certificate_id", type=int):
-        record = db.session.get(MoveCertificate, request.args.get("certificate_id", type=int))
-        if record:
-            selected_unit = record.unit
-            if record.person_type == "Owner":
-                people = Owner.query.filter_by(unit_id=selected_unit.id).order_by(Owner.status.desc(), Owner.id.desc()).all()
-                person = db.session.get(Owner, record.person_id)
-            else:
-                people = Tenant.query.filter_by(unit_id=selected_unit.id).order_by(Tenant.status.desc(), Tenant.id.desc()).all()
-                person = db.session.get(Tenant, record.person_id)
-            if person:
-                certificate = {"id": record.id, "certificate_no": record.certificate_no, "move_type": record.move_type, "person_type": record.person_type, "person": person, "unit": selected_unit, "certificate_date": record.certificate_date, "move_date": record.move_date, "issued_by": record.issued_by}
-
-    if request.method == "POST":
-        uid = request.form.get("unit_id", type=int)
-        move_type = request.form.get("move_type", "Move In")
-        person_type = request.form.get("person_type", "Tenant")
-        person_id = request.form.get("person_id", type=int)
-        cert_date = parse_date(request.form.get("certificate_date")) or date.today()
-        selected_unit = db.session.get(Unit, uid) if uid else None
-
-        if selected_unit:
-            if person_type == "Owner":
-                people = Owner.query.filter_by(unit_id=selected_unit.id).order_by(Owner.status.desc(), Owner.id.desc()).all()
-            else:
-                people = Tenant.query.filter_by(unit_id=selected_unit.id).order_by(Tenant.status.desc(), Tenant.id.desc()).all()
-            person = next((x for x in people if x.id == person_id), None)
-            if person:
-                person_name = person.owner_name if person_type == "Owner" else person.tenant_name
-                move_date = person.move_in if move_type == "Move In" else person.move_out
-
-                record = MoveCertificate(
-                    certificate_no="PENDING",
-                    move_type=move_type,
-                    person_type=person_type,
-                    unit_id=selected_unit.id,
-                    person_id=person.id,
-                    person_name=person_name,
-                    move_date=move_date,
-                    certificate_date=cert_date,
-                    issued_by=current_user.username,
-                )
-                db.session.add(record)
-                db.session.flush()
-                record.certificate_no = f"CL9-{cert_date.year}-{record.id:05d}"
-                db.session.commit()
-
-                certificate = {
-                    "id": record.id,
-                    "certificate_no": record.certificate_no,
-                    "move_type": move_type,
-                    "person_type": person_type,
-                    "person": person,
-                    "unit": selected_unit,
-                    "certificate_date": cert_date,
-                    "move_date": move_date,
-                    "issued_by": current_user.username,
-                }
-                audit(f"Generated {move_type} certificate {record.certificate_no} for {person_type.lower()} {person.id} in unit {selected_unit.unit_no}")
-
-    return render_template(
-        "move_certificate.html",
-        units=units_list,
-        selected_unit=selected_unit,
-        people=people,
-        certificate=certificate,
-        today=date.today().isoformat(),
-    )
+    return _moved("/certificates", certificate=request.args.get("certificate_id"))
 
 
 @app.route("/move-certificates")
 @guarded
 def move_certificates():
-    certificates = MoveCertificate.query.order_by(MoveCertificate.id.desc()).limit(500).all()
-    return render_template("move_certificates.html", certificates=certificates)
+    return _moved("/certificates")
 
 
 @app.route("/gate-pass", methods=["GET", "POST"])
 @guarded
 def gate_pass():
-    if request.method == "POST":
-        unit_no = request.form.get("unit_no", "").strip()
-        pass_type = request.form.get("pass_type", "Visitor")
-        unit = Unit.query.filter_by(unit_no=unit_no).first() if unit_no else None
-        db.session.add(
-            GatePass(
-                pass_date=parse_date(request.form.get("pass_date")) or date.today(),
-                unit_no=unit_no,
-                unit_id=unit.id if unit else None,
-                pass_type=pass_type if pass_type in GATE_PASS_TYPES else "Visitor",
-                visitor_name=request.form.get("visitor_name", ""),
-                purpose=request.form.get("purpose", ""),
-                status="Issued",
-            )
-        )
-        db.session.commit()
-        audit("Created gate pass")
-        flash("Gate pass recorded.", "success")
-        return redirect(url_for("gate_pass"))
-
-    passes = GatePass.query.order_by(GatePass.id.desc()).all()
-    requested = [p for p in passes if p.status == "Requested"]
-    return render_template("gate_pass.html", passes=passes, requested=requested, pass_types=GATE_PASS_TYPES)
+    return _moved("/gate-passes")
 
 
 @app.route("/gate-pass/<int:pid>/review", methods=["POST"])
 @guarded
 def gate_pass_review(pid):
-    """Approve or reject a gate pass / move request a resident sent from the portal."""
-    p = db.session.get(GatePass, pid)
-    decision = request.form.get("decision")
-    if not p or p.status != "Requested" or decision not in ("approve", "reject"):
-        flash("That request was not found or was already handled.", "danger")
-        return redirect(url_for("gate_pass"))
-    note = request.form.get("review_note", "").strip()[:300]
-    if decision == "reject" and not note:
-        flash("Give the resident a reason when rejecting a request.", "danger")
-        return redirect(url_for("gate_pass"))
-    p.status = "Issued" if decision == "approve" else "Rejected"
-    p.reviewed_by = session.get("username")
-    p.reviewed_at = datetime.utcnow()
-    p.review_note = note or None
-    db.session.commit()
-    audit(f"{'Approved' if decision == 'approve' else 'Rejected'} gate pass request #{p.id} ({p.pass_type}, unit {p.unit_no})")
-    flash(f"Request {'approved' if decision == 'approve' else 'rejected'}.", "success")
-    return redirect(url_for("gate_pass"))
+    return _moved("/gate-passes")
 
 
 
@@ -3288,23 +2703,36 @@ def database_export():
     return send_file(buf, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True, download_name="cityland9_database_export.xlsx")
 
 
+# Settings (database export / import) and Rates & Rules moved to the React app:
+# /app/superadmin/settings (API /api/admin/system, backend/app/routes/system_settings.py) and
+# /app/superadmin/rates-rules (API /api/admin/rates). The Excel export download below is unchanged.
+SETTINGS_APP_URL = "/app/superadmin/settings"
+RATES_APP_URL = "/app/superadmin/rates-rules"
+
+
 @app.route("/database/import", methods=["POST"])
 @guarded
 def database_import():
-    """Fast, safer Excel importer.
+    """The classic import form (retired with the classic /settings screen). A form posted from an old
+    open tab imports nothing and says so; imports run from Settings (run_excel_import below)."""
+    app.logger.info("Classic Excel import form posted from an old page by %s; nothing imported", session.get("username"))
+    return redirect(f"{SETTINGS_APP_URL}?moved=form", code=303)
+
+
+def run_excel_import(f):
+    """Fast, safer Excel importer. Returns (ok, message, counts); on failure nothing is committed.
 
     The previous importer performed a database lookup for nearly every Excel row.
     With hundreds/thousands of rows that created thousands of SELECT statements.
     This version reads the workbook in streaming mode, preloads existing records
     once per table, updates/inserts in memory, then commits one transaction.
+    A database backup is taken first; if it can't be taken, nothing is imported.
     """
     if load_workbook is None:
-        return "Install openpyxl first.", 500
+        return False, "The Excel library (openpyxl) is not installed on the server.", None
 
-    f = request.files.get("excel_file")
-    if not f or not f.filename.lower().endswith((".xlsx", ".xlsm")):
-        flash("Please select an Excel .xlsx file.", "danger")
-        return redirect(url_for("settings"))
+    if not f or not (f.filename or "").lower().endswith((".xlsx", ".xlsm")):
+        return False, "Please select an Excel .xlsx file.", None
     # An .xlsx file is a zip archive: check it before opening (unpacked size, number of parts).
     import zipfile
     try:
@@ -3312,12 +2740,10 @@ def database_import():
             parts = archive.infolist()
             unpacked = sum(p.file_size for p in parts)
     except zipfile.BadZipFile:
-        flash("That file is not a valid Excel .xlsx workbook.", "danger")
-        return redirect(url_for("settings"))
+        return False, "That file is not a valid Excel .xlsx workbook.", None
     if len(parts) > 2000 or unpacked > IMPORT_MAX_UNCOMPRESSED_MB * 1024 * 1024:
-        flash(f"That workbook is too large to import (over {IMPORT_MAX_UNCOMPRESSED_MB} MB when unpacked). "
-              "Split it or remove unused sheets.", "danger")
-        return redirect(url_for("settings"))
+        return False, (f"That workbook is too large to import (over {IMPORT_MAX_UNCOMPRESSED_MB} MB when unpacked). "
+                       "Split it or remove unused sheets."), None
     f.stream.seek(0)
 
     def as_bool(v, default=False):
@@ -3751,17 +3177,18 @@ def database_import():
         )
         audit(f"Imported database from Excel (optimized): {f.filename}")
         backup_note = f" Backup created: {os.path.basename(backup_file)}." if backup_file else ""
-        flash(f"Excel import completed successfully using the optimized importer.{backup_note} {imported}", "success")
+        found = {sheet: v for sheet, v in counts.items() if sheet in wb.sheetnames}
+        return True, f"Excel import completed.{backup_note} {imported}".strip(), found
     except Exception as ex:
         db.session.rollback()
-        flash(f"Excel import failed. No changes were committed: {ex}", "danger")
+        app.logger.warning("Excel import failed: %s", ex)
+        return False, f"Excel import failed. No changes were committed: {ex}", None
     finally:
         if wb is not None:
             try:
                 wb.close()
             except Exception:
                 pass
-    return redirect(url_for("settings"))
 
 
 # -----------------------------
@@ -3921,96 +3348,21 @@ SETTINGS_NUMBERS = [
     ("parking_rate_per_sqm", "Parking rate per sqm", 4, "0", "100000"),
     ("storage_rate_per_sqm", "Storage rate per sqm", 4, "0", "100000"),
     ("penalty_rate", "Penalty rate (%)", 4, "0", "100"),
-    ("penalty_rate_per_sqm", "Penalty rate per sqm", 4, "0", "100000"),
     ("due_day", "Due day", 0, "1", "31"),
-    ("penalty_day", "Penalty day", 0, "1", "31"),
 ]
+# (D8: "penalty_day" and "penalty_rate_per_sqm" were never used by billing - the penalty follows each
+# bill's due date and the penalty rate in % - so they are no longer validated or offered.)
 
 
 @app.route("/settings", methods=["GET", "POST"])
 @guarded
 def settings():
-    defaults = {
-        "corporation_name": "CITYLAND 9 CONDOMINIUM CORPORATION",
-        "address": "9 Dela Rosa Condominium, Dela Rosa Street, Barangay Pio del Pilar, Makati City",
-        "water_rate": "50",
-        "water_auto_compute": "1",
-        "due_day": "8",
-        "studio_rate_per_sqm": "50",
-        "one_bed_rate_per_sqm": "75",
-        "two_bed_rate_per_sqm": "100",
-        "three_bed_rate_per_sqm": "125",
-        "parking_rate_per_sqm": "100",
-        "storage_rate_per_sqm": "50",
-        "storage_in_total_from": setting("storage_in_total_from", "9999-12"),
-        "penalty_rate": "10",
-        "penalty_rate_per_sqm": "10",
-        "penalty_day": "8",
-        "penalty_include_condo": "1",
-        "penalty_include_parking": "0",
-        "penalty_include_storage": "0",
-        "penalty_include_water": "0",
-        "online_payment_url": "",
-        "online_payment_instructions": "Please use the online payment link or scan the Payment QR shown on this SOA.",
-        "smtp_host": "",
-        "smtp_port": "587",
-        "smtp_sender": "",
-        "smtp_username": "",
-        "smtp_password": "",
-        "books_closed_through": "",
-    }
-
+    """The classic Rates & Rules screen (retired): GET opens Rates & Rules in the React app; a form
+    posted from an old open tab saves nothing and says so. Same permission key (settings)."""
     if request.method == "POST":
-        checkbox_keys = {
-            "penalty_include_condo", "penalty_include_parking",
-            "penalty_include_storage", "penalty_include_water",
-        }
-        # Numbers are validated before anything is saved (InputError -> message, nothing changed).
-        numeric = {key: parse_decimal(request.form.get(key), label=label, places=places, minimum=Decimal(lo), maximum=Decimal(hi))
-                   for key, label, places, lo, hi in SETTINGS_NUMBERS if request.form.get(key) not in (None, "")}
-        for key, default in defaults.items():
-            if key == "smtp_password":
-                continue  # write-only secret, handled below
-            if key in numeric:
-                row = Setting.query.filter_by(key=key).first() or Setting(key=key)
-                row.value = format(numeric[key].normalize(), "f")
-                db.session.add(row)
-                continue
-            row = Setting.query.filter_by(key=key).first() or Setting(key=key)
-            if key in checkbox_keys:
-                row.value = "1" if request.form.get(key) == "1" else "0"
-            elif key == "books_closed_through":
-                value = (request.form.get(key) or "").strip()
-                if value and not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", value):
-                    raise InputError(key, "Books closed through must look like 2026-09, or be empty.")
-                if value != (row.value or ""):
-                    audit(f"Books closed through changed: {row.value or 'none'} -> {value or 'none'}", entity_type="setting",
-                          details={"books_closed_through": {"before": row.value or "", "after": value}}, commit=False)
-                row.value = value
-            elif key == "storage_in_total_from":
-                value = (request.form.get(key) or "").strip()
-                if re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", value):
-                    row.value = value
-                else:
-                    if value:
-                        flash("Storage start month must look like 2026-10; the previous value was kept.", "warning")
-                    row.value = row.value or default
-            else:
-                row.value = request.form.get(key, default)
-            db.session.add(row)
-        # SMTP password: never shown; replaced only when a new one is typed, removed on request.
-        new_smtp_password = request.form.get("smtp_password", "")
-        if request.form.get("smtp_password_clear") == "1":
-            set_smtp_password("")
-        elif new_smtp_password:
-            set_smtp_password(new_smtp_password)
-        db.session.commit()
-        audit("Updated Rates & Rules")
-        flash("Rates & Rules saved successfully.", "success")
-        return redirect(url_for("settings"))
-
-    vals = {k: setting(k, v) for k, v in defaults.items() if k != "smtp_password"}
-    return render_template("settings.html", settings=vals, smtp_password_set=bool(get_smtp_password()), **vals)
+        app.logger.info("Classic Rates & Rules form posted from an old page by %s; nothing changed", session.get("username"))
+        return redirect(f"{RATES_APP_URL}?moved=form", code=303)
+    return redirect(RATES_APP_URL)
 
 
 # -----------------------------
@@ -4049,152 +3401,73 @@ def change_password():
     return render_template("change_password.html")
 
 
+# -----------------------------
+# Users & Access: moved to the React app (/app/superadmin/users, API /api/admin/users)
+# -----------------------------
+# The classic screen had its own, weaker copy of the rules (e.g. it could create a Resident login
+# without a resident profile). There is now ONE implementation: backend/app/routes/users.py.
+# The old URLs stay (bookmarks, stale open tabs) but only redirect; a form posted from an old tab
+# changes nothing and says so. The permission keys are unchanged (users / reset_user_password /
+# delete_user, Superadmin only), so a signed-out or other-role request is refused as before.
+USERS_APP_URL = "/app/superadmin/users"
+
+
+def _users_moved(form_posted=False):
+    if form_posted:
+        app.logger.info("Classic Users & Access form posted from an old page by %s; nothing changed",
+                        session.get("username"))
+        return redirect(f"{USERS_APP_URL}?moved=form", code=303)
+    return redirect(USERS_APP_URL)
+
+
 @app.route("/users/<int:user_id>/reset-password", methods=["POST"])
 @guarded
 def reset_user_password(user_id):
-    target = db.session.get(User, user_id)
-    if not target:
-        flash("User not found.", "danger")
-        return redirect(url_for("users"))
-
-    # Superadmin may manage passwords only for accounts below Superadmin hierarchy.
-    # A Superadmin account must never be reset from another user's management form.
-    if ROLE_LEVEL.get(target.role, 0) >= ROLE_LEVEL["super_admin"]:
-        flash("Superadmin passwords cannot be changed from User Management. Use the account's own Change Password option.", "danger")
-        return redirect(url_for("users"))
-
-    new_password = request.form.get("new_password", "")
-    confirm_password = request.form.get("confirm_password", "")
-    problem = security.password_problem(new_password, target.username)
-    if problem:
-        flash(problem, "danger")
-        return redirect(url_for("users"))
-    if new_password != confirm_password:
-        flash("Reset password and confirmation do not match.", "danger")
-        return redirect(url_for("users"))
-
-    # Temporary password: the user must change it at next sign-in; their sessions end now.
-    set_password(target, new_password, temporary=True)
-    db.session.commit()
-    audit(f"Reset password for user {target.username}")
-    flash(f"Password for {target.username} has been reset successfully.", "success")
-    return redirect(url_for("users"))
+    return _users_moved(form_posted=True)
 
 
-# -----------------------------
-# Users / Audit
-# -----------------------------
 @app.route("/users/<int:user_id>/delete", methods=["POST"])
 @guarded
 def delete_user(user_id):
-    actor = current_user()
-    target = db.session.get(User, user_id)
-    if not target:
-        flash("User not found.", "danger")
-        return redirect(url_for("users"))
-
-    # Never allow the currently signed-in Superadmin to delete their own account.
-    if actor and target.id == actor.id:
-        flash("You cannot delete the Superadmin account that is currently logged in.", "danger")
-        return redirect(url_for("users"))
-
-    # Keep at least one Superadmin account available for system recovery/access.
-    if target.role == "super_admin" and User.query.filter_by(role="super_admin").count() <= 1:
-        flash("The last Superadmin account cannot be deleted.", "danger")
-        return redirect(url_for("users"))
-
-    username = target.username
-    role = target.role
-    db.session.delete(target)
-    db.session.commit()
-    audit(f"Deleted user {username} ({role})")
-    flash(f"User {username} was deleted.", "success")
-    return redirect(url_for("users"))
+    return _users_moved(form_posted=True)
 
 
 @app.route("/users", methods=["GET", "POST"])
 @guarded
 def users():
-    if request.method == "POST":
-        username = request.form.get("username", "").strip()
-        password = request.form.get("password", "")
+    return _users_moved(form_posted=request.method == "POST")
 
-        if not username or not password:
-            flash("Username and password are required.", "danger")
-            return redirect(url_for("users"))
 
-        if User.query.filter_by(username=username).first():
-            flash("Username already exists.", "danger")
-            return redirect(url_for("users"))
-
-        role = request.form.get("role", "staff")
-        if role not in ALL_ROLES:
-            flash("Please choose a valid role.", "danger")
-            return redirect(url_for("users"))
-        problem = security.password_problem(password, username)
-        if problem:
-            flash(problem, "danger")
-            return redirect(url_for("users"))
-
-        db.session.add(
-            User(
-                username=username,
-                password_hash=generate_password_hash(password),
-                role=role,
-                active=True,
-                must_change_password=True,   # temporary password chosen by the administrator
-            )
-        )
-        db.session.commit()
-        audit(f"Created user {username}")
-        flash("User created.", "success")
-        return redirect(url_for("users"))
-
-    return render_template("users.html", users=User.query.order_by(User.username).all())
+# Audit Logs: moved to the React app (API /api/admin/audit-logs, backend/app/routes/audit_logs.py).
+# Same permission key (audit_logs: Superadmin and Accounting); the old URL opens the page in the
+# signed-in user's own workspace.
+AUDIT_LOGS_APP_URLS = {"super_admin": "/app/superadmin/audit-logs", "accounting": "/app/accounting/audit-logs"}
 
 
 @app.route("/audit")
 @guarded
 def audit_logs():
-    return render_template(
-        "audit.html",
-        logs=AuditLog.query.order_by(AuditLog.id.desc()).limit(500).all(),
-    )
+    return redirect(AUDIT_LOGS_APP_URLS.get(current_user().role, APP_URL))
 
 
 # -----------------------------
 # V10.63 Community / Resident Services
 # -----------------------------
+# Resident Accounts: moved to the React app (/app/superadmin/resident-accounts, API
+# /api/admin/resident-accounts, backend/app/routes/resident_accounts.py). Same permission key
+# (resident_users, Superadmin only). The old URL only redirects; a form posted from an old open
+# tab changes nothing and says so.
+RESIDENT_ACCOUNTS_APP_URL = "/app/superadmin/resident-accounts"
+
+
 @app.route("/resident-users", methods=["GET", "POST"])
 @guarded
 def resident_users():
     if request.method == "POST":
-        username=request.form.get("username", "").strip()
-        password=request.form.get("password", "")
-        unit_id=request.form.get("unit_id", type=int)
-        person_type=request.form.get("person_type", "Owner")
-        person_id=request.form.get("person_id", type=int) or None
-        display_name=request.form.get("display_name", "").strip()
-        if not username or not password or not unit_id or not display_name:
-            flash("Username, password, unit and resident name are required.", "danger")
-            return redirect(url_for("resident_users"))
-        if User.query.filter_by(username=username).first():
-            flash("That username already exists.", "danger")
-            return redirect(url_for("resident_users"))
-        problem = security.password_problem(password, username)
-        if problem:
-            flash(problem, "danger")
-            return redirect(url_for("resident_users"))
-        user=User(username=username, password_hash=generate_password_hash(password), role="resident", active=True,
-                  must_change_password=True)
-        db.session.add(user); db.session.flush()
-        db.session.add(ResidentProfile(user_id=user.id, unit_id=unit_id, person_type=person_type, person_id=person_id, display_name=display_name))
-        db.session.commit(); audit(f"Created resident portal user {username} for unit {unit_id}")
-        flash("Resident portal account created.", "success")
-        return redirect(url_for("resident_users"))
-    units=Unit.query.filter_by(active=True).order_by(Unit.unit_no).all()
-    profiles=ResidentProfile.query.order_by(ResidentProfile.id.desc()).all()
-    return render_template("resident_users.html", units=units, profiles=profiles)
+        app.logger.info("Classic Resident Accounts form posted from an old page by %s; nothing changed",
+                        session.get("username"))
+        return redirect(f"{RESIDENT_ACCOUNTS_APP_URL}?moved=form", code=303)
+    return redirect(RESIDENT_ACCOUNTS_APP_URL)
 
 
 @app.route("/portal")
@@ -4211,71 +3484,42 @@ def resident_portal():
         tickets_q = tickets_q.filter(MaintenanceTicket.unit_id == unit_id)
     return render_template("resident_portal.html", profile=profile, unit_id=unit_id, announcements=recent_announcements, tickets=tickets_q.limit(10).all())
 
+# Community screens moved to the React app: Announcements, Maintenance Tickets, Vendor Directory,
+# Documents (APIs: backend/app/routes/community.py). Residents use their portal pages instead
+# (/my-maintenance, /announcements with their documents). Same permission keys.
+def _community_moved(staff_path, resident_path):
+    u = current_user()
+    return _moved(resident_path if u and u.role == RESIDENT else staff_path)
+
+
 @app.route("/announcements", methods=["GET", "POST"])
 @guarded
 def announcements():
-    if request.method == "POST":
-        if current_user().role == "resident":
-            flash("Residents cannot publish announcements.", "danger"); return redirect(url_for("announcements"))
-        row = Announcement(title=request.form.get("title", "").strip(), message=request.form.get("message", "").strip(), audience=request.form.get("audience", "residents"), published=request.form.get("published") == "1", created_by=current_user().username)
-        if not row.title or not row.message:
-            flash("Title and message are required.", "danger"); return redirect(url_for("announcements"))
-        db.session.add(row); db.session.commit(); audit(f"Created announcement: {row.title}")
-        flash("Announcement published.", "success"); return redirect(url_for("announcements"))
-    rows = Announcement.query.order_by(Announcement.publish_date.desc(), Announcement.id.desc()).all()
-    return render_template("announcements.html", rows=rows)
+    return _community_moved("/announcements", "/announcements")
+
 
 @app.route("/maintenance", methods=["GET", "POST"])
 @guarded
 def maintenance():
-    profile = getattr(current_user(), "resident_profile", None)
-    if current_user().role == RESIDENT and not profile:
-        # Without a linked unit a resident would otherwise see (and file for) every unit.
-        flash("Your resident profile is not yet linked to a unit. Please contact the administrator.", "warning")
-        return redirect(url_for("logout"))
-    if request.method == "POST":
-        unit_id = profile.unit_id if profile else request.form.get("unit_id", type=int)
-        row = MaintenanceTicket(ticket_no=f"MT-{datetime.now().strftime('%Y%m%d%H%M%S')}-{MaintenanceTicket.query.count()+1:04d}", unit_id=unit_id, resident_profile_id=profile.id if profile else None, category=request.form.get("category", "General"), title=request.form.get("title", "").strip(), description=request.form.get("description", "").strip(), priority=request.form.get("priority", "Normal"))
-        if not row.title or not row.description:
-            flash("Title and description are required.", "danger"); return redirect(url_for("maintenance"))
-        db.session.add(row); db.session.commit(); audit(f"Created maintenance ticket {row.ticket_no}")
-        flash(f"Maintenance ticket {row.ticket_no} created.", "success"); return redirect(url_for("maintenance"))
-    q = MaintenanceTicket.query.order_by(MaintenanceTicket.id.desc())
-    if current_user().role == "resident" and profile: q = q.filter(MaintenanceTicket.unit_id == profile.unit_id)
-    rows = q.limit(300).all()
-    units = Unit.query.filter_by(active=True).order_by(Unit.unit_no).all() if current_user().role != "resident" else []
-    vendors = Vendor.query.filter_by(status="Active").order_by(Vendor.vendor_name).all()
-    return render_template("maintenance.html", rows=rows, units=units, vendors=vendors, profile=profile)
+    return _community_moved("/maintenance", "/my-maintenance")
+
 
 @app.route("/maintenance/<int:ticket_id>/update", methods=["POST"])
 @guarded
 def maintenance_update(ticket_id):
-    row = db.session.get(MaintenanceTicket, ticket_id)
-    if not row: flash("Maintenance ticket not found.", "danger"); return redirect(url_for("maintenance"))
-    row.status=request.form.get("status", row.status); row.priority=request.form.get("priority", row.priority); row.assigned_to=request.form.get("assigned_to", row.assigned_to); row.vendor_id=request.form.get("vendor_id", type=int) or None; row.resolution=request.form.get("resolution", row.resolution)
-    db.session.commit(); audit(f"Updated maintenance ticket {row.ticket_no}"); flash("Maintenance ticket updated.", "success"); return redirect(url_for("maintenance"))
+    return _moved("/maintenance")
+
 
 @app.route("/vendors", methods=["GET", "POST"])
 @guarded
 def vendors():
-    if request.method == "POST":
-        row=Vendor(vendor_name=request.form.get("vendor_name", "").strip(), service_type=request.form.get("service_type", "").strip(), contact_person=request.form.get("contact_person", "").strip(), contact_no=request.form.get("contact_no", "").strip(), email=request.form.get("email", "").strip(), address=request.form.get("address", "").strip(), notes=request.form.get("notes", "").strip())
-        if not row.vendor_name: flash("Vendor name is required.", "danger"); return redirect(url_for("vendors"))
-        db.session.add(row); db.session.commit(); audit(f"Created vendor: {row.vendor_name}"); flash("Vendor saved.", "success"); return redirect(url_for("vendors"))
-    return render_template("vendors.html", rows=Vendor.query.order_by(Vendor.vendor_name).all())
+    return _moved("/vendors")
+
 
 @app.route("/documents", methods=["GET", "POST"])
 @guarded
 def documents():
-    profile=getattr(current_user(), "resident_profile", None)
-    if request.method == "POST":
-        if current_user().role == "resident": flash("Residents cannot publish documents.", "danger"); return redirect(url_for("documents"))
-        row=DocumentRecord(title=request.form.get("title", "").strip(), category=request.form.get("category", "General"), description=request.form.get("description", "").strip(), file_name=request.form.get("file_name", "").strip(), file_path=request.form.get("file_path", "").strip(), audience=request.form.get("audience", "admin"), unit_id=request.form.get("unit_id", type=int) or None, uploaded_by=current_user().username)
-        if not row.title: flash("Document title is required.", "danger"); return redirect(url_for("documents"))
-        db.session.add(row); db.session.commit(); audit(f"Added document record: {row.title}"); flash("Document record saved.", "success"); return redirect(url_for("documents"))
-    q=DocumentRecord.query.filter_by(active=True).order_by(DocumentRecord.created_at.desc())
-    if current_user().role == "resident": q=q.filter((DocumentRecord.audience == "residents") | ((DocumentRecord.audience == "unit") & (DocumentRecord.unit_id == (profile.unit_id if profile else -1))))
-    return render_template("documents.html", rows=q.all(), units=Unit.query.filter_by(active=True).order_by(Unit.unit_no).all() if current_user().role != "resident" else [], profile=profile)
+    return _community_moved("/documents", "/announcements")
 
 # -----------------------------
 # Database initialization / migration
@@ -4720,11 +3964,13 @@ def employee_payroll():
             allowances=float(form_amount("allowances", "Allowances", allow_zero=True, allow_empty=True)),
             deductions=total_other_deduction,
             absences=absence_ded, late_undertime=late_ded, net_pay=net,
-            status=request.form.get("status") or "DRAFT",
+            status=_payroll_status(),
             remarks=request.form.get("remarks")
         )
-        db.session.add(p); db.session.commit()
-        # Automatically prepare the Philippine statutory breakdown for the payroll.
+        # D6 fix: the payroll record, its statutory breakdown and the loan-balance reductions are
+        # saved together, or not at all (the error is shown; it used to be swallowed while the page
+        # said "generated" and loans were not reduced).
+        db.session.add(p); db.session.flush()
         try:
             ensure_table(EmployeePayrollStatutory)
             gross=_v1039_money(p.basic_salary)+_v1039_money(p.overtime_pay)+_v1039_money(p.allowances)
@@ -4741,9 +3987,14 @@ def employee_payroll():
                     loan.balance=max(_v1039_money(loan.balance)-take,0)
                     if loan.balance<=0: loan.status="PAID"
                     remaining_loan_deduction-=take
+            audit(f"Generated payroll for employee {emp.employee_no}, {start.isoformat()} to {end.isoformat()}", entity_type="payroll",
+                  entity_id=p.id, commit=False)
             db.session.commit()
-        except Exception:
+        except Exception as exc:
             db.session.rollback()
+            app.logger.exception("Payroll generation failed")
+            flash(f"Payroll was NOT saved: the statutory computation failed ({exc}). Nothing was changed, including loan balances.", "danger")
+            return redirect(url_for("employee_payroll", start=start.isoformat(), end=end.isoformat()))
         flash("Payroll record generated with statutory payroll breakdown.", "success")
         return redirect(url_for("employee_payroll", start=start.isoformat(), end=end.isoformat()))
     payroll = EmployeePayroll.query.filter(
@@ -4751,6 +4002,13 @@ def employee_payroll():
         EmployeePayroll.period_end == end
     ).order_by(EmployeePayroll.id.desc()).all()
     return render_template("employee_payroll.html", employees=employees, payroll=payroll, start=start.isoformat(), end=end.isoformat())
+
+def _payroll_status():
+    status = (request.form.get("status") or "DRAFT").strip().upper()
+    if status not in ("DRAFT", "FINAL", "PAID"):          # the payroll form's choices
+        raise InputError("status", "Payroll status must be Draft, Final or Paid.")
+    return status
+
 
 @app.route("/employees/payroll/<int:payroll_id>/print")
 @guarded
@@ -4977,6 +4235,22 @@ def employee_edit(eid):
         return redirect(url_for("employees"))
     return render_template("employee_edit.html",employee=e)
 
+# D5 fix: leave/overtime status must be one of these; approving or rejecting records who did it.
+REQUEST_STATUSES = ("PENDING", "APPROVED", "REJECTED")
+
+
+def _request_status(default="PENDING"):
+    status = (request.form.get("status") or default).strip().upper()
+    if status not in REQUEST_STATUSES:
+        raise InputError("status", "Status must be Pending, Approved or Rejected.")
+    return status
+
+
+def _decided_by(status):
+    u = current_user()
+    return (u.username if u else "") if status != "PENDING" else None
+
+
 @app.route("/employees/leave",methods=["GET","POST"])
 @guarded
 def employee_leave():
@@ -4984,7 +4258,10 @@ def employee_leave():
     if request.method=="POST":
         eid=int(request.form.get("employee_id")); start=parse_date(request.form.get("start_date")); end=parse_date(request.form.get("end_date"))
         if not start or not end or end<start: flash("Please enter a valid leave date range.","danger"); return redirect(url_for("employee_leave"))
-        row=EmployeeLeave(employee_id=eid,leave_type=request.form.get("leave_type","VACATION"),start_date=start,end_date=end,days=_v1041_days(start,end),status=request.form.get("status","PENDING"),reason=request.form.get("reason",""))
+        status=_request_status()
+        row=EmployeeLeave(employee_id=eid,leave_type=request.form.get("leave_type","VACATION"),start_date=start,end_date=end,days=_v1041_days(start,end),status=status,reason=request.form.get("reason",""))
+        if status != "PENDING":
+            row.approved_by=_decided_by(status)
         db.session.add(row); db.session.commit(); audit(f"Added leave request for employee {eid}"); flash("Leave request saved.","success"); return redirect(url_for("employee_leave"))
     rows=EmployeeLeave.query.order_by(EmployeeLeave.id.desc()).all()
     return render_template("employee_leave.html",employees=employees,rows=rows)
@@ -4994,7 +4271,7 @@ def employee_leave():
 def employee_leave_status(lid):
     row=db.session.get(EmployeeLeave,lid)
     if row:
-        row.status=request.form.get("status","PENDING"); row.approved_by=current_user().username if current_user() else ""
+        row.status=_request_status(); row.approved_by=_decided_by(row.status) or ""
         db.session.commit(); audit(f"Updated leave {lid} to {row.status}")
     return redirect(url_for("employee_leave"))
 
@@ -5005,7 +4282,10 @@ def employee_overtime():
     if request.method=="POST":
         eid=int(request.form.get("employee_id")); emp=_v1041_emp(eid); od=parse_date(request.form.get("ot_date")) or date.today(); hours=float(form_decimal("hours", "Hours", 2, minimum=Decimal("0"), maximum=Decimal("24"))); mult=float(parse_decimal(request.form.get("rate_multiplier") or "1.25", label="Rate multiplier", places=3, minimum=Decimal("1"), maximum=Decimal("5")))
         amount=round(_v1041_hourly(emp)*hours*mult,2) if emp else 0
-        row=EmployeeOvertime(employee_id=eid,ot_date=od,hours=hours,rate_multiplier=mult,amount=amount,status=request.form.get("status","PENDING"),reason=request.form.get("reason",""))
+        status=_request_status()
+        row=EmployeeOvertime(employee_id=eid,ot_date=od,hours=hours,rate_multiplier=mult,amount=amount,status=status,reason=request.form.get("reason",""))
+        if status != "PENDING":
+            row.approved_by=_decided_by(status)
         db.session.add(row); db.session.commit(); audit(f"Added overtime for employee {eid}"); flash("Overtime request saved.","success"); return redirect(url_for("employee_overtime"))
     rows=EmployeeOvertime.query.order_by(EmployeeOvertime.id.desc()).all()
     return render_template("employee_overtime.html",employees=employees,rows=rows)
@@ -5015,7 +4295,7 @@ def employee_overtime():
 def employee_overtime_status(oid):
     row=db.session.get(EmployeeOvertime,oid)
     if row:
-        row.status=request.form.get("status","PENDING"); row.approved_by=current_user().username if current_user() else ""
+        row.status=_request_status(); row.approved_by=_decided_by(row.status) or ""
         db.session.commit(); audit(f"Updated overtime {oid} to {row.status}")
     return redirect(url_for("employee_overtime"))
 
@@ -5068,13 +4348,19 @@ def employee_payroll_reports():
 @guarded
 def employee_13th_month_full():
     year=int(request.args.get("year") or _dt_date.today().year)
+    ceiling=round(_v1041_hr_float("hr_13th_month_ceiling", 90000), 2)
     employees=Employee.query.order_by(Employee.full_name).all(); rows=[]
     for e in employees:
         ps=EmployeePayroll.query.filter(EmployeePayroll.employee_id==e.id,db.extract("year",EmployeePayroll.period_end)==year).all()
         basic=sum(_v1039_money(p.basic_salary) for p in ps)
-        rows.append((e,basic,round(basic/12,2)))
+        thirteenth=round(basic/12,2)
+        # D8 fix: the configured ceiling (default ₱90,000, the tax-exempt limit for 13th-month pay and
+        # other benefits) splits each amount into its exempt and taxable parts. Pay is unchanged.
+        exempt=min(thirteenth, ceiling)
+        rows.append((e,basic,thirteenth,exempt,round(thirteenth-exempt,2)))
     total=sum(r[2] for r in rows)
-    return render_template("employee_13th_month_full.html",year=year,rows=rows,total=total)
+    taxable=sum(r[4] for r in rows)
+    return render_template("employee_13th_month_full.html",year=year,rows=rows,total=total,ceiling=ceiling,taxable=taxable)
 
 # Make existing 13th-month link point to the full HR calculation by adding a distinct endpoint.
 try:
@@ -5088,6 +4374,17 @@ except Exception: pass
 from app.routes.auth import make_auth_blueprint  # noqa: E402
 from app.routes.resident import make_resident_blueprint  # noqa: E402
 from app.routes.users import make_users_blueprint  # noqa: E402
+from app.routes.resident_accounts import make_resident_accounts_blueprint  # noqa: E402
+from app.routes.rates import make_rates_blueprint  # noqa: E402
+from app.routes.audit_logs import make_audit_logs_blueprint  # noqa: E402
+from app.routes.system_settings import make_system_settings_blueprint  # noqa: E402
+from app.routes.units import make_units_blueprint  # noqa: E402
+from app.routes.billing import make_billing_blueprint  # noqa: E402
+from app.routes.receipts import make_receipts_blueprint  # noqa: E402
+from app.routes.advances import make_advances_blueprint  # noqa: E402
+from app.routes.water import make_water_blueprint  # noqa: E402
+from app.routes.operations import make_operations_blueprint  # noqa: E402
+from app.routes.community import make_community_blueprint  # noqa: E402
 from app.routes.spa import make_spa_blueprint  # noqa: E402
 from app.utils.auth import init_auth  # noqa: E402
 
@@ -5144,6 +4441,17 @@ from app.routes.health import make_health_blueprint  # noqa: E402
 app.register_blueprint(make_health_blueprint(db=db, root=BASE_DIR, expected_revision=_expected_schema_revision()))
 app.register_blueprint(make_users_blueprint(db=db, User=User, audit=audit, generate_password_hash=generate_password_hash,
                                             set_password=set_password, end_sessions=end_other_sessions))
+app.register_blueprint(make_resident_accounts_blueprint(sys.modules[__name__], end_sessions=end_other_sessions))
+app.register_blueprint(make_rates_blueprint(sys.modules[__name__]))
+app.register_blueprint(make_audit_logs_blueprint(sys.modules[__name__]))
+app.register_blueprint(make_system_settings_blueprint(sys.modules[__name__]))
+app.register_blueprint(make_units_blueprint(sys.modules[__name__]))
+app.register_blueprint(make_billing_blueprint(sys.modules[__name__]))
+app.register_blueprint(make_receipts_blueprint(sys.modules[__name__]))
+app.register_blueprint(make_advances_blueprint(sys.modules[__name__]))
+app.register_blueprint(make_water_blueprint(sys.modules[__name__]))
+app.register_blueprint(make_operations_blueprint(sys.modules[__name__]))
+app.register_blueprint(make_community_blueprint(sys.modules[__name__]))
 app.register_blueprint(make_spa_blueprint(os.path.join(BASE_DIR, "frontend", "dist")))
 
 # ============================================================

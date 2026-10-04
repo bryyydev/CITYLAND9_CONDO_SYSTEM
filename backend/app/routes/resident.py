@@ -22,12 +22,14 @@ Every unit-scoped route carries the unit id in the URL and is protected twice:
 Amounts come from the existing billing engine (read-only), so they match the legacy SOA.
 """
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 from flask import Blueprint, jsonify, request
 
 from ..core.roles import RESIDENT
+from ..services import receipts as receipt_json
+from ..services import soa as soa_json
 from ..utils.auth import json_error, permission_required, protect_api_blueprint, require_unit_ownership, signed_in_user
 
 CATEGORIES = ("General", "Plumbing", "Electrical", "Aircon", "Common Area", "Other")  # same options as the legacy form
@@ -54,47 +56,12 @@ def make_resident_blueprint(legacy):
         unit = legacy.db.session.get(legacy.Unit, unit_id)
         return unit if unit and unit.active else None
 
+    # The SOA JSON is shared with Billing (app/services/soa.py): residents and the office see the same figures.
     def bill_row(bill):
-        calc = legacy._bill_calc(bill)
-        return {
-            "id": bill.id,
-            "billingMonth": bill.billing_month,
-            "dueDate": bill.due_date.isoformat() if bill.due_date else None,
-            "status": legacy.bill_status(bill),
-            "total": money(calc["total"]),
-            "amountPaid": money(bill.amount_paid),
-            "balance": money(max(calc["balance"], Decimal("0"))),
-        }
+        return soa_json.soa_row(legacy, bill)
 
     def bill_detail(bill):
-        calc = legacy._bill_calc(bill)
-        reading = calc.get("reading")
-        return {
-            **bill_row(bill),
-            "charges": {
-                "condoDues": money(calc["condo"]),
-                "parking": money(calc["parking"]),
-                "storage": money(bill.storage_dues),
-                "storageIncluded": legacy.storage_charged(bill),   # D13: only from the cut-off month
-                "storageFrom": legacy.storage_cutoff(),
-                "water": money(calc["water"]),
-                "waterUsage": round(reading.usage, 2) if reading else None,
-                "waterRate": money(reading.rate) if reading else None,
-                "waterPaidSeparately": bool(reading and reading.paid),
-                "penalty": money(calc["penalty"]),
-                "previousBalance": money(calc["previous"]),
-                "advanceApplied": money(calc["advance"]),
-                "currentCharges": money(calc["current"]),
-            },
-            "note": bill.soa_note or "",
-            "payments": [
-                {"date": p.payment_date.isoformat() if p.payment_date else None, "amount": money(p.amount),
-                 "receiptNo": legacy.receipt_no_for("bill", p.id) or None,
-                 "reversed": bool(getattr(p, "reversed_at", None)),
-                 "method": p.payment_method, "type": p.payment_type, "reference": p.reference or ""}
-                for p in sorted(bill.payments, key=lambda p: (p.payment_date or datetime.min.date(), p.id))
-            ],
-        }
+        return soa_json.soa_detail(legacy, bill)
 
     def ticket_row(t):
         return {"ticketNo": t.ticket_no, "category": t.category, "title": t.title, "description": t.description,
@@ -176,27 +143,29 @@ def make_resident_blueprint(legacy):
         legacy.audit(f"Created maintenance ticket {ticket.ticket_no}")
         return jsonify({"ticket": ticket_row(ticket)}), 201
 
+    @bp.get("/units/<int:unit_id>/documents")
+    @unit_scoped
+    def documents(unit_id):
+        """Document records meant for residents: shared with all residents, or with this unit."""
+        D = legacy.DocumentRecord
+        rows = D.query.filter(D.active.is_(True), (D.audience == "residents") | ((D.audience == "unit") & (D.unit_id == unit_id))) \
+            .order_by(D.created_at.desc()).limit(200).all()
+        return jsonify({"documents": [{"id": d.id, "title": d.title, "category": d.category or "General", "description": d.description or "",
+                                       "fileName": d.file_name or "", "filePath": d.file_path or "", "forUnit": d.audience == "unit",
+                                       "addedAt": d.created_at.replace(tzinfo=timezone.utc).astimezone().date().isoformat() if d.created_at else None} for d in rows]})
+
     @bp.get("/notices")
     @permission_required("api_resident")
     def notices():
         A = legacy.Announcement
-        rows = A.query.filter_by(published=True).order_by(A.publish_date.desc(), A.id.desc()).limit(50).all()
+        # Staff-only announcements are not shown to residents (audience "residents", "all", or unset).
+        rows = A.query.filter(A.published.is_(True), (A.audience.is_(None)) | (A.audience.in_(("residents", "all"))))             .order_by(A.publish_date.desc(), A.id.desc()).limit(50).all()
         return jsonify({"notices": [{"id": a.id, "title": a.title, "message": a.message,
                                      "publishDate": a.publish_date.isoformat() if a.publish_date else None} for a in rows]})
 
     # ---- Payment history (official receipts) --------------------------------------------
-    def allocation_label(a):
-        if a.kind == "bill":
-            return f"Statement of Account — {a.payment.billing.billing_month}", a.payment.billing.billing_month
-        if a.kind == "water":
-            return f"Water — {a.water_reading.reading_month}", a.water_reading.reading_month
-        return f"Advance condo dues from {a.advance_payment.start_month}", a.advance_payment.start_month
-
-    def receipt_row(r):
-        return {"id": r.id, "receiptNo": r.receipt_no, "voided": bool(r.voided_at), "voidReason": r.void_reason or "", "date": r.received_date.isoformat(), "amount": money(r.amount),
-                "method": r.payment_method, "reference": r.reference or "",
-                "items": [{"kind": a.kind, "label": allocation_label(a)[0], "month": allocation_label(a)[1],
-                           "amount": money(a.amount)} for a in r.allocations]}
+    # Receipt JSON is shared with Payments & ORs (app/services/receipts.py).
+    receipt_row = receipt_json.receipt_row
 
     @bp.get("/units/<int:unit_id>/receipts")
     @unit_scoped
@@ -216,15 +185,7 @@ def make_resident_blueprint(legacy):
         # Same rule as the SOA: the receipt must belong to the unit in the URL.
         if not r or r.unit_id != unit_id:
             return json_error(404, "Receipt not found.")
-        contact = legacy.current_contact_for_unit(r.unit)
-        return jsonify({
-            "corporation": legacy.setting("corporation_name", "CITYLAND 9 CONDOMINIUM CORPORATION"),
-            "address": legacy.setting("address", ""),
-            "unit": {"id": r.unit.id, "unitNo": r.unit.unit_no},
-            "receivedFrom": getattr(contact, "tenant_name", None) or getattr(contact, "owner_name", None) or "",
-            "receipt": {**receipt_row(r), "remarks": r.remarks or "", "receivedBy": r.received_by or "",
-                        "backfilled": r.source == "backfill"},
-        })
+        return jsonify(receipt_json.receipt_detail(legacy, r))
 
     # ---- Water usage ----------------------------------------------------------------------
     @bp.get("/units/<int:unit_id>/water")

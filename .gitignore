@@ -25,7 +25,7 @@ uploads/
 
 # Frontend (future React/Vite app)
 node_modules/
-frontend/dist/
+# frontend/dist/ is committed on purpose (PCs without Node.js); rebuild it before committing UI changes.
 
 # OS / editor noise
 Thumbs.db

@@ -8,7 +8,7 @@ from decimal import Decimal
 
 import pytest
 
-from conftest import login
+from conftest import login, api
 
 TEST_UNIT = "TEST-504"
 
@@ -49,11 +49,17 @@ def bill_factory(m):
 
 
 def pay(client, bid, amount, *, token=None, **extra):
-    data = {"amount": amount, "payment_method": "CASH", "payment_type": "FULL", "payment_date": extra.pop("payment_date", "2032-01-20"),
-            "remarks": "pytest", **extra}
-    if token is not None:
-        data["form_token"] = token
-    return client.post(f"/billing/{bid}/pay", data=data)
+    """Record a payment through Billing's API (as the React app does): a fresh one-time token per form."""
+    api(client)
+    body = {"amount": amount, "method": extra.pop("payment_method", "CASH"), "type": extra.pop("payment_type", "FULL"),
+            "date": extra.pop("payment_date", "2032-01-20"), "reference": extra.pop("reference", ""), "remarks": "pytest",
+            "formToken": secrets.token_urlsafe(24) if token is None else token}
+    return client.post(f"/api/billing/{bid}/payments", json=body)
+
+
+def void(client, rid, reason):
+    """Void through Payments & ORs' API (as the React app does), with a fresh one-time form token."""
+    return api(client).post(f"/api/receipts/{rid}/void", json={"reason": reason, "formToken": secrets.token_urlsafe(24)})
 
 
 def state(m, bid):
@@ -104,7 +110,7 @@ def test_viewing_billing_never_changes_existing_bills(m, superadmin, bill_factor
 def test_invalid_payment_amounts_are_rejected_without_changes(m, superadmin, bill_factory, amount):
     bid = bill_factory("2032-04")
     resp = pay(superadmin, bid, amount)
-    assert resp.status_code == 302
+    assert resp.status_code == 400 and resp.get_json()["error"]["fields"]["amount"]
     assert state(m, bid) == (Decimal("0.00"), [])
 
 
@@ -114,13 +120,14 @@ def test_valid_amount_formats(m, superadmin, bill_factory):
     assert state(m, bid)[0] == Decimal("1234.50")
 
 
-@pytest.mark.parametrize("field,value", [("current_reading", "nan"), ("current_reading", "inf"), ("rate", "-1"), ("previous_reading", "1e3")])
+@pytest.mark.parametrize("field,value", [("current", "nan"), ("current", "inf"), ("rate", "-1"), ("previous", "1e3"), ("current", "5")])
 def test_invalid_water_readings_are_rejected(m, superadmin, field, value):
     with m.app.app_context():
         unit = m.Unit.query.filter_by(unit_no=TEST_UNIT).first()
         before = m.WaterReading.query.filter_by(unit_id=unit.id, reading_month="2032-06").count()
-    data = {"unit_id": unit.id, "month": "2032-06", "previous_reading": "10", "current_reading": "20", "rate": "50", field: value}
-    superadmin.post("/water", data=data)
+    data = {"unitId": unit.id, "month": "2032-06", "previous": "10", "current": "20", "rate": "50", field: value}
+    resp = api(superadmin).post("/api/water", json=data)            # Water Readings API (React)
+    assert resp.status_code == 400 and resp.get_json()["error"]["fields"]
     with m.app.app_context():
         assert m.WaterReading.query.filter_by(unit_id=unit.id, reading_month="2032-06").count() == before
 
@@ -143,20 +150,28 @@ def test_same_form_submitted_twice_records_one_payment(m, superadmin, bill_facto
     resp = pay(superadmin, bid, "300", token=token)
     paid, receipts = state(m, bid)
     assert paid == Decimal("300.00") and len(receipts) == 1
-    assert resp.status_code == 302
+    assert resp.status_code == 409 and resp.get_json()["error"]["duplicate"] is True
 
 
 def test_payment_form_without_token_is_refused(m, superadmin, bill_factory):
     bid = bill_factory("2032-08")
+    resp = pay(superadmin, bid, "100", token="")
+    assert resp.status_code == 400 and "formToken" in resp.get_json()["error"]["fields"]
+    assert state(m, bid) == (Decimal("0.00"), [])
+    # The classic payment form is retired: posting it changes nothing.
     superadmin.post(f"/billing/{bid}/pay", data={"amount": "100", "payment_method": "CASH", "payment_type": "FULL",
-                                                 "payment_date": "2032-01-20", "form_token": ""})
+                                                 "payment_date": "2032-01-20"})
     assert state(m, bid) == (Decimal("0.00"), [])
 
 
-def test_payment_forms_carry_a_one_time_token(superadmin):
-    html = superadmin.get("/billing").get_data(as_text=True)
-    tokens = [part.split('"')[0] for part in html.split('name="form_token" value="')[1:]]
-    assert tokens and len(tokens) == len(set(tokens))
+def test_payment_tokens_are_one_time(m, superadmin, bill_factory):
+    """The React payment form sends a fresh token; the same token can't record a second payment."""
+    bid = bill_factory("2032-12")
+    token = secrets.token_urlsafe(24)
+    assert pay(superadmin, bid, "50", token=token).status_code == 201
+    assert pay(superadmin, bid, "50", token=token).status_code == 409
+    assert pay(superadmin, bid, "50").status_code == 201                     # a new form: a new token
+    assert state(m, bid)[0] == Decimal("100.00")
 
 
 # ------------------------------------------------------------------ receipt numbering
@@ -196,9 +211,9 @@ def test_void_reverses_payment_and_keeps_history(m, superadmin, bill_factory):
     bid = bill_factory("2032-10")
     pay(superadmin, bid, "400")
     rid, number = receipt_for_bill(m, bid)
-    superadmin.post(f"/receipts/{rid}/void", data={"reason": "short"})                        # reason too short
+    assert void(superadmin, rid, "short").status_code == 400                                   # reason too short
     assert state(m, bid)[0] == Decimal("400.00")
-    superadmin.post(f"/receipts/{rid}/void", data={"reason": "Recorded on the wrong unit by mistake"})
+    assert void(superadmin, rid, "Recorded on the wrong unit by mistake").status_code == 200
     with m.app.app_context():
         r = m.db.session.get(m.Receipt, rid)
         b = m.db.session.get(m.Billing, bid)
@@ -208,10 +223,10 @@ def test_void_reverses_payment_and_keeps_history(m, superadmin, bill_factory):
         entry = m.AuditLog.query.filter_by(entity_type="receipt", entity_id=rid).order_by(m.AuditLog.id.desc()).first()
         assert entry.reason.startswith("Recorded on") and json.loads(entry.details)["reversed"][0]["amount_paid"]["before"] == "400.00"
     # Already void: refused, nothing changes.
-    superadmin.post(f"/receipts/{rid}/void", data={"reason": "Second attempt at voiding it"})
+    assert void(superadmin, rid, "Second attempt at voiding it").status_code == 409
     assert state(m, bid)[0] == 0
-    html = superadmin.get(f"/receipts/{rid}").get_data(as_text=True)
-    assert "VOID" in html
+    detail = superadmin.get(f"/api/receipts/{rid}").get_json()
+    assert detail["receipt"]["voided"] is True and detail["voidedBy"] == "superadmin" and detail["canVoid"] is False
 
 
 def test_void_requires_permission(m, superadmin, bill_factory):
@@ -219,7 +234,7 @@ def test_void_requires_permission(m, superadmin, bill_factory):
     pay(superadmin, bid, "200")
     rid, _ = receipt_for_bill(m, bid)
     admin, _ = login(m, "test_admin", "Test-Pass-123")                                       # Admin may record, not void
-    admin.post(f"/receipts/{rid}/void", data={"reason": "Admin trying to void a receipt"})
+    assert void(admin, rid, "Admin trying to void a receipt").status_code == 403
     with m.app.app_context():
         assert m.db.session.get(m.Receipt, rid).voided_at is None
 
@@ -229,14 +244,16 @@ def test_void_refused_when_advance_already_applied(m, superadmin, bill_factory):
     with m.app.app_context():
         unit_id = m.Unit.query.filter_by(unit_no=TEST_UNIT).first().id
     # A 1-month advance starting 2033-01 is applied to that bill right away.
-    superadmin.post("/billing/advance", data={"unit_id": unit_id, "amount": "600", "start_month": "2033-01", "coverage_months": "1",
-                                              "payment_method": "CASH", "payment_date": "2032-12-20", "remarks": "pytest advance"})
+    assert api(superadmin).post("/api/advances", json={"unitId": unit_id, "amount": "600", "startMonth": "2033-01", "months": 1, "method": "CASH",
+                                                      "date": "2032-12-20", "remarks": "pytest advance",
+                                                      "formToken": secrets.token_urlsafe(24)}).status_code == 201
     with m.app.app_context():
         adv = m.AdvancePayment.query.filter(m.AdvancePayment.remarks == "pytest advance").order_by(m.AdvancePayment.id.desc()).first()
         applied = sum(Decimal(str(a.amount)) for a in m.AdvanceApplication.query.filter_by(advance_payment_id=adv.id))
         rid = m.ReceiptAllocation.query.filter_by(advance_payment_id=adv.id).first().receipt_id
         assert applied == Decimal("600.00")
-    superadmin.post(f"/receipts/{rid}/void", data={"reason": "Trying to void after the advance was used"})
+    resp = void(superadmin, rid, "Trying to void after the advance was used")
+    assert resp.status_code == 409 and "already applied" in resp.get_json()["error"]["message"]
     with m.app.app_context():
         assert m.db.session.get(m.Receipt, rid).voided_at is None                            # refused
         assert m.db.session.get(m.AdvancePayment, adv.id).reversed_at is None
@@ -250,11 +267,11 @@ def test_voided_receipts_not_counted_in_ledger(m, superadmin, bill_factory):
     bid = bill_factory("2033-02")
     pay(superadmin, bid, "250", payment_date="2041-03-03")
     rid, _ = receipt_for_bill(m, bid)
-    page = superadmin.get("/receipts?start=2041-03-01&end=2041-03-31").get_data(as_text=True)
-    assert "250.00" in page
-    superadmin.post(f"/receipts/{rid}/void", data={"reason": "Duplicate entry for the same cheque"})
-    page = superadmin.get("/receipts?start=2041-03-01&end=2041-03-31").get_data(as_text=True)
-    assert "VOID" in page
+    ledger = api(superadmin).get("/api/receipts?from=2041-03-01&to=2041-03-31").get_json()
+    assert ledger["collected"] == "250.00" and ledger["total"] == 1
+    assert void(superadmin, rid, "Duplicate entry for the same cheque").status_code == 200
+    ledger = superadmin.get("/api/receipts?from=2041-03-01&to=2041-03-31").get_json()
+    assert ledger["collected"] == "0.00" and ledger["voidCount"] == 1 and ledger["receipts"][0]["voided"] is True   # listed, not counted
 
 
 # ------------------------------------------------------------------ period closing
@@ -267,7 +284,8 @@ def test_closed_period_blocks_payments_and_voids(m, superadmin, bill_factory):
         row.value = "2042-05"; m.db.session.add(row); m.db.session.commit()
     try:
         pay(superadmin, bid, "100", payment_date="2042-05-20")
-        superadmin.post(f"/receipts/{rid}/void", data={"reason": "Voiding in a closed month"})
+        resp = void(superadmin, rid, "Voiding in a closed month")
+        assert resp.status_code == 400 and "closed" in resp.get_json()["error"]["message"]
         assert state(m, bid)[0] == Decimal("100.00")
         with m.app.app_context():
             assert m.db.session.get(m.Receipt, rid).voided_at is None

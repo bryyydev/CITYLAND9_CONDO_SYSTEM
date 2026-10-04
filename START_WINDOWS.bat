@@ -6,10 +6,12 @@ rem    START_WINDOWS.bat            normal start
 rem    START_WINDOWS.bat --rebuild  rebuild the React app first (after updating the code)
 rem
 rem  What it does (docs\run-guide\README.md explains each step):
-rem    1. checks Python (and Node.js only when the React app must be built)
+rem    1. checks Python (and Node.js only when the React app must be built); on a new PC
+rem       (no .env yet) runs scripts\first_run_setup.py: configuration, database, demo data
 rem    2. creates .venv and installs Python packages only when requirements change,
 rem       so the server PC can start without internet
-rem    3. builds the React app (frontend\dist) if it is missing or --rebuild is given
+rem    3. builds the React app (frontend\dist) when it is missing, older than the code
+rem       (compared by content, scripts\frontend_build.py) or --rebuild is given
 rem    4. starts CityLand's own MariaDB and checks the database
 rem    5. starts the Waitress server on 0.0.0.0:5000 and shows the LAN address
 rem  Stop the server: press Ctrl+C in this window, or close it (or run STOP_WINDOWS.bat).
@@ -27,31 +29,41 @@ echo  CITYLAND 9 CONDO MANAGEMENT SYSTEM
 echo  ==================================
 echo.
 
-rem --- 1. Configuration -------------------------------------------------------
-if not exist ".env" (
-    echo [X] The .env configuration file is missing.
-    echo     First-time setup: see docs\run-guide\01-PREREQUISITES_AND_ENV.md
-    echo     and docs\run-guide\02-DATABASE_SETUP.md
-    goto :fail
-)
-
-rem --- 2. Python and packages -------------------------------------------------
-if not exist "%PY%" (
-    where py >nul 2>nul
+rem --- 1. Python ---------------------------------------------------------------
+rem A .venv copied from another PC (e.g. inside a zip) points to that PC's Python: rebuild it.
+if exist "%PY%" (
+    "%PY%" -c "import sys" >nul 2>nul
     if errorlevel 1 (
-        where python >nul 2>nul
-        if errorlevel 1 (
-            echo [X] Python is not installed. Install Python 3.11 or newer from python.org
-            echo     and tick "Add python.exe to PATH" during setup.
-            goto :fail
-        )
-        set "BOOT=python"
-    ) else (
-        set "BOOT=py -3"
+        echo [1/5] The Python environment ^(.venv^) was made on another PC. Rebuilding it...
+        rmdir /s /q .venv
     )
-    echo [1/5] Creating the Python environment ^(.venv^)...
+)
+if not exist "%PY%" (
+    call :find_python
+    if not defined BOOT (
+        echo [X] Python 3.10 or newer is not installed.
+        echo     Install it from https://www.python.org/downloads/ and tick
+        echo     "Add python.exe to PATH" on the first screen of the installer, then run this again.
+        goto :fail
+    )
+    rem Python packages have deep folders; with Windows' 260-character path limit a long folder path fails.
+    !BOOT! -c "import os, sys; sys.exit(1 if len(os.getcwd()) > 120 else 0)" >nul 2>nul
+    if errorlevel 1 (
+        echo [X] This folder's path is too long for Windows ^(more than 120 characters^):
+        echo     !CD!
+        echo     Move the CITYLAND9 folder somewhere short, for example C:\CITYLAND9 or your Desktop,
+        echo     then run START_WINDOWS.bat again.
+        goto :fail
+    )
+    echo [1/5] Creating the Python environment ^(.venv^) with !BOOT!...
     !BOOT! -m venv .venv
-    if errorlevel 1 goto :fail
+    if errorlevel 1 (
+        if exist .venv rmdir /s /q .venv
+        echo [X] Could not create the Python environment.
+        echo     - Extract the zip first ^(don't run START_WINDOWS.bat from inside the zip^).
+        echo     - Use a short folder path, e.g. C:\CITYLAND9 ^(Windows limits paths to 260 characters^).
+        goto :fail
+    )
 )
 echo [1/5] Python:
 "%PY%" --version
@@ -71,26 +83,55 @@ if errorlevel 1 (
     echo [2/5] Python packages are up to date.
 )
 
+rem --- First run on this PC: configuration, database, demo data, Superadmin ------
+rem (A downloaded copy has no .env: it holds secrets and is never shared.)
+if not exist ".env" (
+    echo.
+    "%PY%" scripts\first_run_setup.py
+    if errorlevel 1 goto :fail
+    if not exist ".env" goto :fail
+    for /f "usebackq tokens=1,* delims==" %%A in (`findstr /b /i "FLASK_PORT=" .env 2^>nul`) do set "PORT=%%B"
+)
+
 rem --- 3. React app -----------------------------------------------------------
+rem BUILD=required: no usable build (missing, or a prototype/mock build) or --rebuild was given.
+rem BUILD=outdated: the code changed since the last build. Rebuilt when Node.js is installed;
+rem without Node.js the existing build is used (offline start) and a warning is shown.
 set "BUILD="
-if not exist "frontend\dist\index.html" set "BUILD=1"
-if /i "%~1"=="--rebuild" set "BUILD=1"
+"%PY%" scripts\frontend_build.py status
+set "BUILD_STATUS=%errorlevel%"
+if "%BUILD_STATUS%"=="1" set "BUILD=outdated"
+if "%BUILD_STATUS%"=="2" set "BUILD=required"
+if "%BUILD_STATUS%"=="3" set "BUILD=required"
+if /i "%~1"=="--rebuild" set "BUILD=required"
 if defined BUILD (
     where npm >nul 2>nul
     if errorlevel 1 (
-        echo [X] The React app needs to be built, but Node.js is not installed.
-        echo     Install Node.js 20.19 or newer ^(LTS^) from nodejs.org, then run this again.
-        goto :fail
+        if "!BUILD!"=="outdated" (
+            echo [!] The React app is older than the code, and Node.js is not installed to rebuild it.
+            echo     Starting with the existing build. Screens changed since then will look old.
+            echo     To update: install Node.js 20.19+ ^(LTS^) and run  START_WINDOWS.bat --rebuild
+            set "BUILD="
+        ) else (
+            echo [X] The React app must be built, but Node.js is not installed.
+            echo     Install Node.js 20.19 or newer ^(LTS^) from nodejs.org, then run this again.
+            goto :fail
+        )
     )
+)
+if defined BUILD (
     echo [3/5] Building the React app ^(frontend\dist^)...
     pushd frontend
     if not exist "node_modules" call npm ci --no-audit --no-fund
-    if errorlevel 1 (popd & echo [X] npm ci failed. & goto :fail)
+    if errorlevel 1 (popd & echo [X] npm ci failed ^(needs internet the first time^). The system was not started. & goto :fail)
     call npm run build
-    if errorlevel 1 (popd & echo [X] The React build failed. The error is shown above. & goto :fail)
+    if errorlevel 1 (popd & echo [X] The React build failed. The error is shown above; the old build was NOT used. & goto :fail)
     popd
+    "%PY%" scripts\frontend_build.py stamp
+    if errorlevel 1 (echo [X] The new build could not be verified as the live system. & goto :fail)
+    echo       React app: built.
 ) else (
-    echo [3/5] React app is built ^(use --rebuild after updating the code^).
+    if "%BUILD_STATUS%"=="0" echo [3/5] React app is up to date.
 )
 
 rem --- 4. Port check and database ---------------------------------------------
@@ -138,3 +179,16 @@ echo.
 echo  The system was NOT started.
 pause
 exit /b 1
+
+rem Sets BOOT to a working Python 3.10+ launcher, or leaves it empty. "python" on a PC without
+rem Python is often the Microsoft Store shortcut, which only opens the Store: it is tested, not trusted.
+:find_python
+set "BOOT="
+py -3 -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>nul
+if not errorlevel 1 (
+    set "BOOT=py -3"
+    exit /b 0
+)
+python -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>nul
+if not errorlevel 1 set "BOOT=python"
+exit /b 0

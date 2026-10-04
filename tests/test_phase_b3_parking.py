@@ -1,5 +1,5 @@
 """Phase B3: one parking model - parking is a PARKING unit assigned to a residential unit."""
-from conftest import PASSWORD, login
+from conftest import api, PASSWORD, login
 
 
 def unit(m, no):
@@ -29,11 +29,14 @@ def test_parking_unit_without_its_own_rate_uses_the_default_parking_rate(app_mod
 
 def test_parking_page_lists_parking_units_and_who_has_them(app_module):
     m = app_module
-    admin, _ = login(m, "test_admin", PASSWORD)
-    page = admin.get("/parking").get_data(as_text=True)
-    assert "P-TEST-01" in page and "TEST-501" in page and "1,000.00" in page
-    staff, _ = login(m, "test_staff", PASSWORD)
-    assert staff.get("/parking").status_code == 302          # PROPERTY = super admin / admin
+    # Units Directory (Parking tab) in the React app: /api/units?kind=PARKING.
+    admin = api(login(m, "test_admin", PASSWORD)[0])
+    rows = {u["unitNo"]: u for u in admin.get("/api/units?kind=PARKING&perPage=100").get_json()["units"]}
+    assert rows["P-TEST-01"]["assignedTo"]["unitNo"] == "TEST-501" and rows["P-TEST-01"]["monthlyTotal"] == "1000.00"
+    assert admin.get("/parking").headers["Location"].startswith("/app/admin/units")       # old URL -> React page
+    staff = api(login(m, "test_staff", PASSWORD)[0])
+    assert staff.get("/api/units?kind=PARKING").status_code == 403   # PROPERTY = super admin / admin
+    assert staff.get("/parking").status_code == 302
 
 
 def test_old_parking_lot_routes_are_gone(app_module):
@@ -50,19 +53,19 @@ def test_soa_shows_the_parking_line_it_charges(app_module):
     while the amount was still in the total."""
     m = app_module
     admin, _ = login(m, "superadmin", "Test-Admin-Pass-1")
-    admin.post("/billing", data={"month": "2034-01"})
+    api(admin).post("/api/billing/generate", json={"month": "2034-01"})
     with m.app.app_context():
         bill = m.Billing.query.filter_by(unit_id=unit(m, "TEST-501").id, billing_month="2034-01").first()
         assert float(bill.parking_dues) == 1000.0
         bid = bill.id
-    page = admin.get(f"/billing/{bid}").get_data(as_text=True)
-    assert "Parking — Unit P-TEST-01" in page
+    soa = admin.get(f"/api/billing/{bid}").get_json()["bill"]
+    assert soa["charges"]["parking"] == "1000.00"
 
 
 def test_unit_page_shows_the_assigned_parking_unit(app_module):
     m = app_module
-    admin, _ = login(m, "superadmin", "Test-Admin-Pass-1")
+    admin = api(login(m, "superadmin", "Test-Admin-Pass-1")[0])
     with m.app.app_context():
         uid = unit(m, "TEST-502").id
-    page = admin.get(f"/unit/{uid}").get_data(as_text=True)
-    assert "P-TEST-02" in page and "Parking Lots" not in page
+    detail = admin.get(f"/api/units/{uid}").get_json()["unit"]
+    assert detail["parkingUnit"]["unitNo"] == "P-TEST-02"

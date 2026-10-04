@@ -27,8 +27,14 @@ npm run build
 - Type-checks (`tsc`), then writes the optimised app to **`frontend\dist\`**.
 - Flask serves it at **`http://<server>:5000/app/`** (`backend\app\routes\spa.py`); unknown
   `/app/...` paths return `index.html` so deep links work.
-- `START_WINDOWS.bat` builds automatically when `frontend\dist` is missing, and
-  `START_WINDOWS.bat --rebuild` rebuilds after you update the code.
+- `START_WINDOWS.bat` builds automatically when `frontend\dist` is missing, when it is a
+  prototype (mock) build, or when the code changed since the last build. "Changed" is checked by
+  file **content** (`scripts\frontend_build.py`, hash saved in `dist\.source-hash`), so a
+  `git pull` or copied folder is detected too.
+- Without Node.js an outdated build still starts (offline), with a warning; a missing build stops.
+- A failed build stops the launcher: the old build is never served silently.
+- `START_WINDOWS.bat --rebuild` forces a rebuild (e.g. after `npm ci` or if something looks stale).
+- The production build always uses the live Flask API: no demo logins, Role Switcher or mock data.
 - `frontend\dist` is not in git: every installation builds its own.
 - No restart is needed after a rebuild: refresh the browser.
 

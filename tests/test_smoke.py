@@ -8,7 +8,7 @@ import re
 
 import pytest
 
-from conftest import PASSWORD, ROLES, login
+from conftest import PASSWORD, ROLES, login, api
 
 
 def static_get_pages(app_module):
@@ -19,7 +19,7 @@ def static_get_pages(app_module):
     return sorted(
         r.rule for r in app_module.app.url_map.iter_rules()
         if "GET" in r.methods and not r.arguments and r.endpoint not in ("static", "login", "logout")
-        and not r.endpoint.startswith(("api_auth.", "react_app."))
+        and not r.endpoint.startswith(("api_", "react_app."))
     )
 
 
@@ -47,8 +47,13 @@ def test_detail_pages_open(app_module, superadmin):
         unit = app_module.Unit.query.filter(app_module.Unit.unit_no.like("TEST-%")).first()
         bill = app_module.Billing.query.first()
         reading = app_module.WaterReading.query.first()
-    for url in (f"/unit/{unit.id}", f"/billing/{bill.id}", f"/billing/{bill.id}/qr", f"/water/{reading.id}/edit"):
-        assert superadmin.get(url).status_code == 200, url
+    assert superadmin.get(f"/billing/{bill.id}/qr").status_code == 200
+    assert superadmin.get(f"/water/{reading.id}/edit").headers["Location"].startswith("/app/superadmin/water-readings")
+    assert api(superadmin).get(f"/api/water?month={reading.reading_month}").status_code == 200
+    assert superadmin.get(f"/api/billing/{bill.id}").status_code == 200                # Billing & SOA (React)
+    assert superadmin.get(f"/billing/{bill.id}").headers["Location"] == f"/app/superadmin/billing?bill={bill.id}"
+    assert superadmin.get(f"/api/units/{unit.id}").status_code == 200          # Units Directory (React)
+    assert superadmin.get(f"/unit/{unit.id}").headers["Location"] == f"/app/superadmin/units?unit={unit.id}"
 
 
 @pytest.mark.parametrize("role", ROLES)
@@ -88,14 +93,12 @@ def test_sidebar_links_are_accessible(app_module, role):
 def test_excel_export_import_roundtrip(app_module, superadmin):
     export = superadmin.get("/database/export.xlsx")
     assert export.status_code == 200 and export.data[:2] == b"PK"  # xlsx is a zip file
-    resp = superadmin.post(
-        "/database/import",
-        data={"file": (io.BytesIO(export.data), "db.xlsx"), "excel_file": (io.BytesIO(export.data), "db.xlsx")},
-        content_type="multipart/form-data",
-        follow_redirects=True,
-    )
-    assert resp.status_code == 200
-    assert "import completed successfully" in resp.get_data(as_text=True)
+    # The import runs from Settings in the React app (POST /api/admin/system/import, CSRF header).
+    superadmin.environ_base["HTTP_X_CSRFTOKEN"] = superadmin.get("/api/auth/csrf").get_json()["csrfToken"]
+    resp = superadmin.post("/api/admin/system/import", data={"file": (io.BytesIO(export.data), "db.xlsx")},
+                           content_type="multipart/form-data")
+    assert resp.status_code == 200, resp.get_json()
+    assert "Excel import completed" in resp.get_json()["message"] and "Units" in resp.get_json()["counts"]
 
 
 def test_reports_export(superadmin):

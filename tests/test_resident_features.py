@@ -9,7 +9,7 @@ from decimal import Decimal
 import pytest
 from werkzeug.security import generate_password_hash
 
-from conftest import login
+from conftest import api, login
 
 PW = "Owner-Pass-1"
 
@@ -121,15 +121,17 @@ def test_gate_pass_request_approval_flow(app_module, owner):
     assert first["status"] == "Requested"
     second = client.post(base, json={"type": "Visitor", "date": tomorrow, "name": "Lola", "purpose": "Visit"}).get_json()["pass"]
 
-    # Staff see the request on the legacy Gate Pass page and approve / reject it.
-    staff, _ = login(app_module, "test_staff", "Test-Pass-123")
-    page = staff.get("/gate-pass").get_data(as_text=True)
-    assert "Requests from residents" in page and "ABC Movers" in page
-    staff.post(f"/gate-pass/{first['id']}/review", data={"decision": "approve"})
+    # Staff see the request on the Gate Passes page (API) and approve / reject it.
+    staff = api(login(app_module, "test_staff", "Test-Pass-123")[0])
+    listed = {p["id"]: p for p in staff.get("/api/gate-passes").get_json()["passes"]}
+    assert listed[first["id"]]["name"] == "ABC Movers" and listed[first["id"]]["source"] == "resident"
+    assert staff.post(f"/api/gate-passes/{first['id']}/review", json={"decision": "approve"}).status_code == 200
     # Rejecting without a reason is refused; with a reason it goes through.
-    staff.post(f"/gate-pass/{second['id']}/review", data={"decision": "reject"})
+    assert staff.post(f"/api/gate-passes/{second['id']}/review", json={"decision": "reject"}).status_code == 400
     assert client.get(base).get_json()["passes"][0]["status"] == "Requested"
-    staff.post(f"/gate-pass/{second['id']}/review", data={"decision": "reject", "review_note": "Guest list full"})
+    assert staff.post(f"/api/gate-passes/{second['id']}/review", json={"decision": "reject", "note": "Guest list full"}).status_code == 200
+    # Already handled: can't be reviewed again.
+    assert staff.post(f"/api/gate-passes/{first['id']}/review", json={"decision": "reject", "note": "x"}).status_code == 409
 
     passes = {p["id"]: p for p in client.get(base).get_json()["passes"]}
     assert passes[first["id"]]["status"] == "Issued"
@@ -143,7 +145,7 @@ def test_resident_can_cancel_a_pending_request_but_not_review_it(app_module, own
     base = f"/api/resident/units/{ids['unit']}/gate-passes"
     p = client.post(base, json={"type": "Delivery", "date": date.today().isoformat(), "name": "LBC", "purpose": "Parcel"}).get_json()["pass"]
     legacy_resident, _ = login(app_module, "ana_owner", PW)
-    assert legacy_resident.post(f"/gate-pass/{p['id']}/review", data={"decision": "approve"}).status_code in (302, 403)
+    assert api(legacy_resident).post(f"/api/gate-passes/{p['id']}/review", json={"decision": "approve"}).status_code == 403
     assert client.get(base).get_json()["passes"][0]["status"] == "Requested"
     assert client.post(f"{base}/{p['id']}/cancel").get_json()["pass"]["status"] == "Cancelled"
 

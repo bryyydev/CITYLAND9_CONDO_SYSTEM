@@ -4,7 +4,7 @@ import re
 
 import pytest
 
-from conftest import PASSWORD, ROLES, login
+from conftest import api, PASSWORD, ROLES, login
 
 from app.core.permissions import ANY_SIGNED_IN, PERMISSIONS, PUBLIC_ENDPOINTS, can
 from app.core.roles import ALL_ROLES
@@ -70,33 +70,37 @@ def test_d2_resident_cannot_open_any_unit_page(app_module):
     client = client_for(app_module, "resident")
     for uid in (other, own):  # the admin unit page is not part of the resident portal at all
         resp = client.get(f"/unit/{uid}")
-        assert resp.status_code == 302 and "/unit/" not in resp.headers["Location"]
-    assert client_for(app_module, "admin").get(f"/unit/{other}").status_code == 200
+        assert resp.status_code == 302 and "/unit/" not in resp.headers["Location"] and "/units" not in resp.headers["Location"]
+        assert api(client).get(f"/api/units/{uid}").status_code == 403
+    assert api(client_for(app_module, "admin")).get(f"/api/units/{other}").status_code == 200
 
 
 def test_d3_admin_can_edit_units_again(app_module):
     _, other, _ = units(app_module)
-    client = client_for(app_module, "admin")
-    resp = client.post(f"/unit/{other}/edit", data={"floor": "5", "unit_type": "1 BEDROOM", "area_sqm": "50",
-                                                    "status": "Occupied", "occupancy_type": "Tenant"}, follow_redirects=True)
-    assert "Unit updated successfully" in resp.get_data(as_text=True)
+    client = api(client_for(app_module, "admin"))
+    resp = client.put(f"/api/units/{other}", json={"floor": "5", "type": "1 BEDROOM", "areaSqm": "50",
+                                                   "status": "Occupied", "occupancy": "Tenant"})
+    assert resp.status_code == 200 and resp.get_json()["unit"]["floor"] == "5"
 
 
 def test_accounting_has_billing_read_write_but_not_soa_email(app_module):
     _, other, other_bill = units(app_module)
-    client = client_for(app_module, "accounting")
-    assert client.get("/billing").status_code == 200
-    page = client.get(f"/billing/{other_bill}").get_data(as_text=True)
-    assert "EDIT SOA" in page and "Send Email" not in page      # buttons follow the matrix
-    assert client.get("/billing/advance").status_code == 200
-    assert client.get("/billing/email").status_code == 302
+    client = api(client_for(app_module, "accounting"))
+    assert client.get("/api/billing").status_code == 200
+    assert client.get(f"/api/billing/{other_bill}").status_code == 200
+    me = client.get("/api/auth/me").get_json()["user"]["permissions"]
+    assert "edit_soa" in me and "email_bill" not in me and "send_billing_emails" not in me   # buttons follow the matrix
+    assert client.post(f"/api/billing/{other_bill}/email").status_code == 403
+    assert client.get("/api/billing/email").status_code == 403
+    assert client.get("/api/advances").status_code == 200                               # Advance Payments (React)
 
 
 def test_staff_cannot_see_financial_reports_or_audit_logs(app_module):
     client = client_for(app_module, "staff")
     for url in ("/reports", "/reports/export.xlsx", "/audit"):
         assert client.get(url).status_code == 302, url
-    assert client.get("/move-certificate").status_code == 200
+    assert client.get("/api/certificates").status_code == 200
+    assert client.get("/api/certificates/options").status_code == 200
 
 
 def test_legacy_sidebar_shows_only_permitted_links(app_module):
@@ -173,8 +177,11 @@ def test_admin_may_open_any_unit_in_the_resident_api(app_module):
 def test_unknown_role_cannot_be_saved(app_module):
     with pytest.raises(ValueError):
         app_module.User(username="x", password_hash="x", role="cashier")
+    # Accounts are created through /api/admin/users only (the classic form was retired); it refuses unknown roles.
     client = client_for(app_module, "super_admin")
-    resp = client.post("/users", data={"username": "bad_role_user", "password": "Passw0rd!", "role": "cashier"}, follow_redirects=True)
-    assert "Please choose a valid role." in resp.get_data(as_text=True)
+    token = client.get("/api/auth/csrf").get_json()["csrfToken"]
+    resp = client.post("/api/admin/users", json={"username": "bad_role_user", "password": "Long-enough-Pass-1", "role": "cashier"},
+                       headers={"X-CSRFToken": token})
+    assert resp.status_code == 400 and resp.get_json()["error"]["fields"]["role"]
     with app_module.app.app_context():
         assert app_module.User.query.filter_by(username="bad_role_user").first() is None

@@ -82,8 +82,26 @@ START_WINDOWS.bat
 - **Keep the window open** while people use the system.
 - **Stop:** press **Ctrl+C** in that window or close it. At the end of the day run
   **`STOP_WINDOWS.bat`** to also stop the database.
-- After updating the code (e.g. `git pull`), start with **`START_WINDOWS.bat --rebuild`**
-  so the React app is rebuilt.
+- After updating the code (e.g. `git pull`) a normal start rebuilds the React app by itself
+  (Node.js needed); **`START_WINDOWS.bat --rebuild`** forces it.
+
+### Teammate / demo laptop (downloaded zip) — automatic
+
+1. Install **Python 3.10+** from python.org (tick *Add python.exe to PATH*). Node.js is **not** needed:
+   the built React app (`frontend\dist`) is included.
+2. Extract the zip to a **short path** (e.g. `C:\CITYLAND9` or the Desktop) — don't run it from
+   inside the zip. Windows limits paths to 260 characters and Python packages have deep folders.
+3. Double-click **`START_WINDOWS.bat`**. The first time (internet needed once, for the Python packages)
+   it runs `scripts\first_run_setup.py`, which:
+   - creates `.env` with a new secret key and **`DB_ENGINE=sqlite`** (one database file,
+     `cityland_condo_web.db`, in the folder — nothing else to install);
+   - creates the tables and loads the demo data (TEST-501…504, parking/storage, bills, water readings);
+   - creates demo accounts `demo_admin`, `demo_manager`, `demo_staff`, `demo_accounting`,
+     `demo_resident` (password **`CityLand9-Demo`**) and asks you to choose a Superadmin password.
+4. The browser opens `http://127.0.0.1:5000`. Next starts skip the setup.
+
+Each laptop gets its **own** database (no data is shared between PCs and nothing goes to the cloud).
+The client's server uses CityLand's own MariaDB instead (next section). Demo accounts are for testing.
 
 ### Production — brand-new server PC
 

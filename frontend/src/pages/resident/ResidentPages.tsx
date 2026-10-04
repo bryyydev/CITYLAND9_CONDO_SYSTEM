@@ -403,7 +403,9 @@ export function ResidentGatePass() {
 
 // ------------------------------------------------------------------ Notices
 export function ResidentNotices() {
+  const unitId = useUnit();
   const { data, error, loading, reload } = useAsync(() => api.resident.notices(), []);
+  const docs = useAsync(() => api.resident.documents(unitId), [unitId]);
   return (
     <>
       <PageHeader eyebrow="Community" title="Announcements & Notices" description="News from the Cityland 9 administration." />
@@ -416,6 +418,25 @@ export function ResidentNotices() {
               <li key={n.id} className="px-5 py-4">
                 <div className="flex flex-wrap items-baseline justify-between gap-2"><h3 className="font-semibold text-ink-900">{n.title}</h3><span className="text-[12.5px] text-ink-400">{dateLabel(n.publishDate)}</span></div>
                 <p className="mt-1 whitespace-pre-line text-ink-600">{n.message}</p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+      <Card className="mt-6">
+        <CardHeader title="Documents" subtitle="Documents the administration shared with residents or with your unit. Ask the Admin Office for a copy." />
+        {docs.error ? <ErrorState message={docs.error.message} onRetry={docs.reload} /> : docs.loading && !docs.data ? <Skeleton rows={3} /> : !docs.data?.length ? (
+          <EmptyState icon="folder-3-line" title="No documents shared yet" />
+        ) : (
+          <ul className="divide-y divide-ink-100">
+            {docs.data.map((d) => (
+              <li key={d.id} className="flex flex-wrap items-start justify-between gap-2 px-5 py-3.5">
+                <div>
+                  <p className="font-semibold text-ink-900">{d.title}</p>
+                  <p className="text-[12.5px] text-ink-500">{[d.category, d.fileName].filter(Boolean).join(" · ")}</p>
+                  {d.description && <p className="mt-1 text-ink-600">{d.description}</p>}
+                </div>
+                <span className="flex items-center gap-2 text-[12.5px] text-ink-400">{d.forUnit && <Badge tone="info" dot={false}>Your unit</Badge>}{d.addedAt && dateLabel(d.addedAt)}</span>
               </li>
             ))}
           </ul>

@@ -48,7 +48,9 @@ def main():
         if not status["ok"]:
             app.logger.warning("LOW DISK SPACE on %s: %s GB free (minimum %s GB). Backups and the database need room.",
                                label, status["free_gb"], minimum)
-    backup = ops.backup_status(_ROOT, float(os.getenv("BACKUP_MAX_AGE_HOURS", "26")))
+    # Scheduled backups (database/backup.py) are for CityLand's MariaDB; a SQLite test/demo PC has none.
+    uses_mariadb = os.getenv("DB_ENGINE", "").strip().lower() == "mysql"
+    backup = ops.backup_status(_ROOT, float(os.getenv("BACKUP_MAX_AGE_HOURS", "26"))) if uses_mariadb else {"ok": True}
     if not backup["ok"]:
         app.logger.warning("BACKUP WARNING: %s", backup.get("detail") or f"last backup {backup.get('status')}, "
                            f"{backup.get('age_hours')} hours ago")

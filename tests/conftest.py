@@ -93,6 +93,13 @@ def login(app_module, username, password):
     return client, resp.headers["Location"]
 
 
+def api(client):
+    """Let a signed-in test client call the JSON API too: sends the session's API CSRF token
+    with every request (as the React app does). Returns the client."""
+    client.environ_base["HTTP_X_CSRFTOKEN"] = client.get("/api/auth/csrf").get_json()["csrfToken"]
+    return client
+
+
 @pytest.fixture
 def superadmin(app_module):
     client, _ = login(app_module, SA_USERNAME, SA_PASSWORD)

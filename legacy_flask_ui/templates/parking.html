@@ -1,9 +1,0 @@
-{% extends "base.html" %}{% block content %}<div class="eyebrow">CONDO MANAGEMENT</div><h1>Parking</h1>
-<p class="subtitle">Parking slots are units of type PARKING. Assign one to a residential unit on that unit's page (Edit Unit / Dues → With Parking → Parking Unit).</p>
-<div class="tabs"><a class="tab" href="{{url_for('units')}}">▥ Units</a><a class="tab" href="{{url_for('tenants')}}">♙ Tenants</a><a class="tab active" href="{{url_for('parking')}}">P Parking</a></div>
-<div class="table-wrap"><table><thead><tr><th>Parking unit</th><th>Area</th><th>Rate / sqm</th><th>Monthly charge</th><th>Assigned to</th><th>Status</th></tr></thead><tbody>
-{% for r in rows %}<tr><td><strong>{{r.asset.unit_no}}</strong></td><td>{{r.asset.area_sqm|num}} sqm</td><td>{{r.rate|currency}}</td><td>{{r.charge|currency}}</td>
-<td>{% if r.unit %}<a href="{{url_for('unit_detail', uid=r.unit.id)}}"><strong>{{r.unit.unit_no}}</strong></a>{% else %}<span class="muted">Available</span>{% endif %}</td>
-<td>{% if not r.asset.active %}<span class="badge">Inactive</span>{% elif r.unit %}<span class="badge green">Assigned</span>{% else %}<span class="badge">Available</span>{% endif %}</td></tr>
-{% else %}<tr><td colspan="6" class="empty">No parking units yet. Add them under Units with type PARKING.</td></tr>{% endfor %}
-</tbody></table></div>{% endblock %}

@@ -4,7 +4,7 @@ MariaDB by the migration rehearsal (database/db_migrate.py)."""
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from conftest import PASSWORD, login
+from conftest import api, PASSWORD, login
 
 
 def insert_fails(app_module, obj):
@@ -51,9 +51,9 @@ def test_changes_record_who_and_when(app_module):
     with app_module.app.app_context():
         unit = app_module.Unit.query.filter_by(unit_no="TEST-504").first()
         uid, old_area = unit.id, unit.area_sqm
-    client, _ = login(app_module, "test_admin", PASSWORD)
-    client.post(f"/unit/{uid}/edit", data={"floor": "5", "unit_type": "3 BEDROOM", "area_sqm": str((old_area or 0) + 1),
-                                           "status": "Occupied", "occupancy_type": "Tenant"})
+    client = api(login(app_module, "test_admin", PASSWORD)[0])
+    assert client.put(f"/api/units/{uid}", json={"floor": "5", "type": "3 BEDROOM", "areaSqm": str((old_area or 0) + 1),
+                                                 "status": "Occupied", "occupancy": "Tenant"}).status_code == 200
     with app_module.app.app_context():
         unit = app_module.db.session.get(app_module.Unit, uid)
         assert unit.updated_by == "test_admin"

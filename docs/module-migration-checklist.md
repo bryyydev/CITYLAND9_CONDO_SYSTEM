@@ -15,14 +15,14 @@ Status values: `LEGACY` (only the Jinja UI exists) · `API` (REST endpoints done
 | # | Sidebar group | Module (as named in the UI) | Legacy endpoints | Target blueprint | Status |
 |---|---|---|---|---|---|
 | 1 | Condo Management | Dashboard | `index`, `dashboard` | `dashboard` | LEGACY |
-| 2 | Condo Management | Units / Unit Directory ¹ | `units`, `unit_detail`, `edit_unit`, `add_owner`, `edit_owner`, `add_tenant`, `edit_tenant`, `tenant_status`, `tenants`, `parking` (since B3 a read-only list of PARKING units; the 4 parking-lot routes were retired) | `units` | LEGACY |
-| 3 | Condo Management | Billing & SOA / Billing Management ² | `billing`, `billing_detail`, `mark_bill_paid`, `edit_soa`, `billing_qr` | `billing` | LEGACY |
-| 4 | Condo Management | Advance Payments | `advance_payments` | `billing` | LEGACY |
-| 5 | Condo Management | SOA Email | `billing_email`, `send_billing_emails`, `email_bill` | `billing` | LEGACY |
-| 6 | Condo Management | Water Readings | `water`, `water_previous`, `mark_water_paid`, `edit_water` | `water` | LEGACY |
-| 7 | Operations | Move In / Out | `move_certificate`, `move_certificates` | `operations` | LEGACY — **broken, see D1** |
-| 8 | Operations | Gate Pass | `gate_pass` | `operations` | LEGACY |
-| 9 | Operations | Expenses | `expenses` | `operations` | LEGACY |
+| 2 | Condo Management | Units / Unit Directory ¹ | `units`, `unit_detail`, `edit_unit`, `add_owner`, `edit_owner`, `add_tenant`, `edit_tenant`, `tenant_status`, `tenants`, `parking` (since B3 a read-only list of PARKING units; the 4 parking-lot routes were retired) | `units` | REACT (live; classic URLs redirect) |
+| 3 | Condo Management | Billing & SOA / Billing Management ² | `billing`, `billing_detail`, `mark_bill_paid`, `edit_soa`, `billing_qr` | `billing` | REACT (live; classic URLs redirect) |
+| 4 | Condo Management | Advance Payments | `advance_payments` | `billing` | REACT (live; classic URLs redirect) |
+| 5 | Condo Management | SOA Email | `billing_email`, `send_billing_emails`, `email_bill` | `billing` | REACT (live; classic URLs redirect) |
+| 6 | Condo Management | Water Readings | `water`, `water_previous`, `mark_water_paid`, `edit_water` | `water` | REACT (live; classic URLs redirect) |
+| 7 | Operations | Move In / Out | `move_certificate`, `move_certificates` | `operations` | REACT (live; classic URLs redirect) |
+| 8 | Operations | Gate Pass | `gate_pass` | `operations` | REACT (live; classic URLs redirect) |
+| 9 | Operations | Expenses | `expenses` | `operations` | REACT (live; classic URLs redirect) |
 | 10 | Employee Mgmt | Employees | `employees`, `employee_edit`, `delete_employee` | `employees` | LEGACY |
 | 11 | Employee Mgmt | Attendance | `employee_attendance`, `employee_attendance_history` | `employees` | LEGACY |
 | 12 | Employee Mgmt | Leave | `employee_leave`, `employee_leave_status` | `employees` | LEGACY |
@@ -33,15 +33,15 @@ Status values: `LEGACY` (only the Jinja UI exists) · `API` (REST endpoints done
 | 17 | Employee Mgmt | Payroll Rules | `employee_hr_settings` | `payroll` | LEGACY |
 | 18 | Employee Mgmt | Payroll Reports | `employee_payroll_reports` | `payroll` | LEGACY |
 | 19 | Community | Resident Portal | `resident_portal` | `community` | LEGACY |
-| 20 | Community | Resident Accounts | `resident_users` | `community` | LEGACY |
-| 21 | Community | Announcements | `announcements` | `community` | LEGACY |
-| 22 | Community | Maintenance | `maintenance`, `maintenance_update` | `community` | LEGACY |
-| 23 | Community | Vendors | `vendors` | `community` | LEGACY |
-| 24 | Community | Documents | `documents` | `community` | LEGACY |
+| 20 | Community | Resident Accounts | `resident_users` | `community` | REACT (live; classic URLs redirect) |
+| 21 | Community | Announcements | `announcements` | `community` | REACT (live; classic URLs redirect) |
+| 22 | Community | Maintenance | `maintenance`, `maintenance_update` | `community` | REACT (live; classic URLs redirect) |
+| 23 | Community | Vendors | `vendors` | `community` | REACT (live; classic URLs redirect) |
+| 24 | Community | Documents | `documents` | `community` | REACT (live; classic URLs redirect) |
 | 25 | Administration | Condo Reports | `reports`, `reports_export` | `reports` | LEGACY |
-| 26 | Administration | Users & Access | `users`, `reset_user_password`, `delete_user` | `admin` | LEGACY |
-| 27 | Administration | Audit Logs | `audit_logs` | `admin` | LEGACY |
-| 28 | Administration | Rates & Rules | `settings`, `database_export`, `database_import` | `admin` | LEGACY |
+| 26 | Administration | Users & Access | `users`, `reset_user_password`, `delete_user` | `admin` | REACT (live; classic URLs redirect) |
+| 27 | Administration | Audit Logs | `audit_logs` | `admin` | REACT (live; classic URLs redirect) |
+| 28 | Administration | Rates & Rules | `settings`, `database_export`, `database_import` | `admin` | REACT (live; classic URLs redirect) |
 | 29 | (no menu item) | Authentication & account | `login`, `logout`, `change_password` | `auth` | LEGACY |
 
 ¹ In the sidebar, "Units" is a group heading and "Unit Directory" is its only link (`/units`). **Tenants** (`/tenants`) and **Parking** (`/parking`) have no sidebar entry. They are reached through tabs on the Units pages, and they are part of module 2.
@@ -546,14 +546,14 @@ Each item must be either **fixed in the legacy app first** (so parity tests have
 
 | ID | Severity | Finding | Evidence |
 |---|---|---|---|
-| D1 | HIGH (feature broken) | Generating a Move In/Out certificate raises `AttributeError` (HTTP 500) | Line 2590 `current_user.username`; reproduced at runtime |
+| D1 | **FIXED 2026-10-04** · HIGH (feature broken) | Generating a Move In/Out certificate raises `AttributeError` (HTTP 500) | Line 2590 `current_user.username`; reproduced at runtime |
 | D2 | HIGH (security) | `GET /unit/<id>` only requires a login, so a **resident can view any unit's owner, tenants and billing** | `@login_required` at 1503; reproduced: a resident of one unit opened TEST-502 and saw the owner's name and bills |
 | D3 | MEDIUM (feature blocked) | **Admin cannot edit units or add owners.** `edit_unit` and `add_owner` allow SA, M, S, while Units is admin-only in the menu | Decorators at 1525 and 1673; reproduced: "You do not have permission" |
 | D4 | MEDIUM | Database export/import allows SA and M, but the form lives on Settings (SA, A) | Decorators at 2668 and 2695 |
-| D5 | MEDIUM | Staff can create leave/overtime (and managers payroll) with any `status`, including APPROVED | Form field `status` accepted on create |
-| D6 | MEDIUM | Payroll reports success even when the statutory step fails, and loan balances are then not reduced | Bare `except` at 4098 |
+| D5 | **FIXED 2026-10-04** (status validated, approver recorded; only HR can create) · MEDIUM | Staff can create leave/overtime (and managers payroll) with any `status`, including APPROVED | Form field `status` accepted on create |
+| D6 | **FIXED 2026-10-04** (payroll + statutory + loans saved together or not at all) · MEDIUM | Payroll reports success even when the statutory step fails, and loan balances are then not reduced | Bare `except` at 4098 |
 | D7 | MEDIUM (security) | SMTP password stored in plain text and rendered into the HTML page | `settings.html` `value="{{…smtp_password}}"` |
-| D8 | LOW | `due_day`, `penalty_day` and `hr_13th_month_ceiling` are editable but ignored | §3.1, §3.2 |
+| D8 | **FIXED 2026-10-04** (due day used; penalty day removed; 13th-month ceiling drives the exempt/taxable split) · LOW | `due_day`, `penalty_day` and `hr_13th_month_ceiling` are editable but ignored | §3.1, §3.2 |
 | D9 | LOW | Saving Rates & Rules rewrites 28 unused `hr_*` keys in `setting` | 3375–3417 |
 | D10 | LOW | Create-unit code reads `parking_slot_no` and other parking fields that the form never sends (dead path) | 1429 vs `units.html` fields |
 | D11 | LOW | Users can be created with any role string and no minimum password length (same for resident accounts) | 3524, 3539 |
@@ -586,3 +586,16 @@ Open business questions: **Q1**–**Q9** above.
 5. **HR:** Employees → Attendance → Leave → Overtime → Loans → Payroll Rules → Payroll → 13th Month → Payroll Reports.
 6. **Community:** Resident Accounts → Maintenance → Resident Portal.
 7. **Move In / Out** (after D1 is fixed) and **Rates & Rules / Database import-export** last, because import touches every table.
+
+
+## Defects found during the React migration (2026-10-04)
+
+| # | Problem | Status |
+|---|---|---|
+| M1 | Unit types saved as "1/2/3 BEDROOM" found no Rates & Rules rate, so auto-rate units billed ₱0 condo dues | FIXED: type lookup ignores case/spacing |
+| M2 | A residential unit's "manual monthly amount" was saved but billing used area × rate | FIXED: billing uses the manual amount when set |
+| M3 | Billing "Other charges" and "Adjustment" (Edit SOA) were stored but never counted in the total | FIXED: counted (negative adjustment = credit) |
+| M4 | Viewing a classic SOA re-saved its due date (undoing a hand-corrected due date), water, penalty and status | FIXED: the SOA is read-only (API) |
+| M5 | The classic Billing list used only its month's water readings, so older bills could show other balances than elsewhere | FIXED: one calculation everywhere |
+| M6 | The penalty rate/choices and the storage cut-off month are read when an SOA is computed, so changing them also changes unpaid bills | BY DESIGN (unchanged); the Rates & Rules page says so |
+| M7 | The resident portal showed every published announcement, including ones marked for staff only | FIXED: residents see audience "residents"/"all" only |

@@ -1,0 +1,127 @@
+"""Fixes for the defects found during the migration (docs/module-migration-checklist.md §5):
+D1 certificate crash, D5 leave/overtime status, D6 payroll all-or-nothing, D8 13th-month ceiling,
+and the Units search for past owners/tenants (the old Tenants list)."""
+from datetime import date
+from decimal import Decimal
+
+import pytest
+
+from conftest import SA_PASSWORD, SA_USERNAME, api, login
+
+
+@pytest.fixture
+def sa(app_module):
+    return login(app_module, SA_USERNAME, SA_PASSWORD)[0]
+
+
+@pytest.fixture
+def employee(app_module):
+    m = app_module
+    with m.app.app_context():
+        e = m.Employee(employee_no="DEF-001", full_name="Dina Defect", monthly_salary=Decimal("30000"), date_hired=date(2025, 1, 6))
+        m.db.session.add(e); m.db.session.commit()
+        eid = e.id
+    yield eid
+    with m.app.app_context():
+        for model in ("EmployeeLeave", "EmployeeOvertime"):
+            getattr(m, model).query.filter_by(employee_id=eid).delete()
+        for p in m.EmployeePayroll.query.filter_by(employee_id=eid).all():
+            m.EmployeePayrollStatutory.query.filter_by(payroll_id=p.id).delete()
+            m.db.session.delete(p)
+        m.EmployeeHRLoan.query.filter_by(employee_id=eid).delete()
+        m.db.session.delete(m.db.session.get(m.Employee, eid)); m.db.session.commit()
+
+
+def test_d1_move_certificate_is_generated(app_module, sa):
+    m = app_module
+    with m.app.app_context():
+        unit = m.Unit.query.filter_by(unit_no="TEST-502").first()
+        tenant = m.Tenant.query.filter_by(unit_id=unit.id).first()
+        uid, tid = unit.id, tenant.id
+        before = m.MoveCertificate.query.count()
+    resp = api(sa).post("/api/certificates", json={"unitId": uid, "moveType": "Move In", "personType": "Tenant",
+                                                   "personId": tid, "certificateDate": "2026-10-04"})
+    assert resp.status_code == 201                                     # was HTTP 500 (AttributeError)
+    with m.app.app_context():
+        assert m.MoveCertificate.query.count() == before + 1
+        cert = m.MoveCertificate.query.order_by(m.MoveCertificate.id.desc()).first()
+        assert cert.issued_by == SA_USERNAME and cert.certificate_no.startswith("CL9-2026-")
+        m.db.session.delete(cert); m.db.session.commit()
+
+
+def test_d5_status_values_are_checked_and_approver_recorded(app_module, sa, employee):
+    m = app_module
+    sa.post("/employees/leave", data={"employee_id": employee, "start_date": "2026-11-02", "end_date": "2026-11-03",
+                                      "leave_type": "VACATION", "status": "WHATEVER"})
+    with m.app.app_context():
+        assert m.EmployeeLeave.query.filter_by(employee_id=employee).count() == 0      # refused
+    sa.post("/employees/leave", data={"employee_id": employee, "start_date": "2026-11-02", "end_date": "2026-11-03",
+                                      "leave_type": "VACATION", "status": "PENDING"})
+    with m.app.app_context():
+        leave = m.EmployeeLeave.query.filter_by(employee_id=employee).first()
+        assert leave.status == "PENDING" and not leave.approved_by
+        lid = leave.id
+    sa.post(f"/employees/leave/{lid}/status", data={"status": "approved"})
+    with m.app.app_context():
+        leave = m.db.session.get(m.EmployeeLeave, lid)
+        assert leave.status == "APPROVED" and leave.approved_by == SA_USERNAME
+    sa.post("/employees/overtime", data={"employee_id": employee, "ot_date": "2026-11-04", "hours": "2", "status": "PAID-ALREADY"})
+    with m.app.app_context():
+        assert m.EmployeeOvertime.query.filter_by(employee_id=employee).count() == 0
+
+
+def test_d6_payroll_is_all_or_nothing(app_module, sa, employee, monkeypatch):
+    m = app_module
+    with m.app.app_context():
+        m.db.session.add(m.EmployeeHRLoan(employee_id=employee, loan_type="SSS", original_amount=5000, balance=5000,
+                                          monthly_deduction=1000, status="ACTIVE"))
+        m.db.session.commit()
+    form = {"employee_id": employee, "start": "2026-11-01", "end": "2026-11-15", "status": "DRAFT"}
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("statutory table missing")
+    monkeypatch.setattr(m, "_v1040_calc", broken)
+    page = sa.post("/employees/payroll", data=form, follow_redirects=True).get_data(as_text=True)
+    assert "Payroll was NOT saved" in page
+    with m.app.app_context():
+        assert m.EmployeePayroll.query.filter_by(employee_id=employee).count() == 0      # no half-saved payroll
+        assert float(m.EmployeeHRLoan.query.filter_by(employee_id=employee).first().balance) == 5000
+    monkeypatch.undo()
+    page = sa.post("/employees/payroll", data=form, follow_redirects=True).get_data(as_text=True)
+    assert "Payroll record generated" in page
+    with m.app.app_context():
+        p = m.EmployeePayroll.query.filter_by(employee_id=employee).one()
+        assert m.EmployeePayrollStatutory.query.filter_by(payroll_id=p.id).count() == 1
+        assert float(m.EmployeeHRLoan.query.filter_by(employee_id=employee).first().balance) == 4000   # reduced together
+    sa.post("/employees/payroll", data={**form, "status": "BOGUS"})                      # unknown status: refused
+    with m.app.app_context():
+        assert m.EmployeePayroll.query.filter_by(employee_id=employee).count() == 1
+
+
+def test_d8_13th_month_report_uses_the_ceiling(app_module, sa, employee):
+    m = app_module
+    with m.app.app_context():
+        m.db.session.add(m.EmployeePayroll(employee_id=employee, period_start=date(2031, 1, 1), period_end=date(2031, 12, 31),
+                                           basic_salary=1200000, overtime_pay=0, allowances=0, deductions=0, absences=0,
+                                           late_undertime=0, net_pay=0, status="PAID"))
+        m.db.session.commit()
+    page = sa.get("/employees/13th-month?year=2031").get_data(as_text=True)
+    # 1,200,000 / 12 = 100,000 -> 90,000 tax-exempt, 10,000 taxable (default ceiling)
+    assert "₱100000.00" in page and "₱90000.00" in page and "₱10000.00" in page and "TAXABLE" in page
+
+
+def test_units_search_can_include_past_owners_and_tenants(app_module, sa):
+    m = app_module
+    client = api(sa)
+    with m.app.app_context():
+        unit = m.Unit.query.filter_by(unit_no="TEST-503").first()
+        m.db.session.add(m.Tenant(unit_id=unit.id, tenant_name="Petra Pastenant", status="Past", contact_no="09179990000"))
+        m.db.session.commit()
+    try:
+        assert client.get("/api/units?q=Pastenant").get_json()["units"] == []
+        assert [u["unitNo"] for u in client.get("/api/units?q=Pastenant&past=1").get_json()["units"]] == ["TEST-503"]
+        assert [u["unitNo"] for u in client.get("/api/units?q=09179990000&past=1").get_json()["units"]] == ["TEST-503"]
+        assert sa.get("/tenants?q=Petra").headers["Location"] == "/app/superadmin/units?q=Petra&past=1"
+    finally:
+        with m.app.app_context():
+            m.Tenant.query.filter_by(tenant_name="Petra Pastenant").delete(); m.db.session.commit()

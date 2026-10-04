@@ -7,7 +7,7 @@ and the unit's SOA/maintenance data is refused, on the React API and the legacy 
 import pytest
 from werkzeug.security import generate_password_hash
 
-from conftest import login
+from conftest import api, login
 
 PW = "Renter-Pass-1"
 
@@ -76,11 +76,13 @@ def test_moving_out_ends_access_everywhere(app_module, renter):
     assert api_login(react, "rita_renter", PW).status_code == 200
     legacy = app_module.app.test_client()
     legacy.post("/login", data={"username": "rita_renter", "password": PW})
-    assert legacy.get("/maintenance").status_code == 200
+    assert legacy.get("/change-password").status_code == 200
 
     # The admin marks the tenant Inactive ("Past") on the unit page, the normal move-out step.
-    admin, _ = login(app_module, "superadmin", "Test-Admin-Pass-1")
-    admin.post(f"/tenant/{renter['tenant']}/status", data={"status": "Past"})
+    admin = api(login(app_module, "superadmin", "Test-Admin-Pass-1")[0])
+    detail = admin.get(f"/api/units/{renter['unit']}").get_json()["unit"]
+    tenant = next(t for t in detail["tenants"] if t["id"] == renter["tenant"])
+    assert admin.put(f"/api/units/{renter['unit']}/tenants/{renter['tenant']}", json={**tenant, "status": "Past"}).status_code == 200
 
     # Open React session: data refused with the reason, and the session is ended.
     resp = react.get(f"/api/resident/units/{renter['unit']}/summary")
@@ -88,10 +90,10 @@ def test_moving_out_ends_access_everywhere(app_module, renter):
     assert "no longer listed as a current tenant of unit TEST-503" in resp.get_json()["error"]["message"]
     assert react.get("/api/auth/me").status_code == 401
     # Open legacy session: signed out, reason carried to the new login page (?notice=...).
-    final = redirect_chain(legacy, "/maintenance")[-1]
+    final = redirect_chain(legacy, "/change-password")[-1]
     assert final.startswith("/app/login?notice=") and "no+longer+listed+as+a+current+tenant" in final
-    assert legacy.get("/maintenance").status_code == 302
     assert legacy.get("/change-password").status_code == 302
+    assert legacy.get("/maintenance").headers["Location"].startswith("/login")
     # New sign-in attempts are refused with the reason.
     resp = api_login(app_module.app.test_client(), "rita_renter", PW)
     assert resp.status_code == 403 and "no longer listed" in resp.get_json()["error"]["message"]

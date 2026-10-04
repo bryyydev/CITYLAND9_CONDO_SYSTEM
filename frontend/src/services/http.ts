@@ -38,8 +38,9 @@ async function ensureCsrf(): Promise<string> {
 type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 export async function http<T>(path: string, { method = "GET", body }: { method?: Method; body?: unknown } = {}): Promise<T> {
+  const upload = body instanceof FormData; // file uploads: the browser sets the multipart boundary
   const headers: Record<string, string> = { Accept: "application/json" };
-  if (body !== undefined) headers["Content-Type"] = "application/json";
+  if (body !== undefined && !upload) headers["Content-Type"] = "application/json";
   if (method !== "GET") headers["X-CSRFToken"] = await ensureCsrf();
 
   let res: Response;
@@ -48,7 +49,7 @@ export async function http<T>(path: string, { method = "GET", body }: { method?:
       method,
       headers,
       credentials: "same-origin",
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: body === undefined ? undefined : upload ? body : JSON.stringify(body),
     });
   } catch {
     throw new ApiError(0, "Can't reach the CityLand 9 server. Check that the server PC is on and connected to the network.");

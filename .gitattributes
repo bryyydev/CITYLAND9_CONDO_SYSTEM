@@ -1,0 +1,14 @@
+# Windows batch and PowerShell files must keep Windows (CRLF) line endings, also in GitHub's
+# "Download ZIP": cmd.exe can jump to the wrong label or fail on a .bat with Unix (LF) endings.
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# The built React app (frontend/dist) is committed so a PC without Node.js can run the system.
+frontend/dist/**  -diff linguist-generated
+*.png  binary
+*.woff binary
+*.woff2 binary
+*.ttf  binary
+*.eot  binary
+*.ico  binary

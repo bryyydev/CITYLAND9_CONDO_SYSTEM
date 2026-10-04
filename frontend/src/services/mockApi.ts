@@ -20,9 +20,6 @@ import type { DataService } from "./api";
 import { ApiError } from "./http";
 import type * as T from "./types";
 
-/** Set to false to preview the certificate screen as it will work once Bug D1 is fixed on the server. */
-export const SIMULATE_D1 = true;
-
 const LATENCY = 220;
 const wait = <X>(value: X): Promise<X> => new Promise((res) => setTimeout(() => res(structuredClone(value)), LATENCY));
 const fail = (status: number, message: string): Promise<never> =>
@@ -68,6 +65,8 @@ const rates: T.RatesAndRules = {
   penaltyRate: "10",
   penaltyIncludes: { condo: true, parking: false, storage: false, water: false },
   storageInTotalFrom: STORAGE_FROM,
+  booksClosedThrough: "",
+  dueDay: 8,
   onlinePaymentUrl: "",
   onlinePaymentInstructions: "Pay at the Admin Office (Ground Floor), Mon–Sat 8:00 AM–5:00 PM, by cash, check or bank transfer.",
   smtpHost: "",
@@ -283,9 +282,9 @@ addPass({ type: "Visitor", date: TODAY, unitNo: "5-01", name: "Engr. Paolo Cruz"
 
 let nextCertId = 4;
 const certificates: T.Certificate[] = [
-  { id: 1, certificateNo: "MC-2026-0007", moveType: "Move In", personType: "Tenant", personName: "Kevin Ong", unitNo: "6-02", moveDate: "2026-06-01", certificateDate: "2026-06-01", issuedBy: "rico.dizon" },
-  { id: 2, certificateNo: "MC-2026-0008", moveType: "Move Out", personType: "Tenant", personName: "Arnel Pineda", unitNo: "9-01", moveDate: "2025-05-31", certificateDate: "2026-06-03", issuedBy: "rico.dizon" },
-  { id: 3, certificateNo: "MC-2026-0009", moveType: "Move In", personType: "Owner", personName: "Beatriz Tan", unitNo: "11-03", moveDate: "2026-08-15", certificateDate: "2026-08-15", issuedBy: "melissa.bautista" },
+  { id: 1, certificateNo: "CL9-2026-00001", moveType: "Move In", personType: "Tenant", personName: "Kevin Ong", unitNo: "6-02", moveDate: "2026-06-01", certificateDate: "2026-06-01", issuedBy: "rico.dizon" },
+  { id: 2, certificateNo: "CL9-2026-00002", moveType: "Move Out", personType: "Tenant", personName: "Arnel Pineda", unitNo: "9-01", moveDate: "2025-05-31", certificateDate: "2026-06-03", issuedBy: "rico.dizon" },
+  { id: 3, certificateNo: "CL9-2026-00003", moveType: "Move In", personType: "Owner", personName: "Beatriz Tan", unitNo: "11-03", moveDate: "2026-08-15", certificateDate: "2026-08-15", issuedBy: "melissa.bautista" },
 ];
 
 let nextExpenseId = 1;
@@ -305,23 +304,29 @@ const tickets: (T.MaintenanceTicket & { unitId: number })[] = [
 ].map(([unitNo, category, title, description, priority, status, assignedTo, vendor, resolution, days]) => {
   const u = unitByNo(unitNo as string)!;
   const d = addDays(TODAY, days as number);
-  return { id: nextTicketId, unitId: u.id, unitNo: u.unitNo, ticketNo: `MT-${d.replace(/-/g, "")}${String(nextTicketId++).padStart(4, "0")}`, category: category as string, title: title as string,
-    description: description as string, priority: priority as string, status: status as T.TicketStatus, assignedTo: assignedTo as string, vendor: vendor as string, resolution: resolution as string, requestedAt: `${d}T02:30:00` };
+  const v = 1 + ["AquaFix", "CoolAir"].findIndex((n) => (vendor as string).startsWith(n));
+  return { id: nextTicketId, unitId: u.id, unitNo: u.unitNo, ticketNo: `MT-${d.replace(/-/g, "")}-${String(nextTicketId++).padStart(5, "0")}`, category: category as string, title: title as string,
+    description: description as string, priority: priority as string, status: status as T.TicketStatus, assignedTo: assignedTo as string, vendorId: v || null,
+    vendor: v ? ["AquaFix Plumbing Services", "CoolAir Services"][v - 1] : "", resolution: resolution as string, requestedAt: `${d}T02:30:00`, source: "resident" as const };
 });
+const TICKET_CATEGORIES = ["General", "Plumbing", "Electrical", "Aircon", "Common Area", "Other"];
+const TICKET_PRIORITIES = ["Low", "Normal", "High", "Urgent"];
 
-const vendors: T.Vendor[] = [
-  { id: 1, name: "AquaFix Plumbing Services", serviceType: "Plumbing", contactPerson: "Ramil Santos", contactNo: "0917 555 0142", email: "service@aquafix.ph", status: "Active" },
-  { id: 2, name: "CoolAir Services", serviceType: "Aircon", contactPerson: "Joy Lagman", contactNo: "0918 222 7831", email: "joy@coolair.ph", status: "Active" },
-  { id: 3, name: "Brightline Electrical", serviceType: "Electrical", contactPerson: "Noel Garcia", contactNo: "0922 413 0099", email: "noel@brightline.ph", status: "Active" },
-  { id: 4, name: "Liftmaster Elevators", serviceType: "Elevator maintenance", contactPerson: "Carla Uy", contactNo: "(02) 8812 3344", email: "carla@liftmaster.ph", status: "Active" },
-  { id: 5, name: "PestAway Inc.", serviceType: "Pest control", contactPerson: "Dennis Co", contactNo: "0917 800 1212", email: "", status: "Inactive" },
-];
+let nextVendorId = 6;
+const vendors: T.Vendor[] = ([
+  ["AquaFix Plumbing Services", "Plumbing", "Ramil Santos", "0917 555 0142", "service@aquafix.ph", "Active"],
+  ["CoolAir Services", "Aircon", "Joy Lagman", "0918 222 7831", "joy@coolair.ph", "Active"],
+  ["Brightline Electrical", "Electrical", "Noel Garcia", "0922 413 0099", "noel@brightline.ph", "Active"],
+  ["Liftmaster Elevators", "Elevator maintenance", "Carla Uy", "(02) 8812 3344", "carla@liftmaster.ph", "Active"],
+  ["PestAway Inc.", "Pest control", "Dennis Co", "0917 800 1212", "", "Inactive"],
+] as const).map(([name, serviceType, contactPerson, contactNo, email, status], i) => ({ id: i + 1, name, serviceType, contactPerson, contactNo, email, address: "", notes: "", status }));
 
+let nextDocId = 5;
 const documents: T.DocumentRecord[] = [
-  { id: 1, title: "House Rules 2026", category: "Policies", audience: "residents", unitNo: null, fileName: "House Rules 2026.pdf", addedAt: "2026-01-10" },
-  { id: 2, title: "Fire Safety Inspection Certificate", category: "Compliance", audience: "admin", unitNo: null, fileName: "BFP-FSIC-2026.pdf", addedAt: "2026-03-02" },
-  { id: 3, title: "Deed of Sale – 12-01", category: "Ownership", audience: "unit", unitNo: "12-01", fileName: "Deed 12-01.pdf", addedAt: "2025-11-20" },
-  { id: 4, title: "Elevator Maintenance Contract", category: "Contracts", audience: "admin", unitNo: null, fileName: "Liftmaster contract 2026.pdf", addedAt: "2026-02-14" },
+  { id: 1, title: "House Rules 2026", category: "Policies", description: "", audience: "residents", unitId: null, unitNo: null, fileName: "House Rules 2026.pdf", filePath: "\\\\ADMIN-PC\\Shared\\Policies", addedAt: "2026-01-10", addedBy: "melissa.bautista" },
+  { id: 2, title: "Fire Safety Inspection Certificate", category: "Compliance", description: "", audience: "admin", unitId: null, unitNo: null, fileName: "BFP-FSIC-2026.pdf", filePath: "Cabinet A, folder 3", addedAt: "2026-03-02", addedBy: "melissa.bautista" },
+  { id: 3, title: "Deed of Sale – 12-01", category: "Ownership", description: "", audience: "unit", unitId: unitByNo("12-01")!.id, unitNo: "12-01", fileName: "Deed 12-01.pdf", filePath: "Cabinet B, unit folders", addedAt: "2025-11-20", addedBy: "melissa.bautista" },
+  { id: 4, title: "Elevator Maintenance Contract", category: "Contracts", description: "", audience: "admin", unitId: null, unitNo: null, fileName: "Liftmaster contract 2026.pdf", filePath: "Cabinet A, folder 7", addedAt: "2026-02-14", addedBy: "melissa.bautista" },
 ];
 
 let nextNoticeId = 1;
@@ -330,7 +335,8 @@ const announcements: T.Announcement[] = [
   ["Annual general assembly", "The annual assembly of unit owners is on October 25, 2:00 PM at the function room.", -6, "melissa.bautista"],
   ["Elevator 2 back in service", "Elevator 2 has been repaired and is back in service. Thank you for your patience.", -14, "melissa.bautista"],
   ["Payroll cut-off reminder (staff)", "Submit overtime and leave forms before the 13th for the 15th payroll.", -9, "jason.fernandez"],
-].map(([title, message, days, by]) => ({ id: nextNoticeId++, title: title as string, message: message as string, publishDate: addDays(TODAY, days as number), audience: "residents", published: true, createdBy: by as string }));
+].map(([title, message, days, by]) => ({ id: nextNoticeId++, title: title as string, message: message as string, publishDate: addDays(TODAY, days as number),
+  audience: (title as string).includes("(staff)") ? "staff" : "residents", published: true, createdBy: by as string }));
 
 // ------------------------------------------------------------------ HR
 const employees: T.Employee[] = [
@@ -387,16 +393,62 @@ const userRow = (u: MockUser): T.UserAccount => {
 };
 const failFields = (fields: Record<string, string>): Promise<never> =>
   new Promise((_, rej) => setTimeout(() => rej(new ApiError(400, Object.values(fields)[0], fields)), LATENCY));
-const residentAccounts: T.ResidentAccount[] = [
-  { id: 1, username: "marcus.v", unitNo: "12-01", personType: "Owner", displayName: "Marcus Villanueva", linked: true, active: true },
-  { id: 2, username: "owner.501", unitNo: "5-01", personType: "Owner", displayName: people.find((p) => p.unitId === unitByNo("5-01")!.id)!.name, linked: true, active: true },
-  { id: 3, username: "owner.1103", unitNo: "11-03", personType: "Owner", displayName: people.find((p) => p.unitId === unitByNo("11-03")!.id)!.name, linked: true, active: true },
-  { id: 4, username: "tenant.602", unitNo: "6-02", personType: "Tenant", displayName: "Kevin Ong", linked: false, active: true },
+interface MockResidentAccount { id: number; username: string; unitId: number | null; personType: "Owner" | "Tenant"; personId: number | null; displayName: string; active: boolean; mustChangePassword: boolean; createdAt: string }
+let nextResidentAccountId = 1001;
+const residentAccount = (username: string, unitNo: string, personType: "Owner" | "Tenant", link: boolean, name?: string): MockResidentAccount => {
+  const unit = unitByNo(unitNo)!;
+  const person = link ? (personType === "Owner" ? currentOwner(unit.id) : currentTenant(unit.id)) : null;
+  return { id: nextResidentAccountId++, username, unitId: unit.id, personType, personId: person?.id ?? null, displayName: name ?? person?.name ?? username,
+    active: true, mustChangePassword: false, createdAt: "2026-03-02T03:00:00Z" };
+};
+const residentAccounts: MockResidentAccount[] = [
+  residentAccount("marcus.v", "12-01", "Owner", true, "Marcus Villanueva"),
+  residentAccount("owner.501", "5-01", "Owner", true),
+  residentAccount("owner.1103", "11-03", "Owner", true),
+  residentAccount("tenant.602", "6-02", "Tenant", false, "Kevin Ong"),
 ];
+const residentRow = (a: MockResidentAccount): T.ResidentAccount => {
+  const unit = a.unitId ? units.find((u) => u.id === a.unitId) ?? null : null;
+  const person = a.personId ? people.find((p) => p.id === a.personId && p.type === a.personType && p.unitId === a.unitId) ?? null : null;
+  const [status, statusReason]: [T.ResidentAccountStatus, string | null] =
+    !unit ? ["unlinked", "This login isn't linked to a unit, so it can't use the resident portal. Link it to a unit."]
+    : !a.active ? ["inactive", "Deactivated. The resident can't sign in until the account is reactivated."]
+    : !unit.active ? ["ended", "Your unit is no longer active in the system. Please contact the administrator."]
+    : a.personId && (!person || person.status !== "Current") ? ["ended", `Your resident portal access has ended because you are no longer listed as a current ${a.personType.toLowerCase()} of unit ${unit.unitNo}. Please contact the administrator if this is a mistake.`]
+    : ["active", null];
+  return { id: a.id, username: a.username, displayName: a.displayName, unit: unit ? { id: unit.id, unitNo: unit.unitNo } : null, personType: a.personType,
+    personId: a.personId, linked: Boolean(person), linkedName: person?.name ?? null, linkedStatus: person?.status ?? null, status, statusReason,
+    active: a.active && Boolean(unit), mustChangePassword: a.mustChangePassword, createdAt: a.createdAt };
+};
+/** Same checks as backend/app/routes/resident_accounts.py validate_link; returns the display name to save. */
+const residentLinkErrors = (input: Partial<T.ResidentAccountLink>, fields: Record<string, string>, selfId: number | null, existing?: MockResidentAccount) => {
+  const unit = units.find((u) => u.id === input.unitId && u.active);
+  if (!unit) fields.unitId = "Choose an active unit.";
+  const type = input.personType ?? "Owner";
+  let name = (input.displayName ?? "").trim();
+  if (input.personId != null) {
+    const person = people.find((p) => p.id === input.personId && p.type === type);
+    const unchanged = existing && existing.personId === input.personId && existing.personType === type && existing.unitId === input.unitId;
+    const other = residentAccounts.find((a) => a.id !== selfId && a.active && a.personType === type && a.personId === input.personId);
+    if (!person || (unit && person.unitId !== unit.id)) fields.personId = `Choose a ${type.toLowerCase()} of this unit.`;
+    else if (!unchanged && person.status !== "Current") fields.personId = `${person.name} is no longer a current ${type.toLowerCase()} of this unit.`;
+    else if (!unchanged && other) fields.personId = `${person.name} already has a portal account (${other.username}).`;
+    else if (!name) name = person.name;
+  }
+  if (!name) fields.displayName = "Enter the resident's name.";
+  return name;
+};
 
 let nextAuditId = 1;
 const auditLogs: T.AuditLog[] = [];
 const audit = (action: string, username = actor(), at = nowUtc()) => auditLogs.unshift({ id: nextAuditId++, at, username, action });
+/** Same filter as /api/admin/audit-logs (dates compared in Manila time, UTC+8). */
+const filterAudit = ({ q, user, from, to }: Omit<T.AuditLogQuery, "page" | "perPage">) => {
+  const needle = q.trim().toLowerCase();
+  const manilaDay = (at: string) => new Date(new Date(`${at.replace(/Z?$/, "Z")}`).getTime() + 8 * 3600e3).toISOString().slice(0, 10);
+  return auditLogs.filter((a) => (!needle || a.action.toLowerCase().includes(needle) || a.username.toLowerCase().includes(needle))
+    && (!user || a.username.toLowerCase() === user.toLowerCase()) && (!from || manilaDay(a.at) >= from) && (!to || manilaDay(a.at) <= to));
+};
 [
   ["melissa.bautista", "Login", -2], ["melissa.bautista", `Generated ${residential().length} detailed bills for ${addMonths(THIS_MONTH, -1)}`, -2],
   ["karen.uy", `Issued ${orNo(receipts.at(-1)!)} - Recorded 3-month advance condo dues payment for unit 8-02`, -1], ["rico.dizon", "Created gate pass", -1],
@@ -423,7 +475,9 @@ function soaDetail(b: MockBill): T.SoaDetail {
     payments: payments.filter((p) => p.billId === b.id).map((p) => ({ date: p.date, amount: fromCents(p.amountCents), receiptNo: receiptFor("bill", p.id), method: p.method, type: p.type, reference: p.reference })),
   };
 }
-const billDetail = (b: MockBill): T.BillDetail => ({ ...soaDetail(b), unitId: b.unitId, unitNo: unitById(b.unitId).unitNo, payerName: payerName(b.unitId), manualOverride: b.manual });
+const billDetail = (b: MockBill): T.BillDetail => ({ ...soaDetail(b), unitId: b.unitId, unitNo: unitById(b.unitId).unitNo, payerName: payerName(b.unitId), manualOverride: b.manual,
+  stored: { condoDues: fromCents(b.condo), parking: fromCents(b.parking), storage: fromCents(b.storage), water: fromCents(b.water), other: "0.00", adjustment: "0.00", penalty: fromCents(b.penalty), previousBalance: fromCents(b.previous) },
+  previousUnpaid: [], overdueMonths: [], emailRecipients: [], closed: false, corporation: rates.corporationName, address: rates.address, paymentInstructions: rates.onlinePaymentInstructions });
 function receiptFor(kind: T.ReceiptItem["kind"], refId: number) {
   const r = receipts.find((x) => x.items.some((i) => i.kind === kind && i.refId === refId));
   return r ? orNo(r) : null;
@@ -449,6 +503,30 @@ const unitOut = (u: MockUnit): T.Unit => {
     parkingUnitNo: u.parkingId ? unitById(u.parkingId).unitNo : null, storageUnitNo: u.storageId ? unitById(u.storageId).unitNo : null,
     monthlyDues: RESIDENTIAL.includes(u.type) ? fromCents(condoCents(u) + assetCents(u.parkingId, toCents(rates.parkingRatePerSqm))) : "0.00" };
 };
+const unitRowOut = (u: MockUnit): T.UnitRow => {
+  const base = unitOut(u);
+  const ref = (id: number | null) => (id ? { id, unitNo: unitById(id).unitNo } : null);
+  const user = units.find((x) => x.parkingId === u.id || x.storageId === u.id);
+  const condo = RESIDENTIAL.includes(u.type) ? condoCents(u) : assetCents(u.id, toCents(u.type === "PARKING" ? rates.parkingRatePerSqm : rates.storageRatePerSqm));
+  const parking = RESIDENTIAL.includes(u.type) ? assetCents(u.parkingId, toCents(rates.parkingRatePerSqm)) : 0;
+  const last = bills.filter((b) => b.unitId === u.id).at(-1);
+  return { id: u.id, unitNo: u.unitNo, floor: u.floor, type: u.type, areaSqm: u.areaSqm, ratePerSqm: base.ratePerSqm, effectiveRatePerSqm: base.ratePerSqm,
+    autoRate: u.ratePerSqmCents === null, duesMode: "per_sqm", manualMonthlyDues: "0.00", occupancy: u.occupancy, status: u.status, active: u.active,
+    ownerName: base.ownerName, tenantName: base.tenantName, contactNo: base.contactNo, email: base.email,
+    parkingUnit: ref(u.parkingId), storageUnit: ref(u.storageId), assignedTo: user ? { id: user.id, unitNo: user.unitNo } : null,
+    dues: { condo: fromCents(condo), parking: fromCents(parking), storage: "0.00" }, monthlyTotal: fromCents(condo + parking),
+    zeroDues: condo === 0 && u.areaSqm > 0,
+    latestBill: last ? { id: last.id, month: last.month, status: statusOf(last) } : null };
+};
+const unitDetailOut = (u: MockUnit): T.UnitDetail => ({
+  ...unitRowOut(u),
+  owners: people.filter((p) => p.unitId === u.id && p.type === "Owner").map((p) => personRecord(p)),
+  tenants: people.filter((p) => p.unitId === u.id && p.type === "Tenant").map((p) => personRecord(p)),
+  bills: bills.filter((b) => b.unitId === u.id).slice(-12).reverse().map((b) => ({ id: b.id, month: b.month, dueDate: b.dueDate,
+    total: fromCents(totalCents(b)), paid: fromCents(b.paid), balance: fromCents(Math.max(balanceCents(b), 0)), status: statusOf(b) })),
+});
+const personRecord = (p: Person): T.UnitPersonRecord => ({ id: p.id, kind: p.type, name: p.name, contactNo: p.contactNo, email: p.email, moveIn: p.moveIn, moveOut: p.moveOut,
+  status: p.status, notes: "", receiveSoaEmail: Boolean(p.email), includeInSoa: true, representative: p.type === "Tenant" && p.status === "Current" });
 const readingOut = (r: MockReading): T.WaterReadingAdmin => ({ id: r.id, unitId: r.unitId, unitNo: unitById(r.unitId).unitNo, month: r.month, previous: r.previous, current: r.current, rate: fromCents(r.rateCents),
   usage: Math.max(r.current - r.previous, 0), amount: fromCents(readingCents(r)), readingDate: r.readingDate, paid: r.paidCents > 0 });
 const advanceOut = (a: MockAdvance): T.AdvancePayment => ({ id: a.id, unitId: a.unitId, unitNo: unitById(a.unitId).unitNo, date: a.date, amount: fromCents(a.amountCents), startMonth: a.startMonth, months: a.months,
@@ -530,7 +608,7 @@ export const mockApi: DataService = {
       if (denied) return denied;
       if (!input.title.trim() || !input.description.trim()) return fail(400, "Title and description are required.");
       const u = unitById(unitId);
-      const t = { id: nextTicketId, unitId, unitNo: u.unitNo, ticketNo: `MT-${TODAY.replace(/-/g, "")}${String(nextTicketId++).padStart(4, "0")}`, ...input, status: "Open" as const, assignedTo: "", vendor: "", resolution: "", requestedAt: nowUtc() };
+      const t = { id: nextTicketId, unitId, unitNo: u.unitNo, ticketNo: `MT-${TODAY.replace(/-/g, "")}-${String(nextTicketId++).padStart(5, "0")}`, ...input, status: "Open" as const, assignedTo: "", vendorId: null, vendor: "", resolution: "", requestedAt: nowUtc(), source: "resident" as const };
       tickets.unshift(t);
       audit(`Created maintenance ticket ${t.ticketNo}`);
       return wait({ ticketNo: t.ticketNo, category: t.category, title: t.title, description: t.description, priority: t.priority, status: t.status, resolution: "", requestedAt: t.requestedAt });
@@ -572,7 +650,9 @@ export const mockApi: DataService = {
       audit(`Resident ${actor()} updated own contact details (unit ${unitById(unitId).unitNo})`);
       return mockApi.resident.profile(unitId);
     },
-    notices: () => wait(announcements.filter((a) => a.published).map(({ id, title, message, publishDate }) => ({ id, title, message, publishDate }))),
+    notices: () => wait(announcements.filter((a) => a.published && a.audience !== "staff").map(({ id, title, message, publishDate }) => ({ id, title, message, publishDate }))),
+    documents: (unitId) => needResidentUnit(unitId) ?? wait(documents.filter((d) => d.audience === "residents" || (d.audience === "unit" && d.unitId === unitId))
+      .map(({ id, title, category, description, fileName, filePath, audience, addedAt }) => ({ id, title, category, description, fileName, filePath, forUnit: audience === "unit", addedAt }))),
   },
 
   dashboards: {
@@ -611,7 +691,7 @@ export const mockApi: DataService = {
     }),
     system: () => wait({
       users: Object.fromEntries((["super_admin", "admin", "manager", "staff", "accounting", "resident"] as T.Role[]).map((r) => [r, r === "resident" ? residentAccounts.length : users.filter((u) => u.role === r && u.active).length])) as Record<T.Role, number>,
-      residentAccounts: residentAccounts.length, unlinkedResidentAccounts: residentAccounts.filter((a) => !a.linked).length,
+      residentAccounts: residentAccounts.length, unlinkedResidentAccounts: residentAccounts.map(residentRow).filter((a) => !a.linked).length,
       auditToday: auditLogs.filter((a) => a.at.startsWith(TODAY)).length, lastBackup: `${addDays(TODAY, -1)}T10:00:00`, schemaRevision: "0007_gate_pass_requests",
     }),
   },
@@ -619,6 +699,63 @@ export const mockApi: DataService = {
   units: {
     list: () => wait(units.map(unitOut)),
     people: (unitId) => wait(people.filter((p) => p.unitId === unitId).map(({ id, type, name, status, moveIn, moveOut }) => ({ id, type, name, status, moveIn, moveOut }))),
+    page: ({ q, kind, floor, status, page, perPage, past }) => {
+      const ofKind = (u: MockUnit, k: T.UnitKind) => (k === "residential" ? !["PARKING", "STORAGE"].includes(u.type) : u.type === k);
+      const needle = q.trim().toLowerCase();
+      const rows = units.filter((u) => u.active && ofKind(u, kind) && (!floor || u.floor === floor) && (!status || u.status === status)
+        && (!needle || [u.unitNo, currentOwner(u.id)?.name ?? "", currentTenant(u.id)?.name ?? "",
+          ...(past ? people.filter((p) => p.unitId === u.id).flatMap((p) => [p.name, p.contactNo, p.email]) : [])].some((v) => v.toLowerCase().includes(needle))))
+        .sort((a, b) => a.unitNo.localeCompare(b.unitNo, undefined, { numeric: true }));
+      const counts = Object.fromEntries((["residential", "PARKING", "STORAGE"] as T.UnitKind[]).map((k) => [k, units.filter((u) => u.active && ofKind(u, k)).length])) as Record<T.UnitKind, number>;
+      return wait({ units: rows.slice((page - 1) * perPage, page * perPage).map(unitRowOut), total: rows.length, page, perPage, counts });
+    },
+    options: () => {
+      const asset = (k: string) => units.filter((u) => u.active && u.type === k).map((a) => {
+        const owner = units.find((u) => u.parkingId === a.id || u.storageId === a.id);
+        return { id: a.id, unitNo: a.unitNo, floor: a.floor, assignedTo: owner ? { id: owner.id, unitNo: owner.unitNo } : null };
+      });
+      return wait({ parking: asset("PARKING"), storage: asset("STORAGE"), unitTypes: ["STUDIO TYPE", "1 BEDROOM", "2 BEDROOM", "3 BEDROOM", "PARKING", "STORAGE"],
+        floors: [...new Set(units.map((u) => u.floor))].sort(), typeRates: Object.fromEntries((["STUDIO TYPE", "1 BEDROOM", "2 BEDROOM", "3 BEDROOM"] as T.UnitType[]).map((t) => [t, fromCents(rateFor(t))])) });
+    },
+    detail: (id) => (unitById(id) ? wait(unitDetailOut(unitById(id))) : fail(404, "Unit not found.")),
+    create: (input) => {
+      if (!input.unitNo.trim()) return failFields({ unitNo: "Unit number is required." });
+      if (unitByNo(input.unitNo)) return failFields({ unitNo: "That unit number already exists." });
+      const u: MockUnit = { id: Math.max(...units.map((x) => x.id)) + 1, unitNo: input.unitNo.trim(), floor: input.floor, type: input.type as T.UnitType, areaSqm: Number(input.areaSqm) || 0,
+        ratePerSqmCents: input.ratePerSqm ? toCents(input.ratePerSqm) : null, status: input.status, occupancy: input.occupancy, active: true, parkingId: input.parkingUnitId, storageId: input.storageUnitId };
+      units.push(u);
+      for (const [p, type] of [[input.owner, "Owner"], [input.tenant, "Tenant"]] as const)
+        if (p?.name.trim()) people.push({ id: nextPersonId++, unitId: u.id, type, name: p.name.trim(), contactNo: p.contactNo, email: p.email, status: "Current", moveIn: p.moveIn || null, moveOut: null });
+      audit(`Created unit ${u.unitNo}`);
+      return wait(unitDetailOut(u));
+    },
+    update: (id, input) => {
+      const u = unitById(id);
+      if (!u) return fail(404, "Unit not found.");
+      Object.assign(u, { floor: input.floor, type: input.type, areaSqm: Number(input.areaSqm) || 0, ratePerSqmCents: input.ratePerSqm ? toCents(input.ratePerSqm) : null,
+        status: input.status, occupancy: input.occupancy, parkingId: input.parkingUnitId, storageId: input.storageUnitId });
+      audit(`Updated unit ${u.unitNo}`);
+      return wait(unitDetailOut(u));
+    },
+    addPerson: (id, kind, input) => {
+      const u = unitById(id);
+      if (!u) return fail(404, "Unit not found.");
+      if (!input.name.trim()) return failFields({ name: `${kind} name is required.` });
+      people.push({ id: nextPersonId++, unitId: id, type: kind, name: input.name.trim(), contactNo: input.contactNo, email: input.email,
+        status: input.moveOut ? "Past" : "Current", moveIn: input.moveIn || null, moveOut: input.moveOut || null });
+      if (kind === "Tenant" && !input.moveOut) u.status = "Occupied";
+      audit(`Added ${kind.toLowerCase()} ${input.name} to unit ${u.unitNo}`);
+      return wait(unitDetailOut(u));
+    },
+    updatePerson: (id, kind, personId, input) => {
+      const p = people.find((x) => x.id === personId && x.unitId === id && x.type === kind);
+      if (!p) return fail(404, `${kind} not found.`);
+      if (!input.name.trim()) return failFields({ name: `${kind} name is required.` });
+      Object.assign(p, { name: input.name.trim(), contactNo: input.contactNo, email: input.email, status: input.status, moveIn: input.moveIn || null,
+        moveOut: input.status === "Current" ? null : input.moveOut || TODAY });
+      audit(`Updated ${kind.toLowerCase()} ${p.name} in unit ${unitById(id).unitNo}`);
+      return wait(unitDetailOut(unitById(id)));
+    },
   },
 
   billing: {
@@ -660,16 +797,41 @@ export const mockApi: DataService = {
       if (changed) audit(`Recalculated SOA for unit ${u.unitNo}, billing ${b.month} from current rates`);
       return wait({ changed, detail: billDetail(b) });
     },
-    emailSoas: (month) => {
-      if (!rates.smtpHost || !rates.smtpSender) return fail(400, "Configure SMTP Host and Sender Email under Rates & Rules before sending email.");
-      const n = bills.filter((b) => b.month === month).length;
+    emailSoas: (month, billIds) => {
+      if (!rates.smtpHost || !rates.smtpSender) return fail(409, "Set the SMTP host and sender email under Rates & Rules before sending SOAs.");
+      const n = bills.filter((b) => b.month === month && (!billIds || billIds.includes(b.id))).length;
       audit(`Sent SOA emails for ${month}`);
-      return wait({ sent: n, skipped: 0 });
+      return wait({ sent: n, skipped: 0, failed: 0, errors: [] });
     },
+    preview: (month) => {
+      const res = residential();
+      const billed = new Set(bills.filter((b) => b.month === month).map((b) => b.unitId));
+      const read = new Set(readings.filter((r) => r.month === month).map((r) => r.unitId));
+      return wait({ month, residentialUnits: res.length, alreadyBilled: res.filter((u) => billed.has(u.id)).length, toCreate: res.filter((u) => !billed.has(u.id)).length,
+        readings: res.filter((u) => read.has(u.id)).length, missingReadings: res.filter((u) => !read.has(u.id) && !billed.has(u.id)).map((u) => u.unitNo).slice(0, 50),
+        zeroDuesUnits: [], dueDate: `${month}-08`, closed: false, closedThrough: null });
+    },
+    correctSoa: (billId, input) => {
+      const b = bills.find((x) => x.id === billId);
+      if (!b) return fail(404, "Bill not found.");
+      if (!input.note.trim()) return failFields({ note: "Explain the correction (it is shown on the SOA and kept in the audit log)." });
+      Object.assign(b, { condo: toCents(input.condoDues), parking: toCents(input.parking), storage: toCents(input.storage), water: toCents(input.water),
+        penalty: toCents(input.penalty), previous: toCents(input.previousBalance), dueDate: input.dueDate || b.dueDate, note: input.note.trim(), manual: true });
+      audit(`Manual SOA correction for unit ${unitById(b.unitId).unitNo}, billing ${b.month}`);
+      return wait(billDetail(b));
+    },
+    emailBill: () => (rates.smtpHost && rates.smtpSender ? wait({ sent: 1, skipped: 0, failed: 0, errors: [] }) : fail(409, "Set the SMTP host and sender email under Rates & Rules before sending SOAs.")),
+    emailOverview: (month) => wait({ month, smtpConfigured: Boolean(rates.smtpHost && rates.smtpSender), optedIn: 0,
+      rows: bills.filter((b) => b.month === month).map((b) => ({ billId: b.id, unitNo: unitById(b.unitId).unitNo, status: statusOf(b), recipients: [] })) }),
   },
 
   advances: {
-    list: () => wait([...advances].sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id).map(advanceOut)),
+    list: (q = {}) => {
+      const rows = [...advances].filter((a) => !q.unit || a.unitId === q.unit).sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id).map(advanceOut)
+        .filter((a) => !q.status || (q.status === "open" ? toCents(a.remaining) > 0 : q.status === "used" ? toCents(a.remaining) <= 0 : false));
+      return wait({ advances: rows, totals: { count: rows.length, received: fromCents(rows.reduce((s, a) => s + toCents(a.amount), 0)), remaining: fromCents(rows.reduce((s, a) => s + toCents(a.remaining), 0)) } });
+    },
+    options: () => wait({ units: residential().map((u) => ({ id: u.id, unitNo: u.unitNo, payerName: payerName(u.id), monthlyDues: fromCents(condoCents(u)) })) }),
     record: (input) => {
       if (!unitById(input.unitId)) return fail(400, "Please select a valid unit.");
       if (!isAmount(input.amount) || input.months < 1) return fail(400, "Advance amount and coverage months are required.");
@@ -680,34 +842,67 @@ export const mockApi: DataService = {
       bills.filter((b) => b.unitId === a.unitId && b.month >= a.startMonth).sort((x, y) => x.month.localeCompare(y.month)).forEach(applyAdvances);
       const receipt = issueReceipt(a.unitId, a.date, a.method, a.reference, input.remarks, [{ kind: "advance", refId: a.id, cents: a.amountCents }]);
       audit(`Issued ${orNo(receipt)} - Recorded ${a.months}-month advance condo dues payment for unit ${unitById(a.unitId).unitNo}: ${fromCents(a.amountCents)}`);
-      return wait(advanceOut(a));
+      return wait({ advance: advanceOut(a), receiptNo: orNo(receipt), receiptId: receipt.id });
     },
   },
 
   receipts: {
-    list: ({ from, to, q }) => {
+    ledger: ({ from, to, q, method, status }) => {
       const needle = q.trim().toLowerCase();
-      return wait(receipts.filter((r) => r.date >= from && r.date <= to)
+      const rows = receipts.filter((r) => r.date >= from && r.date <= to)
         .map(officialReceipt)
-        .filter((r) => !needle || [r.receiptNo, r.unitNo, r.reference].some((v) => v.toLowerCase().includes(needle)))
-        .sort((a, b) => b.receiptNo.localeCompare(a.receiptNo)));
+        .filter((r) => (!needle || [r.receiptNo, r.unitNo, r.reference].some((v) => v.toLowerCase().includes(needle)))
+          && (!method || r.method === method) && (!status || (status === "void") === Boolean(r.voided)))
+        .sort((a, b) => b.receiptNo.localeCompare(a.receiptNo));
+      const valid = rows.filter((r) => !r.voided);
+      const sum = (m?: string) => fromCents(valid.filter((r) => !m || r.method === m).reduce((s, r) => s + toCents(r.amount), 0));
+      return wait({ from, to, receipts: rows, total: rows.length, truncated: false, collected: sum(),
+        byMethod: { CASH: sum("CASH"), CHECK: sum("CHECK"), ONLINE: sum("ONLINE") } as Record<T.PaymentMethod, T.Money>, voidCount: rows.length - valid.length });
     },
+    detail: (id) => {
+      const r = receipts.find((x) => x.id === id);
+      if (!r) return fail(404, "Receipt not found.");
+      return wait({ corporation: rates.corporationName, address: rates.address, unit: { id: r.unitId, unitNo: unitById(r.unitId).unitNo },
+        receivedFrom: payerName(r.unitId), receipt: { ...officialReceipt(r), remarks: "", receivedBy: r.receivedBy, backfilled: r.backfilled },
+        voidedBy: "", voidedAt: null, closed: false, canVoid: currentRole === "super_admin" || currentRole === "accounting" });
+    },
+    void: () => fail(409, "Prototype: voiding is only available in the live system."),
   },
 
   water: {
-    list: (month) => wait(readings.filter((r) => r.month === month).map(readingOut).sort((a, b) => a.unitNo.localeCompare(b.unitNo, undefined, { numeric: true }))),
+    month: (month) => {
+      const rows = readings.filter((r) => r.month === month).map(readingOut).sort((a, b) => a.unitNo.localeCompare(b.unitNo, undefined, { numeric: true }));
+      const done = new Set(rows.map((r) => r.unitId));
+      const missing = residential().filter((u) => !done.has(u.id)).map((u) => {
+        const prev = readings.filter((r) => r.unitId === u.id && r.month < month).sort((a, b) => b.month.localeCompare(a.month))[0];
+        return { unitId: u.id, unitNo: u.unitNo, payerName: payerName(u.id), previous: prev?.current ?? 0, previousMonth: prev?.month ?? null };
+      });
+      const unpaid = readings.map(readingOut).filter((r) => !r.paid && toCents(r.amount) > 0);
+      return wait({ month, readings: rows, missing, unpaid, defaultRate: rates.waterRate, autoCompute: rates.waterAutoCompute,
+        totals: { read: rows.length, toRead: missing.length, usage: rows.reduce((s, r) => s + r.usage, 0), amount: fromCents(rows.reduce((s, r) => s + toCents(r.amount), 0)),
+          unpaid: fromCents(unpaid.reduce((s, r) => s + toCents(r.amount), 0)) } });
+    },
+    correct: (id, input) => {
+      const r = readings.find((x) => x.id === id);
+      if (!r) return fail(404, "Water reading not found.");
+      return mockApi.water.save({ ...input, unitId: r.unitId, month: r.month });
+    },
+    pay: () => fail(409, "Prototype: water payments are only available in the live system."),
     previousReading: (unitId, month) => wait(readings.filter((r) => r.unitId === unitId && r.month < month).sort((a, b) => b.month.localeCompare(a.month))[0]?.current ?? 0),
     save: (input) => {
       if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(input.month)) return fail(400, "Invalid reading month.");
-      if (input.current < input.previous) return fail(400, "The current reading can't be lower than the previous reading.");
-      if (!isAmount(input.rate)) return fail(400, "Enter the water rate per cubic meter.");
+      const previous = input.previous === "" ? (readings.filter((x) => x.unitId === input.unitId && x.month < input.month).sort((a, b) => b.month.localeCompare(a.month))[0]?.current ?? 0) : Number(input.previous);
+      const current = Number(input.current);
+      if (current < previous) return failFields({ current: "The current reading can't be lower than the previous reading." });
+      const rate = input.rate === "" ? rates.waterRate : input.rate;
       let r = readingFor(input.unitId, input.month);
+      const created = !r;
       if (!r) readings.push((r = { id: nextReadingId++, unitId: input.unitId, month: input.month, previous: 0, current: 0, rateCents: 0, readingDate: input.readingDate, paidCents: 0 }));
-      Object.assign(r, { previous: input.previous, current: input.current, rateCents: toCents(input.rate), readingDate: input.readingDate });
+      Object.assign(r, { previous, current, rateCents: toCents(rate), readingDate: input.readingDate });
       const bill = bills.find((b) => b.unitId === input.unitId && b.month === input.month);
       if (bill) bill.water = readingCents(r); // the month's bill follows the corrected reading
       audit(`Saved water reading for unit ${unitById(input.unitId).unitNo}, ${input.month}`);
-      return wait(readingOut(r));
+      return wait({ reading: readingOut(r), created, billUpdated: Boolean(bill) });
     },
   },
 
@@ -715,8 +910,11 @@ export const mockApi: DataService = {
     list: () => wait(gatePasses.map(({ unitId: _u, ...p }) => p)),
     issue: (input) => {
       const u = unitByNo(input.unitNo);
-      if (!u) return fail(400, "Unit not found. Use the unit number, e.g. 12-01.");
-      if (!input.name.trim() || !input.purpose.trim()) return fail(400, "Name and purpose are required.");
+      const errors: Record<string, string> = {};
+      if (!u) errors.unitNo = "Enter an existing unit number, e.g. 12-01.";
+      if (!input.name.trim()) errors.name = "Name is required.";
+      if (!input.purpose.trim()) errors.purpose = "Purpose is required.";
+      if (!u || Object.keys(errors).length) return failFields(errors);
       const p = addPass({ ...input, unitNo: u.unitNo, status: "Issued", reviewNote: "", requestedAt: null, requestedBy: null, reviewedBy: actor(), source: "office" });
       audit("Created gate pass");
       const { unitId: _u, ...out } = p;
@@ -724,8 +922,9 @@ export const mockApi: DataService = {
     },
     review: (passId, decision, note) => {
       const p = gatePasses.find((x) => x.id === passId);
-      if (!p || p.status !== "Requested") return fail(409, "That request was not found or was already handled.");
-      if (decision === "reject" && !note.trim()) return fail(400, "Give the resident a reason when rejecting a request.");
+      if (!p) return fail(404, "Request not found.");
+      if (p.status !== "Requested") return fail(409, `This request was already handled (${p.status.toLowerCase()}).`);
+      if (decision === "reject" && !note.trim()) return failFields({ note: "Give the resident a reason when rejecting a request." });
       p.status = decision === "approve" ? "Issued" : "Rejected";
       p.reviewNote = note.trim();
       p.reviewedBy = actor();
@@ -737,24 +936,41 @@ export const mockApi: DataService = {
 
   certificates: {
     list: () => wait([...certificates].sort((a, b) => b.id - a.id)),
+    options: () => wait(units.filter((u) => u.active && u.type !== "PARKING" && u.type !== "STORAGE").map((u) => ({ id: u.id, unitNo: u.unitNo,
+      people: people.filter((p) => p.unitId === u.id).map(({ id, type, name, status, moveIn, moveOut }) => ({ id, type, name, status, moveIn, moveOut })) }))),
     generate: (input) => {
       const person = people.find((p) => p.id === input.personId && p.unitId === input.unitId && p.type === input.personType);
-      if (!person) return fail(400, "Choose the owner or tenant for this certificate.");
-      // Bug D1: the server crashes while saving the certificate (issued_by=current_user.username).
-      if (SIMULATE_D1) return fail(500, "Server error. The error was logged.");
-      const c: T.Certificate = { id: nextCertId, certificateNo: `MC-2026-${String(nextCertId++ + 6).padStart(4, "0")}`, moveType: input.moveType, personType: input.personType, personName: person.name,
+      if (!person) return failFields({ personId: `Choose the ${input.personType.toLowerCase()} of this unit.` });
+      const c: T.Certificate = { id: nextCertId, certificateNo: `CL9-${input.certificateDate.slice(0, 4)}-${String(nextCertId++).padStart(5, "0")}`, moveType: input.moveType, personType: input.personType, personName: person.name,
         unitNo: unitById(input.unitId).unitNo, moveDate: input.moveType === "Move In" ? person.moveIn : person.moveOut, certificateDate: input.certificateDate, issuedBy: actor() };
       certificates.push(c);
       audit(`Generated ${c.moveType} certificate ${c.certificateNo}`);
       return wait(c);
     },
+    detail: (id) => {
+      const c = certificates.find((x) => x.id === id);
+      if (!c) return fail(404, "Certificate not found.");
+      const u = unitByNo(c.unitNo)!;
+      const person = people.find((p) => p.unitId === u.id && p.type === c.personType && p.name === c.personName);
+      return wait({ certificate: c, corporation: rates.corporationName, address: rates.address, unit: { unitNo: u.unitNo, type: u.type, areaSqm: u.areaSqm },
+        person: { contactNo: person?.contactNo ?? "", email: person?.email ?? "", representative: false } });
+    },
   },
 
   expenses: {
-    list: (month) => wait(expenses.filter((e) => e.date.startsWith(month)).sort((a, b) => b.date.localeCompare(a.date))),
+    list: (month) => {
+      const rows = expenses.filter((e) => e.date.startsWith(month)).sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id);
+      const by: Record<string, number> = {};
+      rows.forEach((e) => (by[e.category] = (by[e.category] ?? 0) + toCents(e.amount)));
+      return wait({ month, expenses: rows, total: fromCents(rows.reduce((t, e) => t + toCents(e.amount), 0)),
+        byCategory: Object.fromEntries(Object.keys(by).sort().map((k) => [k, fromCents(by[k])])), categories: [...new Set(expenses.map((e) => e.category))].sort() });
+    },
     add: (input) => {
-      if (!input.description.trim() || !input.category.trim()) return fail(400, "Category and description are required.");
-      if (!isAmount(input.amount)) return fail(400, "Enter the amount.");
+      const errors: Record<string, string> = {};
+      if (!input.category.trim()) errors.category = "Category is required.";
+      if (!input.description.trim()) errors.description = "Description is required.";
+      if (!isAmount(input.amount)) errors.amount = "Enter an amount greater than zero.";
+      if (Object.keys(errors).length) return failFields(errors);
       const e = { ...input, id: nextExpenseId++, amount: fromCents(toCents(input.amount)) };
       expenses.push(e);
       audit(`Recorded expense: ${e.category} ${e.amount}`);
@@ -763,25 +979,71 @@ export const mockApi: DataService = {
   },
 
   maintenance: {
-    list: () => wait(tickets.map(({ unitId: _u, ...t }) => t)),
+    board: () => wait({ tickets: [...tickets].sort((a, b) => b.id - a.id), categories: TICKET_CATEGORIES, priorities: TICKET_PRIORITIES, statuses: ["Open", "In Progress", "Resolved", "Closed"] as T.TicketStatus[],
+      vendors: vendors.filter((v) => v.status === "Active").map(({ id, name, serviceType }) => ({ id, name, serviceType })),
+      units: units.filter((u) => u.active).map(({ id, unitNo }) => ({ id, unitNo })) }),
+    create: (input) => {
+      const u = units.find((x) => x.id === input.unitId && x.active);
+      const errors: Record<string, string> = {};
+      if (!u) errors.unitId = "Choose the unit.";
+      if (!input.title.trim()) errors.title = "Title is required.";
+      if (!input.description.trim()) errors.description = "Description is required.";
+      if (!u || Object.keys(errors).length) return failFields(errors);
+      const t = { ...input, id: nextTicketId, unitId: u.id, unitNo: u.unitNo, ticketNo: `MT-${TODAY.replace(/-/g, "")}-${String(nextTicketId++).padStart(5, "0")}`,
+        status: "Open" as const, assignedTo: "", vendorId: null, vendor: "", resolution: "", requestedAt: nowUtc(), source: "office" as const };
+      tickets.unshift(t);
+      audit(`Created maintenance ticket ${t.ticketNo} for unit ${u.unitNo}`);
+      return wait(t);
+    },
     update: (id, input) => {
       const t = tickets.find((x) => x.id === id);
       if (!t) return fail(404, "Maintenance ticket not found.");
-      Object.assign(t, input);
+      const v = input.vendorId ? vendors.find((x) => x.id === input.vendorId) : null;
+      if (input.vendorId && !v) return failFields({ vendorId: "Choose a vendor from the list." });
+      Object.assign(t, input, { vendor: v?.name ?? "" });
       audit(`Updated maintenance ticket ${t.ticketNo}`);
-      const { unitId: _u, ...out } = t;
-      return wait(out);
+      return wait(t);
     },
   },
 
-  vendors: { list: () => wait(vendors) },
-  documents: { list: () => wait(documents) },
+  vendors: {
+    list: () => wait([...vendors].sort((a, b) => a.name.localeCompare(b.name))),
+    add: (input) => {
+      if (!input.name.trim()) return failFields({ name: "Vendor name is required." });
+      if (input.email && !input.email.includes("@")) return failFields({ email: "Enter a valid email address." });
+      const v = { ...input, id: nextVendorId++ };
+      vendors.push(v);
+      audit(`Created vendor: ${v.name}`);
+      return wait(v);
+    },
+    update: (id, input) => {
+      const v = vendors.find((x) => x.id === id);
+      if (!v) return fail(404, "Vendor not found.");
+      if (!input.name.trim()) return failFields({ name: "Vendor name is required." });
+      if (input.email && !input.email.includes("@")) return failFields({ email: "Enter a valid email address." });
+      Object.assign(v, input);
+      audit(`Updated vendor: ${v.name} (${v.status})`);
+      return wait(v);
+    },
+  },
+  documents: {
+    list: () => wait({ documents: [...documents].sort((a, b) => (b.addedAt ?? "").localeCompare(a.addedAt ?? "")), units: units.filter((u) => u.active).map(({ id, unitNo }) => ({ id, unitNo })) }),
+    add: (input) => {
+      if (!input.title.trim()) return failFields({ title: "Title is required." });
+      const u = input.audience === "unit" ? units.find((x) => x.id === input.unitId) : null;
+      if (input.audience === "unit" && !u) return failFields({ unitId: "Choose the unit." });
+      const d: T.DocumentRecord = { ...input, id: nextDocId++, category: input.category.trim() || "General", unitId: u?.id ?? null, unitNo: u?.unitNo ?? null, addedAt: TODAY, addedBy: actor() };
+      documents.push(d);
+      audit(`Added document record: ${d.title}`);
+      return wait(d);
+    },
+  },
 
   announcements: {
     list: () => wait([...announcements].sort((a, b) => (b.publishDate ?? "").localeCompare(a.publishDate ?? ""))),
     publish: (input) => {
       if (!input.title.trim() || !input.message.trim()) return fail(400, "Title and message are required.");
-      const a: T.Announcement = { id: nextNoticeId++, ...input, publishDate: TODAY, published: true, createdBy: actor() };
+      const a: T.Announcement = { id: nextNoticeId++, ...input, publishDate: TODAY, createdBy: actor() };
       announcements.push(a);
       audit(`Published announcement "${a.title}"`);
       return wait(a);
@@ -889,18 +1151,105 @@ export const mockApi: DataService = {
       audit(`Deleted user ${u.username} (${u.role})`);
       return wait(undefined);
     },
-    residentAccounts: () => wait(residentAccounts),
-    auditLogs: (q) => {
+    residentAccounts: ({ q, status, page, perPage }) => {
+      const all = residentAccounts.map(residentRow).sort((a, b) => a.username.localeCompare(b.username));
+      const statuses: T.ResidentAccountStatus[] = ["active", "ended", "inactive", "unlinked"];
+      const counts = { ...Object.fromEntries(statuses.map((st) => [st, all.filter((a) => a.status === st).length])),
+        notLinkedToPerson: all.filter((a) => a.unit && !a.linked).length } as T.ResidentAccountPage["counts"];
       const needle = q.trim().toLowerCase();
-      return wait(auditLogs.filter((a) => !needle || a.action.toLowerCase().includes(needle) || a.username.toLowerCase().includes(needle)).slice(0, 300));
+      const rows = all.filter((a) => (!needle || [a.username, a.displayName, a.unit?.unitNo ?? "", a.linkedName ?? ""].some((v) => v.toLowerCase().includes(needle)))
+        && (!status || a.status === status));
+      return wait({ accounts: rows.slice((page - 1) * perPage, page * perPage), total: rows.length, page, perPage, counts, minPasswordLength: 10 });
+    },
+    residentAccountOptions: () => wait({
+      units: units.filter((u) => u.active).sort((a, b) => a.unitNo.localeCompare(b.unitNo, undefined, { numeric: true })).map((u) => ({
+        id: u.id, unitNo: u.unitNo,
+        people: people.filter((p) => p.unitId === u.id && p.status === "Current").map((p) => ({ id: p.id, personType: p.type, name: p.name,
+          account: residentAccounts.find((a) => a.active && a.personType === p.type && a.personId === p.id)?.username ?? null })),
+      })),
+      personTypes: ["Owner", "Tenant"] as ("Owner" | "Tenant")[], minPasswordLength: 10,
+    }),
+    createResidentAccount: (input) => {
+      const fields: Record<string, string> = {};
+      if (!/^[A-Za-z0-9._-]{3,80}$/.test(input.username)) fields.username = "Use 3–80 letters, numbers, dots, dashes or underscores.";
+      else if ([...users, ...residentAccounts].some((u) => u.username.toLowerCase() === input.username.toLowerCase())) fields.username = "That username is already taken.";
+      if (input.password.length < 10) fields.password = "Use at least 10 characters.";
+      const name = residentLinkErrors(input, fields, null);
+      if (Object.keys(fields).length) return failFields(fields);
+      const a: MockResidentAccount = { id: nextResidentAccountId++, username: input.username, unitId: input.unitId, personType: input.personType,
+        personId: input.personId, displayName: name, active: true, mustChangePassword: true, createdAt: `${nowUtc()}Z` };
+      residentAccounts.push(a);
+      audit(`Created resident portal user ${a.username} for unit ${units.find((u) => u.id === a.unitId)!.unitNo}`);
+      return wait(residentRow(a));
+    },
+    updateResidentAccount: (userId, input) => {
+      const a = residentAccounts.find((x) => x.id === userId);
+      if (!a) return fail(404, "Resident account not found.");
+      const fields: Record<string, string> = {};
+      const link = { unitId: input.unitId ?? a.unitId ?? undefined, personType: input.personType ?? a.personType,
+        personId: "personId" in input ? input.personId ?? null : a.personId, displayName: input.displayName ?? a.displayName };
+      const name = residentLinkErrors(link, fields, a.id, a);
+      if ((input.reason ?? "").length > 500) fields.reason = "Keep the note under 500 characters.";
+      if (Object.keys(fields).length) return failFields(fields);
+      const next = { unitId: link.unitId!, personType: link.personType, personId: link.personId, displayName: name, active: input.active ?? a.active };
+      if (next.unitId === a.unitId && next.personType === a.personType && next.personId === a.personId && next.displayName === a.displayName && next.active === a.active)
+        return fail(400, "Nothing to change: the account is already like this.");
+      const parts = [next.active !== a.active ? (next.active ? "reactivated" : "deactivated") : "", next.unitId !== a.unitId ? "unit changed" : "",
+        next.personId !== a.personId || next.personType !== a.personType ? "link changed" : "", next.displayName !== a.displayName ? "name changed" : ""].filter(Boolean);
+      Object.assign(a, next);
+      audit(`Updated resident portal user ${a.username}: ${parts.join(", ")}`);
+      return wait(residentRow(a));
+    },
+    resetResidentPassword: (userId, newPassword) => {
+      const a = residentAccounts.find((x) => x.id === userId);
+      if (!a) return fail(404, "Resident account not found.");
+      if (newPassword.length < 10) return failFields({ newPassword: "Use at least 10 characters." });
+      a.mustChangePassword = true;
+      audit(`Reset password for resident portal user ${a.username}`);
+      return wait(undefined);
+    },
+    auditLogs: ({ page, perPage, ...filter }) => {
+      const rows = filterAudit(filter);
+      return wait({ entries: rows.slice((page - 1) * perPage, page * perPage), total: rows.length, page, perPage,
+        users: [...new Set(auditLogs.map((a) => a.username))].sort() });
+    },
+    exportAuditLogs: async (filter) => {
+      const cell = (v: string) => `"${(/^[=+\-@]/.test(v) ? `'${v}` : v).replace(/"/g, '""')}"`;
+      const csv = filterAudit(filter).map((a) => [a.at.replace("T", " ").slice(0, 19), a.username, a.action].map(cell).join(",")).join("\n");
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(new Blob([`﻿"When (UTC, prototype)","User","Action"\n${csv}\n`], { type: "text/csv" }));
+      link.download = "cityland9-audit-log-prototype.csv";
+      link.click();
+      URL.revokeObjectURL(link.href);
     },
     rates: () => wait(rates),
     saveRates: (input) => {
-      const { smtpPassword, ...rest } = input;
-      Object.assign(rates, rest, { smtpPasswordSet: rates.smtpPasswordSet || smtpPassword.length > 0 });
+      const { smtpPassword, smtpPasswordClear, ...rest } = input;
+      // Same checks as backend/app/routes/rates.py (the ones the form can trigger).
+      const fields: Record<string, string> = {};
+      const num = (v: string, max = 100000) => /^\d{1,6}(\.\d{1,4})?$/.test(v.trim()) && Number(v) <= max;
+      (["studio", "oneBed", "twoBed", "threeBed"] as const).forEach((k) => { if (!num(rest.ratesPerSqm[k])) fields[`ratesPerSqm.${k}`] = "Enter a rate, e.g. 85.00."; });
+      if (!num(rest.parkingRatePerSqm)) fields.parkingRatePerSqm = "Enter a rate, e.g. 60.00.";
+      if (!num(rest.storageRatePerSqm)) fields.storageRatePerSqm = "Enter a rate, e.g. 45.00.";
+      if (!num(rest.waterRate)) fields.waterRate = "Enter a rate, e.g. 50.00.";
+      if (!num(rest.penaltyRate, 100)) fields.penaltyRate = "Penalty rate (%) can't be more than 100.";
+      if (!rest.corporationName.trim()) fields.corporationName = "Corporation name is required (it is printed on every SOA).";
+      if (rest.smtpPort && !/^\d+$/.test(rest.smtpPort)) fields.smtpPort = "SMTP port must be a number from 1 to 65535, e.g. 587.";
+      if (Object.keys(fields).length) return failFields(fields);
+      Object.assign(rates, rest, { smtpPasswordSet: smtpPasswordClear ? false : rates.smtpPasswordSet || smtpPassword.length > 0 });
       audit("Updated Rates & Rules");
       return wait(rates);
     },
     collections: (months) => wait(Array.from({ length: months }, (_, i) => collectionsFor(addMonths(THIS_MONTH, i - months + 1)))),
+    system: () => wait({
+      backup: { ok: true, status: "ok", ageHours: 14.2, detail: null, maxAgeHours: 26 },
+      database: { engine: "MySQL / MariaDB" }, export: { url: "/database/export.xlsx" },
+      import: { maxUploadMb: 20, maxUnpackedMb: 200, maxRowsPerSheet: 50000, allowed: true },
+    }),
+    importDatabase: (file) => {
+      if (!/\.(xlsx|xlsm)$/i.test(file.name)) return fail(400, "Please select an Excel .xlsx file.");
+      audit(`Imported database from Excel (optimized): ${file.name}`);
+      return wait({ message: "Prototype: nothing was imported (mock data).", counts: {} });
+    },
   },
 };

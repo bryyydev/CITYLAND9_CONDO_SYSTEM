@@ -15,12 +15,18 @@ import Login from "./pages/Login";
 import { AnnouncementsPage, CertificatesPage, DocumentsPage, ExpensesPage, GatePassesPage, MaintenancePage, VendorsPage } from "./pages/operations/OperationsPages";
 import BillingPage from "./pages/property/Billing";
 import { AdvancesWorkspace, ReceiptsLedger } from "./pages/property/Ledger";
-import { AdminDashboard, ReportsPage, UnitsPage, WaterReadingsPage } from "./pages/property/PropertyPages";
+import UnitsPage from "./pages/property/UnitsPage";
+import WaterPage from "./pages/property/WaterPage";
+import { AdminDashboard, ReportsPage } from "./pages/property/PropertyPages";
 import {
   ResidentGatePass, ResidentHome, ResidentMaintenance, ResidentNotices, ResidentPayments, ResidentProfilePage,
   ResidentReceipt, ResidentSoaDetail, ResidentSoaList, ResidentWater,
 } from "./pages/resident/ResidentPages";
-import { AuditLogsPage, ModulesLauncher, ResidentAccountsPage, RatesRulesPage, SystemDashboard, SystemSettingsPage } from "./pages/system/SystemPages";
+import ResidentAccountsPage from "./pages/system/ResidentAccountsPage";
+import RatesRulesPage from "./pages/system/RatesRulesPage";
+import AuditLogsPage from "./pages/system/AuditLogsPage";
+import SettingsPage from "./pages/system/SettingsPage";
+import { ModulesLauncher, SystemDashboard } from "./pages/system/SystemPages";
 import UsersPage from "./pages/system/UsersPage";
 import WorkspaceHome from "./pages/WorkspaceHome";
 import { IS_MOCK } from "./services/api";
@@ -28,8 +34,8 @@ import type { Role } from "./services/types";
 
 const PAGES: Partial<Record<ModuleId, ReactNode>> = {
   modules: <ModulesLauncher />,
-  users: <UsersPage />, residentAccounts: <ResidentAccountsPage />, ratesRules: <RatesRulesPage />, auditLogs: <AuditLogsPage />, systemSettings: <SystemSettingsPage />,
-  units: <UnitsPage />, billing: <BillingPage />, payments: <ReceiptsLedger />, advances: <AdvancesWorkspace />, water: <WaterReadingsPage />, reports: <ReportsPage variant="property" />,
+  users: <UsersPage />, residentAccounts: <ResidentAccountsPage />, ratesRules: <RatesRulesPage />, auditLogs: <AuditLogsPage />, systemSettings: <SettingsPage />,
+  units: <UnitsPage />, billing: <BillingPage />, payments: <ReceiptsLedger />, advances: <AdvancesWorkspace />, water: <WaterPage />, reports: <ReportsPage variant="property" />,
   billingAdvances: <BillingAdvancesPage />, collections: <CollectionsPage />, financialReports: <FinancialReportsPage />,
   certificates: <CertificatesPage />, gatePasses: <GatePassesPage />, expenses: <ExpensesPage />, maintenance: <MaintenancePage />, vendors: <VendorsPage />, documents: <DocumentsPage />, announcements: <AnnouncementsPage />,
   employees: <EmployeesPage />, attendance: <AttendancePage />, attendanceEntry: <AttendanceEntryPage />, leave: <LeavePage />, payroll: <PayrollPage />, taxRules: <TaxRulesPage />,
@@ -45,6 +51,11 @@ const RESIDENT_MOVED: Record<string, string> = { soa: "my-soa", payments: "payme
 const STAFF_MOVED: Record<string, string> = {
   receipts: "payments", water: "water-readings", "move-certificate": "certificates", "gate-pass": "gate-passes", audit: "audit-logs", settings: "rates-rules",
   "resident-users": "resident-accounts", "billing/advance": "advances", "employees/attendance": "attendance", "employees/leave": "leave", "employees/payroll": "payroll", "employees/hr-settings": "tax-rules",
+};
+
+/** The same screen under another name in one workspace (Accounting has combined finance screens). */
+const ROLE_MOVED: Partial<Record<Role, Record<string, string>>> = {
+  accounting: { billing: "billing-advances", payments: "collections", advances: "billing-advances" },
 };
 
 function modulesFor(role: Role): ModuleId[] {
@@ -72,9 +83,12 @@ function Dashboard({ role }: { role: Role }) {
 
 function MovedOrMissing({ role }: { role: Role }) {
   const rest = useParams()["*"] ?? "";
+  const { search } = useLocation();
   const cfg = ROLES[role];
-  const hit = Object.entries(role === "resident" ? RESIDENT_MOVED : STAFF_MOVED).sort((a, b) => b[0].length - a[0].length).find(([old]) => rest === old || rest.startsWith(`${old}/`));
-  if (hit) return <Navigate to={`/${cfg.portal}/${hit[1]}${rest.slice(hit[0].length)}`} replace />;
+  const moved = { ...(role === "resident" ? RESIDENT_MOVED : STAFF_MOVED), ...(ROLE_MOVED[role] ?? {}) };
+  const hit = Object.entries(moved).sort((a, b) => b[0].length - a[0].length).find(([old]) => rest === old || rest.startsWith(`${old}/`));
+  // Keep the query (?bill=, ?receipt=, ?moved=): links from the classic screens open the right record.
+  if (hit) return <Navigate to={`/${cfg.portal}/${hit[1]}${rest.slice(hit[0].length)}${search}`} replace />;
   return <NotFound home={`/${cfg.portal}`} />;
 }
 

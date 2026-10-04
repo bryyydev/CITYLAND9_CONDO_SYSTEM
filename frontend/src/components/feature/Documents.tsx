@@ -48,6 +48,9 @@ export const SoaDocument = forwardRef<HTMLElement, { corporation: string; unitNo
           {toCents(c.storage) > 0 && <Line label="Storage" amount={c.storage} detail={c.storageIncluded ? undefined : `Not included in this total (storage is charged from ${monthLabel(c.storageFrom)})`} />}
           <Line label={`${month} WATER`} amount={c.water}
             detail={c.waterPaidSeparately ? "Paid separately, not included in the total" : c.waterUsage !== null ? `${c.waterUsage} m³ × ${peso(c.waterRate)}/m³` : "No reading for this period"} />
+          {toCents(c.other ?? "0") !== 0 && <Line label="Other charges" amount={c.other!} />}
+          {toCents(c.adjustment ?? "0") > 0 && <Line label="Adjustment" amount={c.adjustment!} />}
+          {toCents(c.adjustment ?? "0") < 0 && <Line label="Adjustment" detail="Credit" amount={c.adjustment!.replace("-", "")} negative />}
           {toCents(c.previousBalance) > 0 && <Line label="Previous balance" detail="Unpaid from earlier statements" amount={c.previousBalance} />}
           {toCents(c.penalty) > 0 && <Line label="Penalty" detail="Late payment" amount={c.penalty} />}
           {toCents(c.advanceApplied) > 0 && <Line label="Advance payment applied" amount={c.advanceApplied} negative />}
@@ -88,7 +91,7 @@ export function ReceiptDocument({ corporation, address, unitNo, receivedFrom, re
       {r.voided && <p className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-2 font-semibold text-red-800">VOID — {r.voidReason || "this receipt was cancelled"}. The payment it recorded was reversed.</p>}
       <header className="flex items-start justify-between gap-4 border-b-[3px] border-brand-600 pb-3">
         <div><h2 className="text-[18px] font-bold text-ink-900">{corporation}</h2>{address && <p className="text-ink-500">{address}</p>}</div>
-        <div className="text-right"><p className="text-[11px] font-semibold tracking-[0.12em] text-ink-500">OFFICIAL RECEIPT</p><p className="font-display text-[18px] font-bold text-ink-900">{r.receiptNo}</p></div>
+        <div className="text-right"><p className="text-[11px] font-semibold tracking-[0.12em] text-ink-500">OFFICIAL RECEIPT</p><p className="font-display text-[18px] font-bold whitespace-nowrap text-ink-900">{r.receiptNo}</p></div>
       </header>
       <Meta items={[["RECEIVED FROM", receivedFrom || "—"], ["UNIT", unitNo], ["DATE", dateLabel(r.date)], ["AMOUNT", peso(r.amount)]]} />
       <p>Payment method: <b>{r.method}</b>{r.reference && <> · Ref. {r.reference}</>}</p>

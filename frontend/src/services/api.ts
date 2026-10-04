@@ -35,6 +35,7 @@ export interface DataService {
     profile(unitId: number): Promise<T.ResidentProfile>;
     updateContact(unitId: number, input: { contactNo: string; email: string }): Promise<T.ResidentProfile>;
     notices(): Promise<T.Notice[]>;
+    documents(unitId: number): Promise<T.ResidentDocument[]>;
   };
   dashboards: {
     property(): Promise<T.PropertyDashboard>;
@@ -43,8 +44,16 @@ export interface DataService {
     system(): Promise<T.SystemDashboard>;
   };
   units: {
+    /** Prototype only (mock pages that still use the simple unit list). */
     list(): Promise<T.Unit[]>;
     people(unitId: number): Promise<T.UnitPerson[]>;
+    page(query: T.UnitQuery): Promise<T.UnitPage>;
+    options(): Promise<T.UnitOptions>;
+    detail(unitId: number): Promise<T.UnitDetail>;
+    create(input: T.UnitCreate): Promise<T.UnitDetail>;
+    update(unitId: number, input: T.UnitInput): Promise<T.UnitDetail>;
+    addPerson(unitId: number, kind: "Owner" | "Tenant", input: T.PersonInput): Promise<T.UnitDetail>;
+    updatePerson(unitId: number, kind: "Owner" | "Tenant", personId: number, input: T.PersonInput): Promise<T.UnitDetail>;
   };
   billing: {
     list(month: T.Month): Promise<T.BillRow[]>;
@@ -52,19 +61,31 @@ export interface DataService {
     generate(month: T.Month): Promise<T.GenerateBillsResult>;
     recordPayment(billId: number, input: T.PaymentInput): Promise<T.RecordPaymentResult>;
     recalculate(billId: number): Promise<{ changed: boolean; detail: T.BillDetail }>;
-    emailSoas(month: T.Month): Promise<{ sent: number; skipped: number }>;
+    /** Email the month's SOAs: all bills, or only `billIds`. */
+    emailSoas(month: T.Month, billIds?: number[]): Promise<T.SoaEmailResult>;
+    preview(month: T.Month): Promise<T.GeneratePreview>;
+    correctSoa(billId: number, input: T.SoaCorrection): Promise<T.BillDetail>;
+    emailBill(billId: number): Promise<T.SoaEmailResult>;
+    emailOverview(month: T.Month): Promise<T.SoaEmailOverview>;
   };
   advances: {
-    list(): Promise<T.AdvancePayment[]>;
-    record(input: T.AdvanceInput): Promise<T.AdvancePayment>;
+    list(query?: { unit?: number; status?: "" | "open" | "used" | "reversed" }): Promise<T.AdvanceList>;
+    options(): Promise<{ units: T.AdvanceUnitOption[] }>;
+    record(input: T.AdvanceInput): Promise<{ advance: T.AdvancePayment; receiptNo: string; receiptId: number }>;
   };
   receipts: {
-    list(range: { from: T.IsoDate; to: T.IsoDate; q: string }): Promise<T.OfficialReceipt[]>;
+    ledger(query: T.ReceiptQuery): Promise<T.ReceiptLedger>;
+    detail(receiptId: number): Promise<T.OfficialReceiptDetail>;
+    /** Void a receipt (reason required, one void per form token); its payments are reversed. */
+    void(receiptId: number, reason: string, formToken: string): Promise<T.OfficialReceiptDetail>;
   };
   water: {
-    list(month: T.Month): Promise<T.WaterReadingAdmin[]>;
+    month(month: T.Month): Promise<T.WaterMonth>;
     previousReading(unitId: number, month: T.Month): Promise<number>;
-    save(input: T.WaterReadingInput): Promise<T.WaterReadingAdmin>;
+    /** Create or correct the unit's reading for the month. */
+    save(input: T.WaterReadingInput): Promise<{ reading: T.WaterReadingAdmin; created: boolean; billUpdated: boolean }>;
+    correct(readingId: number, input: Omit<T.WaterReadingInput, "unitId" | "month">): Promise<{ reading: T.WaterReadingAdmin; created: boolean; billUpdated: boolean }>;
+    pay(readingId: number, input: T.WaterPaymentInput): Promise<{ reading: T.WaterReadingAdmin; receiptNo: string; receiptId: number; applied: T.Money }>;
   };
   gatePasses: {
     list(): Promise<T.AdminGatePass[]>;
@@ -73,21 +94,31 @@ export interface DataService {
   };
   certificates: {
     list(): Promise<T.Certificate[]>;
+    options(): Promise<T.CertificateUnit[]>;
     generate(input: T.CertificateInput): Promise<T.Certificate>;
+    detail(id: number): Promise<T.CertificatePrint>;
   };
   expenses: {
-    list(month: T.Month): Promise<T.Expense[]>;
+    list(month: T.Month): Promise<T.ExpenseMonth>;
     add(input: Omit<T.Expense, "id">): Promise<T.Expense>;
   };
   maintenance: {
-    list(): Promise<T.MaintenanceTicket[]>;
+    board(): Promise<T.MaintenanceBoard>;
+    create(input: T.TicketInput): Promise<T.MaintenanceTicket>;
     update(id: number, input: T.TicketUpdate): Promise<T.MaintenanceTicket>;
   };
-  vendors: { list(): Promise<T.Vendor[]> };
-  documents: { list(): Promise<T.DocumentRecord[]> };
+  vendors: {
+    list(): Promise<T.Vendor[]>;
+    add(input: T.VendorInput): Promise<T.Vendor>;
+    update(id: number, input: T.VendorInput): Promise<T.Vendor>;
+  };
+  documents: {
+    list(): Promise<{ documents: T.DocumentRecord[]; units: { id: number; unitNo: string }[] }>;
+    add(input: T.DocumentInput): Promise<T.DocumentRecord>;
+  };
   announcements: {
     list(): Promise<T.Announcement[]>;
-    publish(input: { title: string; message: string; audience: string }): Promise<T.Announcement>;
+    publish(input: { title: string; message: string; audience: string; published: boolean }): Promise<T.Announcement>;
   };
   hr: {
     employees(): Promise<T.Employee[]>;
@@ -106,11 +137,20 @@ export interface DataService {
     resetUserPassword(userId: number, newPassword: string): Promise<void>;
     updateUser(userId: number, input: T.UserUpdate): Promise<T.UserAccount>;
     deleteUser(userId: number): Promise<void>;
-    residentAccounts(): Promise<T.ResidentAccount[]>;
-    auditLogs(q: string): Promise<T.AuditLog[]>;
+    residentAccounts(query: T.ResidentAccountQuery): Promise<T.ResidentAccountPage>;
+    residentAccountOptions(): Promise<T.ResidentAccountOptions>;
+    createResidentAccount(input: T.ResidentAccountLink & { username: string; password: string }): Promise<T.ResidentAccount>;
+    updateResidentAccount(userId: number, input: T.ResidentAccountUpdate): Promise<T.ResidentAccount>;
+    resetResidentPassword(userId: number, newPassword: string): Promise<void>;
+    auditLogs(query: T.AuditLogQuery): Promise<T.AuditLogPage>;
+    /** Download the filtered audit log as CSV (the whole result, not just the current page). */
+    exportAuditLogs(query: Omit<T.AuditLogQuery, "page" | "perPage">): Promise<void>;
     rates(): Promise<T.RatesAndRules>;
     saveRates(input: T.RatesAndRulesUpdate): Promise<T.RatesAndRules>;
     collections(months: number): Promise<T.CollectionSummary[]>;
+    system(): Promise<T.SystemOverview>;
+    /** Import an Excel workbook (a database backup is taken first; nothing is imported if it fails). */
+    importDatabase(file: File): Promise<T.ImportResult>;
   };
 }
 

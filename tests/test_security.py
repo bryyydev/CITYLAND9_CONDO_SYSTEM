@@ -52,8 +52,14 @@ def count(app_module, model, **filters):
 
 
 # ------------------------------------------------------------------ CSRF (classic screens)
+
+def _api_csrf(client):
+    """Send the session's API CSRF token with the client's requests (the React app does the same)."""
+    client.environ_base["HTTP_X_CSRFTOKEN"] = client.get("/api/auth/csrf").get_json()["csrfToken"]
+    return client
+
 def test_classic_forms_get_a_csrf_token(superadmin):
-    html = superadmin.get("/gate-pass").get_data(as_text=True)
+    html = superadmin.get("/change-password").get_data(as_text=True)
     assert html.count('name="csrf_token"') >= html.lower().count('method="post"') >= 1
 
 
@@ -70,12 +76,21 @@ def test_classic_post_without_valid_token_is_rejected_and_changes_nothing(app_mo
 
 
 def test_classic_post_with_form_token_works(app_module, superadmin):
+    # The token is accepted: the form is processed (and refuses the wrong current password) instead
+    # of failing with "Form expired". Nothing is changed.
     superadmin.auto_csrf = False
     token = superadmin.csrf_token()
+    resp = superadmin.post("/change-password", data={"current_password": "not-it", "new_password": "Whatever-Pass-91",
+                                                     "confirm_password": "Whatever-Pass-91", "csrf_token": token})
+    assert resp.status_code == 302 and resp.headers["Location"].endswith("/change-password")
+
+
+def test_classic_page_moved_to_react_changes_nothing(app_module, superadmin):
     before = count(app_module, app_module.Expense)
-    superadmin.post("/expenses", data={"expense_date": "2026-10-01", "category": "Supplies", "description": "with token",
-                                       "amount": "10", "csrf_token": token})
-    assert count(app_module, app_module.Expense) == before + 1
+    resp = superadmin.post("/expenses", data={"expense_date": "2026-10-01", "category": "Supplies", "description": "old tab",
+                                              "amount": "10"})
+    assert resp.status_code == 303 and "moved=form" in resp.headers["Location"]
+    assert count(app_module, app_module.Expense) == before
 
 
 def test_legacy_login_post_requires_csrf(app_module):
@@ -108,7 +123,7 @@ def test_deactivated_account_loses_its_open_sessions(app_module, temp_account):
     api, _ = api_login(app_module, "sec_staff", "Sec-Staff-Pass-1")
     classic, _ = login(app_module, "sec_staff", "Sec-Staff-Pass-1")
     assert api.get("/api/auth/me").status_code == 200
-    assert classic.get("/expenses").status_code == 200
+    assert classic.get("/expenses").headers["Location"] == "/app/staff/expenses"   # signed in: sent on to the React page
     with app_module.app.app_context():
         app_module.db.session.get(app_module.User, temp_account).active = False
         app_module.db.session.commit()
@@ -131,7 +146,7 @@ def test_admin_reset_ends_sessions_and_forces_new_password(app_module, temp_acco
     assert fresh.post("/api/auth/password", json={"currentPassword": "Temp-Reset-Pass-9", "newPassword": "My-Own-Pass-55"}).status_code == 204
     me = fresh.get("/api/auth/me").get_json()["user"]
     assert me["mustChangePassword"] is False
-    assert fresh.get("/expenses").status_code == 200
+    assert fresh.get("/expenses").headers["Location"] == "/app/staff/expenses"
 
 
 def test_own_password_change_keeps_this_session_and_ends_others(app_module, temp_account):
@@ -256,20 +271,21 @@ def test_debugger_refused_on_network_address(tmp_path):
 
 # ------------------------------------------------------------------ SMTP password
 def test_smtp_password_is_encrypted_and_never_rendered(app_module, superadmin):
+    # Rates & Rules (incl. SMTP) moved to the React app: /api/admin/rates. Same rules as before.
     m = app_module
-    page = superadmin.get("/settings").get_data(as_text=True)
-    form = {k: v for k, v in [("smtp_host", "mail.lan"), ("smtp_sender", "soa@cityland9.ph"), ("smtp_password", "Mail-Secret-991")]}
-    superadmin.post("/settings", data=form)
+    api = _api_csrf(superadmin)
+    assert api.put("/api/admin/rates", json={"smtpHost": "mail.lan", "smtpSender": "soa@cityland9.ph",
+                                             "smtpPassword": "Mail-Secret-991"}).status_code == 200
     with m.app.app_context():
         stored = m.Setting.query.filter_by(key="smtp_password").first().value
         assert stored.startswith("enc:v1:") and "Mail-Secret-991" not in stored
         assert m.get_smtp_password() == "Mail-Secret-991"
-    page = superadmin.get("/settings").get_data(as_text=True)
-    assert "Mail-Secret-991" not in page and stored not in page and "A password is saved" in page
-    superadmin.post("/settings", data={"smtp_host": "mail.lan", "smtp_password": ""})          # blank keeps it
+    body = api.get("/api/admin/rates").get_data(as_text=True)
+    assert "Mail-Secret-991" not in body and stored not in body and '"smtpPasswordSet":true' in body.replace(" ", "")
+    api.put("/api/admin/rates", json={"smtpHost": "mail.lan", "smtpPassword": ""})          # blank keeps it
     with m.app.app_context():
         assert m.get_smtp_password() == "Mail-Secret-991"
-    superadmin.post("/settings", data={"smtp_host": "mail.lan", "smtp_password_clear": "1"})   # explicit removal
+    api.put("/api/admin/rates", json={"smtpHost": "mail.lan", "smtpPasswordClear": True})   # explicit removal
     with m.app.app_context():
         assert m.get_smtp_password() == ""
 
@@ -316,15 +332,17 @@ def test_health_and_readiness(app_module):
 def test_upload_size_limit(app_module, superadmin):
     import io
     big = io.BytesIO(b"0" * (app_module.app.config["MAX_CONTENT_LENGTH"] + 1))
-    resp = superadmin.post("/database/import", data={"excel_file": (big, "huge.xlsx")}, content_type="multipart/form-data")
-    assert resp.status_code in (302, 413)
+    resp = _api_csrf(superadmin).post("/api/admin/system/import", data={"file": (big, "huge.xlsx")}, content_type="multipart/form-data")
+    assert resp.status_code == 413
 
 
 def test_non_workbook_upload_is_rejected(app_module, superadmin):
     import io
     with app_module.app.app_context():
         units_before = app_module.Unit.query.count()
-    superadmin.post("/database/import", data={"excel_file": (io.BytesIO(b"not a zip"), "fake.xlsx")}, content_type="multipart/form-data")
+    resp = _api_csrf(superadmin).post("/api/admin/system/import", data={"file": (io.BytesIO(b"not a zip"), "fake.xlsx")},
+                                      content_type="multipart/form-data")
+    assert resp.status_code == 400 and "not a valid Excel" in resp.get_json()["error"]["message"]
     with app_module.app.app_context():
         assert app_module.Unit.query.count() == units_before
 
@@ -340,8 +358,7 @@ def test_import_row_limit(app_module, superadmin, monkeypatch):
     buf = io.BytesIO(); wb.save(buf); buf.seek(0)
     with app_module.app.app_context():
         before = app_module.Expense.query.count()
-    page = superadmin.post("/database/import", data={"excel_file": (buf, "rows.xlsx")}, content_type="multipart/form-data",
-                           follow_redirects=True).get_data(as_text=True)
+    resp = _api_csrf(superadmin).post("/api/admin/system/import", data={"file": (buf, "rows.xlsx")}, content_type="multipart/form-data")
     with app_module.app.app_context():
         assert app_module.Expense.query.count() == before
-    assert "more than 3 rows" in page
+    assert resp.status_code == 400 and "more than 3 rows" in resp.get_json()["error"]["message"]

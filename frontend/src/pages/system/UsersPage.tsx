@@ -1,9 +1,10 @@
 // Users & Access Management (Superadmin). Live: /api/admin/users. Every rule is enforced by the
 // server; this page only explains protected accounts and prevents obviously invalid input.
-import { type RefObject, useEffect, useId, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useId, useRef, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { ConfirmDialog, Drawer, useToast } from "../../components/base/overlays";
 import { Badge, Button, Card, EmptyState, ErrorState, Field, Icon, IconButton, Notice, PageHeader, Skeleton, StatusBadge, type Tone, cx } from "../../components/base/ui";
+import { PasswordInput, TemporaryBadge, USERNAME_RULE, focusFirstInvalid, useDebounced } from "../../components/feature/AccountFields";
 import { ChangePasswordDrawer } from "../../components/feature/ChangePasswordDrawer";
 import { useAction, useAsync } from "../../hooks/useAsync";
 import { TIME_ZONE, dateTimeLabel } from "../../lib/format";
@@ -14,30 +15,6 @@ import type { Role, UserAccount, UserQuery } from "../../services/types";
 const PER_PAGE = 20;
 const ROLE_TONE: Record<Role, Tone> = { super_admin: "neutral", admin: "info", manager: "copper", staff: "ok", accounting: "warn", resident: "info" };
 const EMPTY_FILTERS = { q: "", role: "" as UserQuery["role"], status: "" as UserQuery["status"] };
-const USERNAME_RULE = /^[A-Za-z0-9._-]{3,80}$/;
-
-function useDebounced<T>(value: T, ms = 300) {
-  const [v, setV] = useState(value);
-  useEffect(() => {
-    const t = setTimeout(() => setV(value), ms);
-    return () => clearTimeout(t);
-  }, [value, ms]);
-  return v;
-}
-
-/** After a failed submit, move keyboard focus to the first field the form marks invalid. */
-function focusFirstInvalid(form: RefObject<HTMLFormElement | null>) {
-  requestAnimationFrame(() => form.current?.querySelector<HTMLElement>("[aria-invalid='true']")?.focus());
-}
-
-function TemporaryBadge() {
-  return (
-    <span className="ml-2 inline-flex items-center gap-1 rounded bg-copper-50 px-1.5 py-0.5 text-[11px] font-semibold text-copper-700"
-      title="A temporary password was set. A new one must be chosen at the next sign-in.">
-      <Icon name="key-2-line" /> Temporary password
-    </span>
-  );
-}
 
 export default function UsersPage() {
   const [filters, setFilters] = useState(EMPTY_FILTERS);
@@ -50,6 +27,9 @@ export default function UsersPage() {
   const [resetting, setResetting] = useState<UserAccount | null>(null);
   const [deleting, setDeleting] = useState<UserAccount | null>(null);
   const [ownPassword, setOwnPassword] = useState(false);
+  // The classic /users screen redirects here; ?moved=form means a form from an old tab was not saved.
+  const [params, setParams] = useSearchParams();
+  const movedForm = params.get("moved") === "form";
   const { busy, act } = useAction();
   const toast = useToast();
   const filtered = Boolean(filters.q || filters.role || filters.status);
@@ -108,6 +88,17 @@ export default function UsersPage() {
       <PageHeader eyebrow="Administration" title="Users & Access" description="Staff accounts, their roles and sign-in access. Every change is recorded in the audit log."
         actions={<Button icon="user-add-line" onClick={() => setAdding(true)}>Add User</Button>} />
 
+      {movedForm && (
+        <div className="mb-4" role="status">
+          <Notice tone="warn">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span>Users &amp; Access moved to this screen. The form you sent from the old page was <b>not saved</b>; please make the change here.</span>
+              <Button size="sm" variant="ghost" onClick={() => setParams({}, { replace: true })}>Dismiss</Button>
+            </div>
+          </Notice>
+        </div>
+      )}
+
       <Card>
         {/* Search and filters */}
         <form className="flex flex-wrap items-end gap-3 border-b border-ink-100 p-4" role="search" onSubmit={(e) => e.preventDefault()}>
@@ -148,17 +139,17 @@ export default function UsersPage() {
                       <th scope="col" className="th">Username</th>
                       <th scope="col" className="th">Role</th>
                       <th scope="col" className="th">Status</th>
-                      <th scope="col" className="th" title={`Shown in Philippine time (${TIME_ZONE}); stored in UTC`}>Created <span className="font-normal normal-case">(PHT)</span></th>
+                      <th scope="col" className="th hidden 2xl:table-cell" title={`Shown in Philippine time (${TIME_ZONE}); stored in UTC`}>Created <span className="font-normal normal-case">(PHT)</span></th>
                       <th scope="col" className="th text-right">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
                     {data.users.map((u) => (
                       <tr key={u.id} className={cx("hover:bg-ink-50/60", !u.active && "bg-ink-50/40")}>
-                        <td className="border-b border-ink-100 px-4 py-2">{nameCell(u)}</td>
+                        <td className="border-b border-ink-100 px-4 py-2">{nameCell(u)}<div className="text-[12px] text-ink-500 tabular 2xl:hidden">Created {dateTimeLabel(u.createdAt)} PHT</div></td>
                         <td className="border-b border-ink-100 px-4 py-2"><Badge tone={ROLE_TONE[u.role]} dot={false}>{u.roleLabel}</Badge></td>
                         <td className="border-b border-ink-100 px-4 py-2"><StatusBadge status={u.active ? "Active" : "Inactive"} /></td>
-                        <td className="border-b border-ink-100 px-4 py-2 whitespace-nowrap text-ink-600 tabular">{dateTimeLabel(u.createdAt)}</td>
+                        <td className="hidden border-b border-ink-100 px-4 py-2 whitespace-nowrap text-ink-600 tabular 2xl:table-cell">{dateTimeLabel(u.createdAt)}</td>
                         <td className="border-b border-ink-100 px-4 py-1.5">{actions(u)}</td>
                       </tr>
                     ))}
@@ -220,22 +211,6 @@ export default function UsersPage() {
           )}
         </>} />
     </>
-  );
-}
-
-// ------------------------------------------------------------------ password field with visibility toggle
-function PasswordInput({ id, value, onChange, invalid, describedBy, autoComplete = "new-password" }:
-  { id: string; value: string; onChange: (v: string) => void; invalid?: boolean; describedBy?: string; autoComplete?: string }) {
-  const [shown, setShown] = useState(false);
-  return (
-    <div className="relative">
-      <input id={id} type={shown ? "text" : "password"} className="input pr-11" autoComplete={autoComplete} value={value}
-        aria-invalid={invalid || undefined} aria-describedby={describedBy} onChange={(e) => onChange(e.target.value)} />
-      <button type="button" onClick={() => setShown(!shown)} aria-label={shown ? "Hide password" : "Show password"} aria-pressed={shown}
-        className="absolute top-1/2 right-1 grid size-9 -translate-y-1/2 place-items-center rounded-md text-ink-500 hover:bg-ink-100 hover:text-ink-800">
-        <Icon name={shown ? "eye-off-line" : "eye-line"} className="text-lg" />
-      </button>
-    </div>
   );
 }
 

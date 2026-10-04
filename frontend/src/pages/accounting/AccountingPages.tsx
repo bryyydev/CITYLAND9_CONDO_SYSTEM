@@ -6,9 +6,11 @@ import { Card, CardHeader, ErrorState, Icon, PageHeader, Skeleton, StatCard, Tab
 import { useAsync } from "../../hooks/useAsync";
 import { dateTimeLabel, monthLabel } from "../../lib/format";
 import { pesoShort, toCents } from "../../lib/money";
-import { api } from "../../services/api";
+import { IS_MOCK, api } from "../../services/api";
 import { BillingWorkspace } from "../property/Billing";
 import { AdvancesWorkspace, ReceiptQuickList, ReceiptsLedger } from "../property/Ledger";
+import { LegacyBridge } from "../../components/feature/ModuleRoute";
+import { MODULES } from "../../config/modules";
 import { CollectionsChart, ReportsPage } from "../property/PropertyPages";
 
 const pct = (n: number) => `${Math.round(n * 100)}%`;
@@ -16,7 +18,7 @@ const pct = (n: number) => `${Math.round(n * 100)}%`;
 export function AccountingDashboard() {
   const user = useUser();
   const collections = useAsync(() => api.admin.collections(6), []);
-  const audit = useAsync(() => api.admin.auditLogs(""), []);
+  const audit = useAsync(() => api.admin.auditLogs({ q: "", user: "", from: "", to: "", page: 1, perPage: 6 }).then((p) => p.entries), []);
   if (collections.error) return <ErrorState message={collections.error.message} onRetry={collections.reload} />;
   const data = collections.data;
   const last = data?.at(-2);
@@ -40,7 +42,7 @@ export function AccountingDashboard() {
             <CardHeader title="Recent activity" subtitle="From the audit log (read-only)" actions={<Link className="text-[13px] font-semibold text-brand-600 hover:underline" to="/accounting/audit-logs">Audit logs</Link>} />
             {!audit.data ? <Skeleton rows={4} /> : (
               <ul className="divide-y divide-ink-100">
-                {audit.data.slice(0, 6).map((a) => (
+                {audit.data.map((a) => (
                   <li key={a.id} className="flex items-start gap-3 px-5 py-2.5">
                     <Icon name="history-line" className="mt-0.5 text-ink-400" />
                     <div className="min-w-0 flex-1"><p className="truncate text-ink-800">{a.action}</p><p className="text-[12px] text-ink-500">{a.username} · {dateTimeLabel(a.at)}</p></div>
@@ -61,7 +63,8 @@ export function BillingAdvancesPage() {
     <>
       <PageHeader eyebrow="Finance" title="Billing & Advance Payments" description="Monthly bills and SOAs, payments, and prepaid condo dues. Issued bills are frozen; recalculation is explicit and audited." />
       <div className="mb-4"><Tabs value={tab} onChange={setTab} tabs={[{ key: "bills", label: "Bills & SOA" }, { key: "advances", label: "Advance payments" }]} /></div>
-      {tab === "bills" ? <BillingWorkspace embedded /> : <AdvancesWorkspace embedded />}
+      {/* Advance Payments still runs on its classic screen until it is rebuilt (never mock data). */}
+      {tab === "bills" ? <BillingWorkspace embedded /> : IS_MOCK || MODULES.advances.live ? <AdvancesWorkspace embedded /> : <LegacyBridge id="advances" />}
     </>
   );
 }
