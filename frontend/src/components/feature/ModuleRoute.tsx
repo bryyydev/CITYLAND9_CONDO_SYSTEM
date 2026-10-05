@@ -3,8 +3,10 @@
 //  2. live build, no API yet   -> link to the module's classic screen (never mock data)
 //  3. otherwise                -> the React page
 import type { ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { useAuth } from "../../auth/AuthContext";
 import { MODULES, type ModuleId } from "../../config/modules";
+import { ROLES } from "../../config/roles";
 import { IS_MOCK } from "../../services/api";
 import { Card, EmptyState, Icon, PageHeader } from "../base/ui";
 
@@ -41,10 +43,22 @@ export function LegacyBridge({ id }: { id: ModuleId }) {
   );
 }
 
+/** Superadmin opens property modules from "All Property Modules" (they aren't in its sidebar): a way back. */
+function BackToModules({ id }: { id: ModuleId }) {
+  const { user } = useAuth();
+  if (user?.role !== "super_admin" || ROLES.super_admin.nav.some((g) => g.items.includes(id))) return null;
+  return (
+    <Link to={`/${ROLES.super_admin.portal}${MODULES.modules.path}`}
+      className="no-print mb-4 inline-flex h-9 items-center gap-1.5 rounded-lg px-2 -ml-2 text-[13.5px] font-semibold text-ink-600 hover:bg-ink-100 hover:text-ink-900">
+      <Icon name="arrow-left-line" /> All Property Modules
+    </Link>
+  );
+}
+
 export function ModuleRoute({ id, children }: { id: ModuleId; children: ReactNode }) {
   const { can } = useAuth();
   const m = MODULES[id];
   if (!can(m.permission)) return <Forbidden />;
-  if (!IS_MOCK && !m.live) return <LegacyBridge id={id} />;
-  return <>{children}</>;
+  if (!IS_MOCK && !m.live) return <><BackToModules id={id} /><LegacyBridge id={id} /></>;
+  return <><BackToModules id={id} />{children}</>;
 }

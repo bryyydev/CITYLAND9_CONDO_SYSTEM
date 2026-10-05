@@ -13,6 +13,7 @@ export default function Login() {
   const [params] = useSearchParams();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [touched, setTouched] = useState(false);
   // A reason passed by the server when it signed someone out (e.g. "no longer a current tenant").
   const [error, setError] = useState(params.get("notice") ?? "");
@@ -83,7 +84,15 @@ export default function Login() {
               {(id) => <input id={id} className="input h-11" autoComplete="username" autoFocus value={username} aria-invalid={touched && !username.trim()} onChange={(e) => setUsername(e.target.value)} />}
             </Field>
             <Field label="Password" error={touched && !password && "Enter your password."}>
-              {(id) => <input id={id} type="password" className="input h-11" autoComplete="current-password" value={password} aria-invalid={touched && !password} onChange={(e) => setPassword(e.target.value)} />}
+              {(id) => (
+                <div className="relative">
+                  <input id={id} type={showPassword ? "text" : "password"} className="input h-11 pr-11" autoComplete="current-password" value={password} aria-invalid={touched && !password} onChange={(e) => setPassword(e.target.value)} />
+                  <button type="button" onClick={() => setShowPassword((v) => !v)} aria-label={showPassword ? "Hide password" : "Show password"} aria-pressed={showPassword} title={showPassword ? "Hide password" : "Show password"}
+                    className="absolute inset-y-0 right-0 grid w-11 place-items-center rounded-r-lg text-lg text-ink-500 hover:text-ink-800 focus-visible:outline-2 focus-visible:outline-brand-600">
+                    <Icon name={showPassword ? "eye-off-line" : "eye-line"} />
+                  </button>
+                </div>
+              )}
             </Field>
             <Button type="submit" className="h-11 w-full" loading={busy} icon="login-box-line">Sign in</Button>
           </form>
