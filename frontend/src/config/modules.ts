@@ -44,11 +44,11 @@ export const MODULES: Record<ModuleId, ModuleDef> = {
   payments: m({ id: "payments", label: "Payments & ORs", icon: "receipt-line", path: "/payments", permission: "receipts", live: true, description: "Official receipts ledger" }),
   advances: m({ id: "advances", label: "Advance Payments", icon: "calendar-check-line", path: "/advances", permission: "advance_payments", live: true, description: "Prepaid condo dues" }),
   water: m({ id: "water", label: "Water Readings", icon: "drop-line", path: "/water-readings", permission: "water", live: true, description: "Monthly meter readings" }),
-  reports: m({ id: "reports", label: "Property Reports", icon: "bar-chart-box-line", path: "/reports", permission: "reports", live: false, legacyPath: "/reports", description: "Collections and occupancy reports" }),
+  reports: m({ id: "reports", label: "Property Reports", icon: "bar-chart-box-line", path: "/reports", permission: "reports", live: true, description: "Collections and occupancy reports" }),
 
   billingAdvances: m({ id: "billingAdvances", label: "Billing & Advance Payments", icon: "file-list-3-line", path: "/billing-advances", permission: "billing", live: true, description: "Bills, SOAs and prepaid dues" }),
   collections: m({ id: "collections", label: "Collections & ORs", icon: "hand-coin-line", path: "/collections", permission: "receipts", live: true, description: "Payments received and official receipts" }),
-  financialReports: m({ id: "financialReports", label: "Financial Reports", icon: "line-chart-line", path: "/financial-reports", permission: "reports", live: false, legacyPath: "/reports", description: "Billing vs collections, receivables" }),
+  financialReports: m({ id: "financialReports", label: "Financial Reports", icon: "line-chart-line", path: "/financial-reports", permission: "reports", live: true, description: "Billing vs collections, receivables" }),
 
   certificates: m({ id: "certificates", label: "Move In/Out Certificates", icon: "truck-line", path: "/certificates", permission: "move_certificate", live: true, description: "Numbered move-in and move-out certificates" }),
   gatePasses: m({ id: "gatePasses", label: "Gate Passes", icon: "passport-line", path: "/gate-passes", permission: "gate_pass", live: true, description: "Issue passes and approve resident requests" }),
@@ -58,12 +58,12 @@ export const MODULES: Record<ModuleId, ModuleDef> = {
   documents: m({ id: "documents", label: "Documents", icon: "folder-3-line", path: "/documents", permission: "documents", live: true, description: "Document records" }),
   announcements: m({ id: "announcements", label: "Announcements", icon: "megaphone-line", path: "/announcements", permission: "announcements", live: true, description: "Notices for residents" }),
 
-  employees: m({ id: "employees", label: "Employee Roster", icon: "team-line", path: "/employees", permission: "employees", live: false, legacyPath: "/employees", description: "Employees and positions" }),
-  attendance: m({ id: "attendance", label: "Attendance & Overtime", icon: "time-line", path: "/attendance", permission: "employee_overtime", live: false, legacyPath: "/employees/attendance", description: "Daily attendance and overtime approvals" }),
-  attendanceEntry: m({ id: "attendanceEntry", label: "Daily Attendance Entry", icon: "fingerprint-line", path: "/attendance-entry", permission: "employee_attendance", live: false, legacyPath: "/employees/attendance", description: "Record today's time in and out" }),
-  leave: m({ id: "leave", label: "Leave Management", icon: "calendar-event-line", path: "/leave", permission: "employee_leave", live: false, legacyPath: "/employees/leave", description: "Leave requests and approvals" }),
-  payroll: m({ id: "payroll", label: "Payroll Engine", icon: "money-dollar-box-line", path: "/payroll", permission: "employee_payroll", live: false, legacyPath: "/employees/payroll", description: "Payroll runs and payslips" }),
-  taxRules: m({ id: "taxRules", label: "Philippine Tax Rules", icon: "government-line", path: "/tax-rules", permission: "employee_hr_settings", live: false, legacyPath: "/employees/hr-settings", description: "SSS, PhilHealth, Pag-IBIG and BIR tables" }),
+  employees: m({ id: "employees", label: "Employee Roster", icon: "team-line", path: "/employees", permission: "employees", live: true, description: "Employees and positions" }),
+  attendance: m({ id: "attendance", label: "Attendance & Overtime", icon: "time-line", path: "/attendance", permission: "employee_overtime", live: true, description: "Daily attendance and overtime approvals" }),
+  attendanceEntry: m({ id: "attendanceEntry", label: "Daily Attendance Entry", icon: "fingerprint-line", path: "/attendance-entry", permission: "employee_attendance", live: true, description: "Record today's time in and out" }),
+  leave: m({ id: "leave", label: "Leave Management", icon: "calendar-event-line", path: "/leave", permission: "employee_leave", live: true, description: "Leave requests and approvals" }),
+  payroll: m({ id: "payroll", label: "Payroll Engine", icon: "money-dollar-box-line", path: "/payroll", permission: "employee_payroll", live: true, description: "Payroll runs and payslips" }),
+  taxRules: m({ id: "taxRules", label: "Philippine Tax Rules", icon: "government-line", path: "/tax-rules", permission: "employee_hr_settings", live: true, description: "SSS, PhilHealth, Pag-IBIG and BIR tables" }),
 
   rHome: m({ id: "rHome", label: "Home Dashboard", icon: "home-5-line", path: "", permission: "api_resident", live: true, description: "Your balance, statement and requests" }),
   rSoa: m({ id: "rSoa", label: "View & Download SOA", icon: "file-text-line", path: "/my-soa", permission: "api_resident", live: true, description: "Monthly statements of account" }),

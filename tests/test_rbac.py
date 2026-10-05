@@ -56,8 +56,9 @@ def test_legacy_pages_follow_the_matrix(app_module, role):
     for rule in rules:
         resp = client.get(rule.rule)
         allowed = can(role, rule.endpoint)
-        # Retired old pages (e.g. the resident portal) forward to the new app instead of rendering.
-        moved = resp.status_code == 302 and resp.headers["Location"].startswith("/app/")
+        # Retired old pages (e.g. the resident portal) forward to the new app instead of rendering;
+        # the old report export forwards to the API export (which checks the permission again).
+        moved = resp.status_code == 302 and resp.headers["Location"].startswith(("/app/", "/api/reports/export.xlsx"))
         ok = (resp.status_code == 200 or moved) if allowed else resp.status_code in (302, 403)
         if not ok:
             wrong.append((rule.rule, "expected allowed" if allowed else "expected denied", resp.status_code))

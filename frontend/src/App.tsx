@@ -55,7 +55,7 @@ const STAFF_MOVED: Record<string, string> = {
 
 /** The same screen under another name in one workspace (Accounting has combined finance screens). */
 const ROLE_MOVED: Partial<Record<Role, Record<string, string>>> = {
-  accounting: { billing: "billing-advances", payments: "collections", advances: "billing-advances" },
+  accounting: { billing: "billing-advances", payments: "collections", advances: "billing-advances", reports: "financial-reports" },
 };
 
 function modulesFor(role: Role): ModuleId[] {

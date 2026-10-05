@@ -320,7 +320,7 @@ ROLE_LEVEL = {"resident": 5, "staff": 10, "accounting": 20, "admin": 30, "manage
 # Role-based access control: ONE permission matrix for pages, API, menus and buttons.
 # Edit backend/app/core/permissions.py to change who may use what.
 from app.core.permissions import PERMISSIONS, ANY_SIGNED_IN, can as _role_can  # noqa: E402
-from app.core.roles import ALL_ROLES, RESIDENT  # noqa: E402
+from app.core.roles import ACCOUNTING, ALL_ROLES, RESIDENT  # noqa: E402
 
 # Kept under its old name for anything that still refers to it.
 ENDPOINT_ROLES = PERMISSIONS
@@ -492,7 +492,7 @@ def water_amount_for_reading(reading):
 
 def unpaid_previous_bills(unit_id, month):
     rows = _billing_history_for_unit(unit_id)
-    return [b for b in reversed(rows) if b.billing_month < month and bill_balance(b) > 0]
+    return [b for b in reversed(rows) if b.billing_month < month and bill_unpaid_part(b) > 0]
 
 
 def is_overdue(bill):
@@ -609,28 +609,41 @@ def _prepare_bill_calculation_cache():
         "water": setting("penalty_include_water", "0") == "1",
     }
 
+    # Balances carry over as ONE running balance per unit (fix 2026-10-05, bug B1):
+    #   previous balance of a bill = everything charged on the unit's earlier bills minus everything
+    #   paid on them. (It used to be the SUM of the earlier bills' full balances, but each balance
+    #   already contains the ones before it, so unpaid months were counted again every month, and a
+    #   payment on the latest bill never cleared the older bills, which came back on the next SOA.)
+    # Payments settle the oldest charges first. That decides each bill's remaining balance and status
+    # ("balance"; an old bill covered by a later payment is Paid), the part of it still unpaid
+    # ("own_balance", which adds up to the unit's balance), and the penalty base (unpaid charges of
+    # the selected types). A hand-corrected SOA (soa_manual_override) keeps its typed amounts and
+    # sets the running balance from there.
+    zero = Decimal("0.00")
     i = 0
     while i < len(bills):
         unit_id = bills[i].unit_id
-        running_previous = Decimal("0")
-        # Outstanding balances of the selected charge types from prior months.
-        running_previous_penalty_base = Decimal("0")
         j = i
-
         while j < len(bills) and bills[j].unit_id == unit_id:
-            month = bills[j].billing_month
-            k = j
-            month_rows = []
-            while (
-                k < len(bills)
-                and bills[k].unit_id == unit_id
-                and bills[k].billing_month == month
-            ):
-                month_rows.append(bills[k])
-                k += 1
+            j += 1
+        unit_bills = bills[i:j]
 
-            month_balances = []
+        running = zero          # unit balance carried into the next month (credits are not carried)
+        buckets = []            # [amount still unpaid, charge type] of earlier bills, oldest first
+        order = []              # (bill, statement balance, running balance after its month, added charge)
+        k = 0
+        while k < len(unit_bills):
+            month = unit_bills[k].billing_month
+            m_end = k
+            while m_end < len(unit_bills) and unit_bills[m_end].billing_month == month:
+                m_end += 1
+            month_rows = unit_bills[k:m_end]
+            # Bills of the same month (duplicates) don't affect one another.
+            penalty_base = sum((amt for amt, kind in buckets if penalty_include.get(kind)), zero).quantize(Decimal("0.01"))
+            delta = zero
+            month_buckets, month_paid = [], zero
             for bill in month_rows:
+                reading = water_map.get((bill.unit_id, bill.billing_month))
                 if getattr(bill, "soa_manual_override", False):
                     condo = money(bill.assessment)
                     parking = money(bill.parking_dues)
@@ -643,18 +656,14 @@ def _prepare_bill_calculation_cache():
                     # today's rates. Water follows the month's reading, as before.
                     condo = money(bill.assessment)
                     parking = money(bill.parking_dues)
-                    reading = water_map.get((bill.unit_id, bill.billing_month))
                     water = money(reading.bill_amount) if reading else money(bill.water)
-                    penalty = (
-                        (running_previous_penalty_base * penalty_rate).quantize(Decimal("0.01"))
-                        if is_overdue(bill) else Decimal("0.00")
-                    )
-                    previous = running_previous
+                    penalty = (penalty_base * penalty_rate).quantize(Decimal("0.01")) if is_overdue(bill) else zero
+                    previous = running
 
-                storage = money(bill.storage_dues) if storage_charged(bill) else Decimal("0.00")
+                storage = money(bill.storage_dues) if storage_charged(bill) else zero
+                water_paid_separately = bool(reading and getattr(reading, "paid", False))
                 current = condo + parking + storage + water
-                reading = water_map.get((bill.unit_id, bill.billing_month))
-                if reading and getattr(reading, "paid", False):
+                if water_paid_separately:
                     current -= water
                 # Other charges and the adjustment (negative = discount/credit) entered with Edit SOA.
                 # Fix 2026-10-04: they were stored but never counted in the total.
@@ -662,66 +671,60 @@ def _prepare_bill_calculation_cache():
                 adjustment = money(getattr(bill, "adjustment", 0))
                 current += other + adjustment
 
-                advance = min(
-                    advance_map.get(bill.id, Decimal("0")),
-                    max(current, Decimal("0")),
-                )
+                advance = min(advance_map.get(bill.id, zero), max(current, zero))
                 total = (current + previous + penalty - advance).quantize(Decimal("0.01"))
-                balance = (total - money(bill.amount_paid)).quantize(Decimal("0.01"))
+                paid = money(bill.amount_paid)
+                statement_balance = (total - paid).quantize(Decimal("0.01"))
+                charge = (total - previous).quantize(Decimal("0.01"))      # what this bill adds
+                if getattr(bill, "soa_manual_override", False):
+                    charge = (total - running).quantize(Decimal("0.01"))   # its typed previous balance replaces the running one
+                delta += charge - paid
 
                 result[bill.id] = {
-                    "condo": condo,
-                    "parking": parking,
-                    "storage": storage,
-                    "water": water,
-                    "other": other,
-                    "adjustment": adjustment,
-                    "penalty": penalty,
-                    "previous": previous,
-                    "advance": advance,
-                    "current": current,
-                    "total": total,
-                    "balance": balance,
+                    "condo": condo, "parking": parking, "storage": storage, "water": water,
+                    "other": other, "adjustment": adjustment, "penalty": penalty, "previous": previous,
+                    "advance": advance, "current": current, "total": total,
+                    "balance": statement_balance, "own_balance": zero, "charge": charge, "penalty_base": penalty_base,
                     "reading": reading,
                 }
-                month_balances.append(max(balance, Decimal("0")))
+                # Charge types for the penalty base. Advances apply to Condo Dues only; water paid on
+                # its own reading is not owed on the bill. Penalty, other charges and adjustments are
+                # settled after the typed charges of the same bill.
+                rest = penalty + other + adjustment
+                month_buckets += [[max(condo - advance, zero), "condo"], [max(parking, zero), "parking"], [max(storage, zero), "storage"],
+                                  [zero if water_paid_separately else max(water, zero), "water"], [max(rest, zero), "rest"]]
+                month_paid += paid + max(-rest, zero)
+                order.append((bill, statement_balance, charge))
 
-            # Earlier billing logic used billing_month < current month, so
-            # duplicate bills in the same month must not affect one another.
-            running_previous += sum(month_balances, Decimal("0"))
+            running = max(running + delta, zero)
+            buckets += [x for x in month_buckets if x[0] > 0]
+            # This month's payments settle the oldest unpaid charges first.
+            pool = month_paid
+            for bucket in buckets:
+                if pool <= 0:
+                    break
+                used = min(bucket[0], pool)
+                bucket[0] -= used
+                pool -= used
+            buckets = [x for x in buckets if x[0] > 0]
+            k = m_end
 
-            # Build the penalty base from this month's unpaid selected charges.
-            # Payments are allocated Condo Dues -> Parking -> Storage -> Water.
-            # Advances are applied to Condo Dues only.
-            month_penalty_base = Decimal("0.00")
-            for bill in month_rows:
-                calc = result[bill.id]
-                condo_base = max(calc["condo"] - calc["advance"], Decimal("0"))
-                parking_base = max(calc["parking"], Decimal("0"))
-                storage_base = max(calc["storage"], Decimal("0"))
-                water_base = max(calc["water"], Decimal("0"))
-                reading = calc.get("reading")
-                if reading and getattr(reading, "paid", False):
-                    water_base = Decimal("0.00")
-
-                remaining_paid = max(money(bill.amount_paid), Decimal("0"))
-                paid_condo = min(remaining_paid, condo_base); remaining_paid -= paid_condo
-                paid_parking = min(remaining_paid, parking_base); remaining_paid -= paid_parking
-                paid_storage = min(remaining_paid, storage_base); remaining_paid -= paid_storage
-                paid_water = min(remaining_paid, water_base)
-                selected = {
-                    "condo": max(condo_base - paid_condo, Decimal("0")),
-                    "parking": max(parking_base - paid_parking, Decimal("0")),
-                    "storage": max(storage_base - paid_storage, Decimal("0")),
-                    "water": max(water_base - paid_water, Decimal("0")),
-                }
-                month_penalty_base += sum(
-                    (selected[key] for key, enabled in penalty_include.items() if enabled),
-                    Decimal("0.00")
-                )
-            running_previous_penalty_base += month_penalty_base
-            j = k
-
+        # Remaining balance of each bill after ALL the unit's payments (oldest charges settled first):
+        # what is still owed counting this bill and the ones before it. Never more than the bill's own
+        # statement balance; the latest bill's balance is the unit's balance.
+        later = zero
+        settled_upto = {}
+        for bill, statement_balance, charge in reversed(order):
+            owed_upto = max(zero, min(max(statement_balance, zero), running - later))
+            settled_upto[bill.id] = owed_upto
+            later += charge
+        before = zero
+        for bill, statement_balance, charge in order:
+            calc = result[bill.id]
+            owed_upto = settled_upto[bill.id]
+            calc["balance"] = min(statement_balance, owed_upto)
+            calc["own_balance"] = max(owed_upto - before, zero)
+            before = max(before, owed_upto)
         i = j
 
     g._bill_calc_cache = result
@@ -743,6 +746,9 @@ def _bill_calc(bill):
         "current": money(bill.water),
         "total": money(bill.water),
         "balance": money(bill.water) - money(bill.amount_paid),
+        "own_balance": max(money(bill.water) - money(bill.amount_paid), Decimal("0.00")),
+        "charge": money(bill.water),
+        "penalty_base": Decimal("0.00"),
         "reading": None,
     })
 
@@ -766,49 +772,48 @@ def bill_current_charges(bill):
 
 
 def previous_outstanding(unit_id, month):
+    """The unit's unpaid balance from bills before `month` (bug B1: no longer counts arrears twice)."""
     total = Decimal("0.00")
     for b in _billing_history_for_unit(unit_id):
         if b.billing_month >= month:
             break
-        total += max(bill_balance(b), Decimal("0"))
+        total += bill_unpaid_part(b)
     return total.quantize(Decimal("0.01"))
 
 
 def selected_penalty_base_for_unit(unit_id, month):
-    """Return prior-month unpaid balances for the charge types selected in Rates & Rules."""
-    enabled = {
-        "condo": setting("penalty_include_condo", "1") == "1",
-        "parking": setting("penalty_include_parking", "0") == "1",
-        "storage": setting("penalty_include_storage", "0") == "1",
-        "water": setting("penalty_include_water", "0") == "1",
-    }
-    total = Decimal("0.00")
-    for prior in _billing_history_for_unit(unit_id):
-        if prior.billing_month >= month:
-            break
-        condo = money(prior.assessment)
-        parking = money(prior.parking_dues)
-        storage = max(money(prior.storage_dues), Decimal("0")) if storage_charged(prior) else Decimal("0.00")
-        water = money(prior.water)
-        reading = _water_reading_for_bill(prior)
-        if reading and getattr(reading, "paid", False):
-            water = Decimal("0.00")
+    """Prior-month unpaid balances of the charge types selected in Rates & Rules. Payments settle the
+    unit's oldest charges first (bug B1: a payment on a later bill used to leave the older bill's
+    charges in the base, so paid dues kept earning penalty)."""
+    bill = Billing.query.filter_by(unit_id=unit_id, billing_month=month).order_by(Billing.id.asc()).first()
+    if bill is not None:
+        return _bill_calc(bill)["penalty_base"]
+    # No bill for the month yet (bill generation): what the unit's earlier bills leave unpaid.
+    enabled = {k for k in ("condo", "parking", "storage", "water")
+               if setting(f"penalty_include_{k}", "1" if k == "condo" else "0") == "1"}
+    probe = [b for b in _billing_history_for_unit(unit_id) if b.billing_month < month]
+    return _penalty_base_after(probe, enabled)
 
-        advance = min(advance_for_bill(prior), max(condo, Decimal("0")))
-        condo = max(condo - advance, Decimal("0"))
-        remaining_paid = max(money(prior.amount_paid), Decimal("0"))
-        paid_condo = min(remaining_paid, condo); remaining_paid -= paid_condo
-        paid_parking = min(remaining_paid, parking); remaining_paid -= paid_parking
-        paid_storage = min(remaining_paid, storage); remaining_paid -= paid_storage
-        paid_water = min(remaining_paid, water)
-        outstanding = {
-            "condo": max(condo - paid_condo, Decimal("0")),
-            "parking": max(parking - paid_parking, Decimal("0")),
-            "storage": max(storage - paid_storage, Decimal("0")),
-            "water": max(water - paid_water, Decimal("0")),
-        }
-        total += sum((outstanding[k] for k, on in enabled.items() if on), Decimal("0.00"))
-    return total.quantize(Decimal("0.01"))
+
+def _penalty_base_after(prior_bills, enabled):
+    """Unpaid charges of the enabled types left by `prior_bills` (oldest charges settled first)."""
+    buckets = []
+    for b in prior_bills:
+        c = _bill_calc(b)
+        reading = c.get("reading")
+        rest = c["penalty"] + c["other"] + c["adjustment"]
+        buckets += [[max(c["condo"] - c["advance"], Decimal("0")), "condo"], [max(c["parking"], Decimal("0")), "parking"],
+                    [max(c["storage"], Decimal("0")), "storage"],
+                    [Decimal("0") if reading and getattr(reading, "paid", False) else max(c["water"], Decimal("0")), "water"],
+                    [max(rest, Decimal("0")), "rest"]]
+        pool = money(b.amount_paid) + max(-rest, Decimal("0"))
+        for bucket in buckets:
+            if pool <= 0:
+                break
+            used = min(bucket[0], pool)
+            bucket[0] -= used
+            pool -= used
+    return sum((amt for amt, kind in buckets if kind in enabled), Decimal("0.00")).quantize(Decimal("0.01"))
 
 
 def penalty_for_unit(unit_id, month):
@@ -923,7 +928,14 @@ def bill_total(bill):
     return _bill_calc(bill)["total"]
 
 def bill_balance(bill):
-    return bill_total(bill) - money(bill.amount_paid)
+    """What is still owed on this bill: the latest bill's balance is the unit's balance; an older bill
+    that later payments covered is 0 (payments settle the oldest charges first, bug B1)."""
+    return _bill_calc(bill)["balance"]
+
+
+def bill_unpaid_part(bill):
+    """The part of this bill's own charges still unpaid (adds up to the unit's balance across bills)."""
+    return _bill_calc(bill)["own_balance"]
 
 
 
@@ -932,7 +944,9 @@ def bill_status(bill):
     balance = bill_balance(bill)
     if balance <= Decimal("0.00"):
         return "Paid"
-    if money(getattr(bill, "amount_paid", 0)) > Decimal("0.00"):
+    calc = _bill_calc(bill)
+    # Partly paid: on this bill, or by a later payment that settled part of its charges (bug B1).
+    if money(getattr(bill, "amount_paid", 0)) > Decimal("0.00") or calc["own_balance"] < calc.get("charge", calc["own_balance"]):
         return "Partially Paid"
     if getattr(bill, "due_date", None) and date.today() > bill.due_date:
         return "Overdue"
@@ -2149,9 +2163,12 @@ def record_bill_payment(bid, *, amount, payment_method, payment_type, reference,
     paid_before, status_before = money(b.amount_paid), b.status
     if amount_to_bill > 0:
         b.amount_paid = money(b.amount_paid) + amount_to_bill
+        db.session.flush()
+        reset_financial_caches()       # recompute the balances with the new amount paid
 
     if bill_balance(b) <= 0:
-        b.amount_paid = bill_total(b)
+        if amount_to_bill > 0 and bill_total(b) - money(b.amount_paid) <= 0:
+            b.amount_paid = bill_total(b)
         b.status = "Paid"
         b.paid_date = payment_date
     else:
@@ -2588,33 +2605,24 @@ def record_water_payment(rid, *, amount, payment_method, payment_type, reference
 # -----------------------------
 # Employees
 # -----------------------------
+# HR moved to the React app (Manager: /app/hr/..., Staff: Daily Attendance Entry). APIs:
+# backend/app/routes/hr.py, same permission keys. Old URLs only redirect; a form posted from an old
+# tab changes nothing.
+def _hr_moved(path, staff_path=None, **params):
+    u = current_user()
+    return _moved(staff_path if staff_path and u and u.role == "staff" else path, **params)
+
+
 @app.route("/employees", methods=["GET", "POST"])
 @guarded
 def employees():
-    if request.method == "POST":
-        emp_no = request.form.get("employee_no", "").strip()
-        if not emp_no or not request.form.get("full_name", "").strip():
-            flash("Employee No. and Full Name are required.", "danger")
-            return redirect(url_for("employees"))
-        if Employee.query.filter_by(employee_no=emp_no).first():
-            flash("Employee No. already exists.", "danger")
-            return redirect(url_for("employees"))
-        db.session.add(Employee(employee_no=emp_no, full_name=request.form.get("full_name").strip(), position=request.form.get("position",""),
-            department=request.form.get("department",""), employment_status=request.form.get("employment_status","Active"),
-            contact_no=request.form.get("contact_no",""), email=request.form.get("email",""), date_hired=parse_date(request.form.get("date_hired")),
-            monthly_salary=form_amount("monthly_salary", "Monthly salary", allow_zero=True, allow_empty=True), notes=request.form.get("notes","")))
-        db.session.commit(); audit(f"Added employee {emp_no}"); flash("Employee saved.", "success")
-        return redirect(url_for("employees"))
-    return render_template("employees.html", employees=Employee.query.order_by(Employee.full_name).all())
+    return _hr_moved("/employees")
 
 
 @app.route("/employee/<int:eid>/delete", methods=["POST"])
 @guarded
 def delete_employee(eid):
-    e=db.session.get(Employee,eid)
-    if e:
-        db.session.delete(e); db.session.commit(); audit(f"Deleted employee {e.employee_no}")
-    return redirect(url_for("employees"))
+    return _hr_moved("/employees")
 
 
 
@@ -3194,145 +3202,26 @@ def run_excel_import(f):
 # -----------------------------
 # Reports
 # -----------------------------
+# Reports moved to the React app: Property Reports (/reports; Accounting: Financial Reports,
+# /financial-reports). API: backend/app/routes/reports.py, same permission keys. The old page's
+# totals counted previous balances again (R1-R3 in docs/module-migration-checklist.md).
+def _reports_moved():
+    u = current_user()
+    return _moved("/financial-reports" if u and u.role == ACCOUNTING else "/reports",
+                  period=request.args.get("period"), **{"from": request.args.get("start_date"), "to": request.args.get("end_date")})
+
+
 @app.route("/reports")
 @guarded
 def reports():
-    # Reports are transaction-date based. Daily/weekly/monthly/yearly are
-    # convenient presets, while custom dates allow accounting staff to run
-    # any required period.
-    today = date.today()
-    period = (request.args.get("period") or "monthly").lower()
-
-    if period == "daily":
-        start_date = end_date = today
-        period_label = today.strftime("%B %d, %Y")
-    elif period == "weekly":
-        start_date = today.fromordinal(today.toordinal() - today.weekday())
-        end_date = start_date.fromordinal(start_date.toordinal() + 6)
-        period_label = f"{start_date.strftime('%b %d, %Y')} - {end_date.strftime('%b %d, %Y')}"
-    elif period == "yearly":
-        start_date = date(today.year, 1, 1)
-        end_date = date(today.year, 12, 31)
-        period_label = str(today.year)
-    elif period == "custom":
-        start_date = parse_date(request.args.get("start_date")) or date(today.year, today.month, 1)
-        end_date = parse_date(request.args.get("end_date")) or today
-        if end_date < start_date:
-            start_date, end_date = end_date, start_date
-        period_label = f"{start_date.strftime('%b %d, %Y')} - {end_date.strftime('%b %d, %Y')}"
-    else:
-        period = "monthly"
-        start_date = date(today.year, today.month, 1)
-        if today.month == 12:
-            end_date = date(today.year, 12, 31)
-        else:
-            end_date = date(today.year, today.month + 1, 1).fromordinal(date(today.year, today.month + 1, 1).toordinal() - 1)
-        period_label = today.strftime("%B %Y")
-
-    end_dt = datetime.combine(end_date, datetime.max.time())
-    start_dt = datetime.combine(start_date, datetime.min.time())
-
-    bills = Billing.query.filter(Billing.created_at >= start_dt, Billing.created_at <= end_dt).all()
-    payments = Payment.query.filter(Payment.payment_date >= start_date, Payment.payment_date <= end_date, Payment.reversed_at.is_(None)).all()
-    water_paid = WaterReading.query.filter(
-        WaterReading.paid_date >= start_date, WaterReading.paid_date <= end_date,
-        WaterReading.paid_amount > 0
-    ).all()
-    advances = AdvancePayment.query.filter(AdvancePayment.payment_date >= start_date, AdvancePayment.payment_date <= end_date, AdvancePayment.reversed_at.is_(None)).all()
-    expenses = Expense.query.filter(Expense.expense_date >= start_date, Expense.expense_date <= end_date).all()
-
-    def dec_sum(items, attr):
-        return sum((money(getattr(x, attr, 0)) for x in items), Decimal("0"))
-
-    billed_total = sum((bill_total(b) for b in bills), Decimal("0"))
-    billing_collections = dec_sum(payments, "amount")
-    water_collections = dec_sum(water_paid, "paid_amount")
-    advance_collections = dec_sum(advances, "amount")
-    total_collected = billing_collections + water_collections + advance_collections
-    total_expenses = dec_sum(expenses, "amount")
-    net_cash_flow = total_collected - total_expenses
-
-    method_totals = {
-        "CASH": Decimal("0"),
-        "CHECK": Decimal("0"),
-        "ONLINE": Decimal("0"),
-    }
-    for payment in payments:
-        method = (payment.payment_method or "CASH").upper()
-        method_totals[method] = method_totals.get(method, Decimal("0")) + money(payment.amount)
-    for reading in water_paid:
-        method = (reading.payment_method or "CASH").upper()
-        method_totals[method] = method_totals.get(method, Decimal("0")) + money(reading.paid_amount)
-    for advance in advances:
-        method = (advance.payment_method or "CASH").upper()
-        method_totals[method] = method_totals.get(method, Decimal("0")) + money(advance.amount)
-
-    charge_totals = {
-        "Condo Dues": sum((money(b.assessment) for b in bills), Decimal("0")),
-        "Water": sum((money(b.water) for b in bills), Decimal("0")),
-        "Parking": sum((money(b.parking_dues) for b in bills), Decimal("0")),
-        "Penalty": sum((money(b.penalty) for b in bills), Decimal("0")),
-        "Previous Balance": sum((money(b.previous_balance) for b in bills), Decimal("0")),
-    }
-
-    outstanding = sum((bill_balance(b) for b in Billing.query.all()), Decimal("0"))
-    return render_template(
-        "reports.html",
-        units=Unit.query.filter_by(active=True).count(),
-        tenants=Tenant.query.filter_by(status="Current").count(),
-        parking=Unit.query.filter(Unit.active.is_(True), Unit.assigned_parking_unit_id.isnot(None)).count(),
-        outstanding=outstanding,
-        period=period, start_date=start_date, end_date=end_date, period_label=period_label,
-        bills=bills, payments=payments, water_paid=water_paid, advances=advances, expenses=expenses,
-        billed_total=billed_total, billing_collections=billing_collections, water_collections=water_collections,
-        advance_collections=advance_collections, total_collected=total_collected, total_expenses=total_expenses,
-        net_cash_flow=net_cash_flow, method_totals=method_totals, charge_totals=charge_totals,
-    )
+    return _reports_moved()
 
 
 @app.route("/reports/export.xlsx")
 @guarded
 def reports_export():
-    # Reuse the report calculations from the report page by invoking the same
-    # endpoint internally is unnecessary; calculate a compact transaction export here.
-    start_date = parse_date(request.args.get("start_date")) or date.today()
-    end_date = parse_date(request.args.get("end_date")) or start_date
-    if end_date < start_date:
-        start_date, end_date = end_date, start_date
-    payments = Payment.query.filter(Payment.payment_date >= start_date, Payment.payment_date <= end_date, Payment.reversed_at.is_(None)).all()
-    water_paid = WaterReading.query.filter(WaterReading.paid_date >= start_date, WaterReading.paid_date <= end_date, WaterReading.paid_amount > 0).all()
-    advances = AdvancePayment.query.filter(AdvancePayment.payment_date >= start_date, AdvancePayment.payment_date <= end_date, AdvancePayment.reversed_at.is_(None)).all()
-    expenses = Expense.query.filter(Expense.expense_date >= start_date, Expense.expense_date <= end_date).all()
-
-    if Workbook is None:
-        flash("Excel export requires openpyxl.", "danger")
-        return redirect(url_for("reports", period="custom", start_date=start_date, end_date=end_date))
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Summary"
-    ws.append(["CITYLAND 9 CONDO SYSTEM 2026", ""])
-    ws.append(["Report Period", f"{start_date} to {end_date}"])
-    ws.append([])
-    ws.append(["Transaction Type", "Date", "Unit", "Description", "Payment Method", "Reference", "Amount"])
-    for p in payments:
-        ws.append(["Billing Payment", p.payment_date, p.billing.unit.unit_no if p.billing and p.billing.unit else "", f"Billing {p.billing.billing_month}" if p.billing else "", p.payment_method or "CASH", p.reference or "", float(money(p.amount))])
-    for r in water_paid:
-        ws.append(["Water Payment", r.paid_date, r.unit.unit_no if r.unit else "", f"Water {r.reading_month}", r.payment_method or "CASH", r.payment_reference or "", float(money(r.paid_amount))])
-    for a in advances:
-        ws.append(["Advance Payment", a.payment_date, a.unit.unit_no if a.unit else "", f"Advance {a.start_month} ({a.coverage_months} month(s))", a.payment_method or "CASH", a.reference or "", float(money(a.amount))])
-    for e in expenses:
-        ws.append(["Expense", e.expense_date, "", e.description or e.category or "", "", "", float(money(e.amount)) * -1])
-    for sheet in wb.worksheets:
-        for cell in sheet[1]:
-            cell.font = cell.font.copy(bold=True)
-        for col in sheet.columns:
-            letter = col[0].column_letter
-            sheet.column_dimensions[letter].width = min(max(max(len(str(c.value or "")) for c in col) + 2, 12), 32)
-    out = BytesIO()
-    wb.save(out); out.seek(0)
-    filename = f"CityLand9_Report_{start_date}_{end_date}.xlsx"
-    return send_file(out, as_attachment=True, download_name=filename, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    params = {k: v for k, v in (("from", request.args.get("start_date")), ("to", request.args.get("end_date"))) if v}
+    return redirect("/api/reports/export.xlsx?" + urlencode({"period": "custom", **params}))
 
 
 # -----------------------------
@@ -3866,142 +3755,86 @@ def _v1039_calc_payroll(emp, start, end, basic, overtime, allowances, deductions
 @app.route("/employees/attendance", methods=["GET","POST"])
 @guarded
 def employee_attendance():
-    _v1039_ensure_tables()
-    employees = Employee.query.order_by(Employee.id).all()
-    selected_date = request.values.get("date") or _dt_date.today().isoformat()
-    try:
-        day = _dt_date.fromisoformat(selected_date)
-    except Exception:
-        day = _dt_date.today()
-    if request.method == "POST":
-        for emp in employees:
-            sid = str(emp.id)
-            status = (request.form.get("status_"+sid) or "PRESENT").upper()
-            tin = request.form.get("time_in_"+sid) or None
-            tout = request.form.get("time_out_"+sid) or None
-            remarks = request.form.get("remarks_"+sid) or None
-            row = EmployeeAttendance.query.filter_by(employee_id=emp.id, attendance_date=day).first()
-            if not row:
-                row = EmployeeAttendance(employee_id=emp.id, attendance_date=day)
-                db.session.add(row)
-            row.status = status
-            row.remarks = remarks
-            try:
-                row.time_in = _dt_datetime.strptime(tin, "%H:%M").time() if tin else None
-                row.time_out = _dt_datetime.strptime(tout, "%H:%M").time() if tout else None
-            except Exception:
-                pass
-        db.session.commit()
-        flash("Attendance saved successfully.", "success")
-        return redirect(url_for("employee_attendance", date=day.isoformat()))
-    records = {r.employee_id:r for r in EmployeeAttendance.query.filter_by(attendance_date=day).all()}
-    return render_template("employee_attendance.html", employees=employees, records=records, selected_date=day.isoformat())
+    return _hr_moved("/attendance", "/attendance-entry", date=request.args.get("date"))
 
 @app.route("/employees/attendance/history/<int:eid>")
 @guarded
 def employee_attendance_history(eid):
-    _v1039_ensure_tables()
-    emp = db.session.get(Employee, eid)
+    return _hr_moved("/attendance", employee=eid)
+
+
+class PayrollExists(Exception):
+    """The employee already has a payroll for (part of) this period."""
+
+
+def generate_payroll(*, employee_id, start, end, basic, overtime, allowances, deductions, status, remarks, form_token):
+    """Create one employee's payroll for start..end with its Philippine statutory breakdown (the
+    classic rules: attendance absences and late/undertime, approved overtime unless given, active
+    loans deducted and their balances reduced). D6: everything is saved together or not at all.
+    New: a second payroll overlapping the same employee's period is refused (it paid twice and
+    deducted loans twice). basic/overtime: Decimal or None (None = monthly salary / approved overtime).
+    Returns the payroll. Raises InputError / PayrollExists. Commits."""
+    emp = db.session.get(Employee, employee_id) if employee_id else None
     if not emp:
-        abort(404)
-    today = _dt_date.today()
-    default_start = today.replace(day=1)
-    start_s = request.args.get("start") or default_start.isoformat()
-    end_s = request.args.get("end") or today.isoformat()
-    try:
-        start = _dt_date.fromisoformat(start_s)
-        end = _dt_date.fromisoformat(end_s)
-    except Exception:
-        start, end = default_start, today
+        raise InputError("employeeId", "Choose the employee.")
+    if not start or not end:
+        raise InputError("period", "Enter the payroll period.")
     if end < start:
-        start, end = end, start
-    rows = EmployeeAttendance.query.filter(
-        EmployeeAttendance.employee_id == eid,
-        EmployeeAttendance.attendance_date >= start,
-        EmployeeAttendance.attendance_date <= end
-    ).order_by(EmployeeAttendance.attendance_date.desc()).all()
-    counts = {}
-    for r in rows:
-        key = str(r.status or "PRESENT").upper()
-        counts[key] = counts.get(key, 0) + 1
-    return render_template("employee_attendance_history.html", employee=emp, rows=rows, start=start.isoformat(), end=end.isoformat(), counts=counts)
+        raise InputError("period", "The period ends before it starts.")
+    if (end - start).days > 31:
+        raise InputError("period", "A payroll period can't be longer than a month.")
+    if status not in ("DRAFT", "FINAL", "PAID"):
+        raise InputError("status", "Payroll status must be Draft, Final or Paid.")
+    overlap = EmployeePayroll.query.filter(EmployeePayroll.employee_id == emp.id, EmployeePayroll.period_start <= end,
+                                           EmployeePayroll.period_end >= start).with_for_update().first()
+    if overlap:
+        raise PayrollExists(f"{emp.full_name} already has a payroll for {overlap.period_start.isoformat()} to "
+                            f"{overlap.period_end.isoformat()}. Open it instead of generating another.")
+    claim_form_token("payroll", form_token)
+    approved_ot = sum(_v1039_money(x.amount) for x in EmployeeOvertime.query.filter(
+        EmployeeOvertime.employee_id == emp.id, EmployeeOvertime.ot_date >= start, EmployeeOvertime.ot_date <= end,
+        EmployeeOvertime.status == "APPROVED").all())
+    ot = _v1039_money(approved_ot if overtime is None else overtime)
+    basic_v, absence_ded, late_ded, net = _v1039_calc_payroll(emp, start, end, None if basic is None else float(basic), ot,
+                                                              float(allowances), float(deductions))
+    recurring_loans = EmployeeHRLoan.query.filter_by(employee_id=emp.id, status="ACTIVE").all()
+    loan_deduction = sum(min(_v1039_money(x.monthly_deduction), _v1039_money(x.balance)) for x in recurring_loans)
+    p = EmployeePayroll(employee_id=emp.id, period_start=start, period_end=end, basic_salary=basic_v, overtime_pay=ot,
+                        allowances=float(allowances), deductions=float(deductions) + loan_deduction, absences=absence_ded,
+                        late_undertime=late_ded, net_pay=net, status=status, remarks=(remarks or None))
+    try:
+        db.session.add(p)
+        db.session.flush()
+        gross = _v1039_money(p.basic_salary) + _v1039_money(p.overtime_pay) + _v1039_money(p.allowances)
+        sc = _v1040_calc(gross, p.basic_salary, p.deductions, p.absences, p.late_undertime)
+        row = EmployeePayrollStatutory(payroll_id=p.id)
+        for k, v in sc.items():
+            setattr(row, k, _v1039_money(v))
+        db.session.add(row)
+        p.net_pay = sc["net_pay_after_statutory"]
+        remaining = loan_deduction
+        for loan in recurring_loans:
+            take = min(_v1039_money(loan.monthly_deduction), _v1039_money(loan.balance), remaining)
+            if take > 0:
+                loan.balance = max(_v1039_money(loan.balance) - take, 0)
+                if loan.balance <= 0:
+                    loan.status = "PAID"
+                remaining -= take
+        audit(f"Generated payroll for employee {emp.employee_no}, {start.isoformat()} to {end.isoformat()}", entity_type="payroll",
+              entity_id=p.id, details={"gross": gross, "net": p.net_pay, "loan_deduction": loan_deduction, "status": status}, commit=False)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        app.logger.exception("Payroll generation failed")
+        raise
+    return p
+
 
 @app.route("/employees/payroll", methods=["GET","POST"])
 @guarded
 def employee_payroll():
-    _v1039_ensure_tables()
-    employees = Employee.query.order_by(Employee.id).all()
-    today = _dt_date.today()
-    start_s = request.values.get("start") or today.replace(day=1).isoformat()
-    end_s = request.values.get("end") or today.isoformat()
-    try:
-        start = _dt_date.fromisoformat(start_s); end = _dt_date.fromisoformat(end_s)
-    except Exception:
-        start = today.replace(day=1); end = today
-    if request.method == "POST":
-        emp_id = int(request.form.get("employee_id"))
-        emp = db.session.get(Employee, emp_id)
-        if not emp:
-            flash("Employee not found.", "error")
-            return redirect(url_for("employee_payroll", start=start.isoformat(), end=end.isoformat()))
-        approved_ot = sum(_v1039_money(x.amount) for x in EmployeeOvertime.query.filter(
-            EmployeeOvertime.employee_id==emp.id, EmployeeOvertime.ot_date>=start, EmployeeOvertime.ot_date<=end, EmployeeOvertime.status=="APPROVED"
-        ).all()) if "EmployeeOvertime" in globals() else 0
-        ot_input = request.form.get("overtime_pay")
-        if ot_input in (None, ""):
-            ot_input = approved_ot
-        basic, absence_ded, late_ded, net = _v1039_calc_payroll(
-            emp, start, end, request.form.get("basic_salary"), ot_input, request.form.get("allowances"), request.form.get("deductions")
-        )
-        # Active recurring loans/deductions are included automatically for the period.
-        recurring_loans = EmployeeHRLoan.query.filter_by(employee_id=emp.id, status="ACTIVE").all() if "EmployeeHRLoan" in globals() else []
-        loan_deduction = sum(min(_v1039_money(x.monthly_deduction), _v1039_money(x.balance)) for x in recurring_loans)
-        manual_deduction = float(form_amount("deductions", "Deductions", allow_zero=True, allow_empty=True))
-        total_other_deduction = manual_deduction + loan_deduction
-        p = EmployeePayroll(
-            employee_id=emp.id, period_start=start, period_end=end,
-            basic_salary=basic, overtime_pay=_v1039_money(ot_input),
-            allowances=float(form_amount("allowances", "Allowances", allow_zero=True, allow_empty=True)),
-            deductions=total_other_deduction,
-            absences=absence_ded, late_undertime=late_ded, net_pay=net,
-            status=_payroll_status(),
-            remarks=request.form.get("remarks")
-        )
-        # D6 fix: the payroll record, its statutory breakdown and the loan-balance reductions are
-        # saved together, or not at all (the error is shown; it used to be swallowed while the page
-        # said "generated" and loans were not reduced).
-        db.session.add(p); db.session.flush()
-        try:
-            ensure_table(EmployeePayrollStatutory)
-            gross=_v1039_money(p.basic_salary)+_v1039_money(p.overtime_pay)+_v1039_money(p.allowances)
-            sc=_v1040_calc(gross,p.basic_salary,p.deductions,p.absences,p.late_undertime)
-            row=EmployeePayrollStatutory(payroll_id=p.id)
-            for k,v in sc.items(): setattr(row,k,_v1039_money(v))
-            db.session.add(row); db.session.flush()
-            p.net_pay=sc["net_pay_after_statutory"]
-            # Reduce active loan balances by the amount actually deducted this payroll.
-            remaining_loan_deduction = loan_deduction
-            for loan in recurring_loans:
-                take=min(_v1039_money(loan.monthly_deduction), _v1039_money(loan.balance), remaining_loan_deduction)
-                if take>0:
-                    loan.balance=max(_v1039_money(loan.balance)-take,0)
-                    if loan.balance<=0: loan.status="PAID"
-                    remaining_loan_deduction-=take
-            audit(f"Generated payroll for employee {emp.employee_no}, {start.isoformat()} to {end.isoformat()}", entity_type="payroll",
-                  entity_id=p.id, commit=False)
-            db.session.commit()
-        except Exception as exc:
-            db.session.rollback()
-            app.logger.exception("Payroll generation failed")
-            flash(f"Payroll was NOT saved: the statutory computation failed ({exc}). Nothing was changed, including loan balances.", "danger")
-            return redirect(url_for("employee_payroll", start=start.isoformat(), end=end.isoformat()))
-        flash("Payroll record generated with statutory payroll breakdown.", "success")
-        return redirect(url_for("employee_payroll", start=start.isoformat(), end=end.isoformat()))
-    payroll = EmployeePayroll.query.filter(
-        EmployeePayroll.period_start == start,
-        EmployeePayroll.period_end == end
-    ).order_by(EmployeePayroll.id.desc()).all()
-    return render_template("employee_payroll.html", employees=employees, payroll=payroll, start=start.isoformat(), end=end.isoformat())
+    return _hr_moved("/payroll")
+
 
 def _payroll_status():
     status = (request.form.get("status") or "DRAFT").strip().upper()
@@ -4013,17 +3846,7 @@ def _payroll_status():
 @app.route("/employees/payroll/<int:payroll_id>/print")
 @guarded
 def employee_payroll_print(payroll_id):
-    p = db.session.get(EmployeePayroll, payroll_id)
-    if not p:
-        abort(404)
-    emp = db.session.get(Employee, p.employee_id)
-    ensure_table(EmployeePayrollStatutory) if "EmployeePayrollStatutory" in globals() else None
-    statutory=EmployeePayrollStatutory.query.filter_by(payroll_id=p.id).first() if "EmployeePayrollStatutory" in globals() else None
-    if not statutory:
-        class O: pass
-        statutory=O()
-        for k,v in _v1040_calc(_v1039_money(p.basic_salary)+_v1039_money(p.overtime_pay)+_v1039_money(p.allowances),p.basic_salary,p.deductions,p.absences,p.late_undertime).items(): setattr(statutory,k,v)
-    return render_template("employee_payroll_print.html", p=p, employee=emp, statutory=statutory)
+    return _hr_moved("/payroll", payslip=payroll_id)
 
 try:
     with app.app_context():
@@ -4120,39 +3943,17 @@ def _v1040_calc(gross, basic, other=0, absences=0, late_undertime=0):
 @app.route("/employees/payroll/<int:payroll_id>/statutory",methods=["GET","POST"])
 @guarded
 def employee_payroll_statutory(payroll_id):
-    ensure_table(EmployeePayrollStatutory)
-    p=db.session.get(EmployeePayroll,payroll_id)
-    if not p: abort(404)
-    emp=db.session.get(Employee,p.employee_id)
-    c=_v1040_calc(_v1039_money(p.basic_salary)+_v1039_money(p.overtime_pay)+_v1039_money(p.allowances),p.basic_salary,p.deductions,p.absences,p.late_undertime)
-    if request.method=="POST":
-        row=EmployeePayrollStatutory.query.filter_by(payroll_id=p.id).first()
-        if not row: row=EmployeePayrollStatutory(payroll_id=p.id); db.session.add(row)
-        for k in c: setattr(row,k,float(parse_amount(request.form.get(k, c[k]), label=k.replace("_"," ").capitalize(), allow_zero=True, allow_empty=True)))
-        db.session.commit(); flash("Philippine statutory payroll saved.","success")
-        return redirect(url_for("employee_payroll_statutory",payroll_id=p.id))
-    row=EmployeePayrollStatutory.query.filter_by(payroll_id=p.id).first()
-    return render_template("employee_payroll_statutory.html",p=p,employee=emp,calc=(row.__dict__ if row else c))
+    return _hr_moved("/payroll", payslip=payroll_id)
 
 @app.route("/employees/payroll/<int:payroll_id>/statutory/print")
 @guarded
 def employee_payroll_statutory_print(payroll_id):
-    p=db.session.get(EmployeePayroll,payroll_id)
-    if not p: abort(404)
-    emp=db.session.get(Employee,p.employee_id); row=EmployeePayrollStatutory.query.filter_by(payroll_id=p.id).first()
-    if not row:
-        class O: pass
-        row=O()
-        for k,v in _v1040_calc(_v1039_money(p.basic_salary)+_v1039_money(p.overtime_pay)+_v1039_money(p.allowances),p.basic_salary,p.deductions,p.absences,p.late_undertime).items(): setattr(row,k,v)
-    return render_template("employee_payroll_statutory_print.html",p=p,employee=emp,s=row)
+    return _hr_moved("/payroll", payslip=payroll_id)
 
 @app.route("/employees/payroll/13th-month")
 @guarded
 def employee_13th_month():
-    year=request.args.get("year") or str(_dt_date.today().year)
-    employees=Employee.query.order_by(Employee.id).all()
-    rows=[(e,_v1039_money(getattr(e,"monthly_salary",0))) for e in employees]
-    return render_template("employee_13th_month.html",year=year,rows=rows)
+    return _hr_moved("/payroll", tab="13th", year=request.args.get("year"))
 
 
 # ============================================================
@@ -4224,16 +4025,7 @@ def _v1041_hourly(emp):
 @app.route("/employees/edit/<int:eid>",methods=["GET","POST"])
 @guarded
 def employee_edit(eid):
-    e=_v1041_emp(eid)
-    if not e: abort(404)
-    if request.method=="POST":
-        e.full_name=request.form.get("full_name","").strip(); e.position=request.form.get("position","").strip()
-        e.department=request.form.get("department","").strip(); e.employment_status=request.form.get("employment_status","Active")
-        e.contact_no=request.form.get("contact_no","").strip(); e.email=request.form.get("email","").strip()
-        e.date_hired=parse_date(request.form.get("date_hired")); e.monthly_salary=form_amount("monthly_salary", "Monthly salary", allow_zero=True, allow_empty=True); e.notes=request.form.get("notes","").strip()
-        db.session.commit(); audit(f"Updated employee {e.employee_no}"); flash("Employee changes saved.","success")
-        return redirect(url_for("employees"))
-    return render_template("employee_edit.html",employee=e)
+    return _hr_moved("/employees", employee=eid)
 
 # D5 fix: leave/overtime status must be one of these; approving or rejecting records who did it.
 REQUEST_STATUSES = ("PENDING", "APPROVED", "REJECTED")
@@ -4254,67 +4046,29 @@ def _decided_by(status):
 @app.route("/employees/leave",methods=["GET","POST"])
 @guarded
 def employee_leave():
-    _v1041_ensure_tables(); employees=Employee.query.order_by(Employee.full_name).all()
-    if request.method=="POST":
-        eid=int(request.form.get("employee_id")); start=parse_date(request.form.get("start_date")); end=parse_date(request.form.get("end_date"))
-        if not start or not end or end<start: flash("Please enter a valid leave date range.","danger"); return redirect(url_for("employee_leave"))
-        status=_request_status()
-        row=EmployeeLeave(employee_id=eid,leave_type=request.form.get("leave_type","VACATION"),start_date=start,end_date=end,days=_v1041_days(start,end),status=status,reason=request.form.get("reason",""))
-        if status != "PENDING":
-            row.approved_by=_decided_by(status)
-        db.session.add(row); db.session.commit(); audit(f"Added leave request for employee {eid}"); flash("Leave request saved.","success"); return redirect(url_for("employee_leave"))
-    rows=EmployeeLeave.query.order_by(EmployeeLeave.id.desc()).all()
-    return render_template("employee_leave.html",employees=employees,rows=rows)
+    return _hr_moved("/leave")
 
 @app.route("/employees/leave/<int:lid>/status",methods=["POST"])
 @guarded
 def employee_leave_status(lid):
-    row=db.session.get(EmployeeLeave,lid)
-    if row:
-        row.status=_request_status(); row.approved_by=_decided_by(row.status) or ""
-        db.session.commit(); audit(f"Updated leave {lid} to {row.status}")
-    return redirect(url_for("employee_leave"))
+    return _hr_moved("/leave")
 
 @app.route("/employees/overtime",methods=["GET","POST"])
 @guarded
 def employee_overtime():
-    _v1041_ensure_tables(); employees=Employee.query.order_by(Employee.full_name).all()
-    if request.method=="POST":
-        eid=int(request.form.get("employee_id")); emp=_v1041_emp(eid); od=parse_date(request.form.get("ot_date")) or date.today(); hours=float(form_decimal("hours", "Hours", 2, minimum=Decimal("0"), maximum=Decimal("24"))); mult=float(parse_decimal(request.form.get("rate_multiplier") or "1.25", label="Rate multiplier", places=3, minimum=Decimal("1"), maximum=Decimal("5")))
-        amount=round(_v1041_hourly(emp)*hours*mult,2) if emp else 0
-        status=_request_status()
-        row=EmployeeOvertime(employee_id=eid,ot_date=od,hours=hours,rate_multiplier=mult,amount=amount,status=status,reason=request.form.get("reason",""))
-        if status != "PENDING":
-            row.approved_by=_decided_by(status)
-        db.session.add(row); db.session.commit(); audit(f"Added overtime for employee {eid}"); flash("Overtime request saved.","success"); return redirect(url_for("employee_overtime"))
-    rows=EmployeeOvertime.query.order_by(EmployeeOvertime.id.desc()).all()
-    return render_template("employee_overtime.html",employees=employees,rows=rows)
+    return _hr_moved("/attendance", tab="overtime")
 
 @app.route("/employees/overtime/<int:oid>/status",methods=["POST"])
 @guarded
 def employee_overtime_status(oid):
-    row=db.session.get(EmployeeOvertime,oid)
-    if row:
-        row.status=_request_status(); row.approved_by=_decided_by(row.status) or ""
-        db.session.commit(); audit(f"Updated overtime {oid} to {row.status}")
-    return redirect(url_for("employee_overtime"))
+    return _hr_moved("/attendance", tab="overtime")
 
 @app.route("/employees/hr/loans",methods=["GET","POST"])
 @guarded
 def employee_hr_loans():
-    _v1041_ensure_tables(); employees=Employee.query.order_by(Employee.full_name).all()
-    if request.method=="POST":
-        eid=int(request.form.get("employee_id")); original=float(form_amount("original_amount", "Loan amount")); balance=float(parse_amount(request.form.get("balance") or original, label="Balance", allow_zero=True))
-        db.session.add(EmployeeHRLoan(employee_id=eid,loan_type=request.form.get("loan_type","OTHER"),reference_no=request.form.get("reference_no",""),original_amount=original,balance=balance,monthly_deduction=float(form_amount("monthly_deduction", "Monthly deduction", allow_zero=True, allow_empty=True)),status=request.form.get("status","ACTIVE"),notes=request.form.get("notes","")))
-        db.session.commit(); flash("HR loan/deduction saved.","success"); return redirect(url_for("employee_hr_loans"))
-    rows=EmployeeHRLoan.query.order_by(EmployeeHRLoan.id.desc()).all()
-    return render_template("employee_hr_loans.html",employees=employees,rows=rows)
+    return _hr_moved("/payroll", tab="loans")
 
-@app.route("/employees/hr-settings", methods=["GET","POST"])
-@guarded
-def employee_hr_settings():
-    _v1041_ensure_tables()
-    defaults = {
+HR_SETTING_DEFAULTS = {
         "hr_working_days":"26", "hr_work_hours_per_day":"8", "hr_grace_minutes":"5",
         "hr_sss_employee_rate":"5", "hr_sss_employer_rate":"10", "hr_sss_max_msc":"35000",
         "hr_sss_ec_threshold":"14500", "hr_sss_ec_low":"10", "hr_sss_ec_high":"30",
@@ -4323,44 +4077,23 @@ def employee_hr_settings():
         "hr_bir_exempt_threshold":"20833", "hr_bir_bracket2":"33332", "hr_bir_bracket3":"66666", "hr_bir_bracket4":"166666", "hr_bir_bracket5":"666666",
         "hr_bir_rate2":"15", "hr_bir_rate3":"20", "hr_bir_rate4":"25", "hr_bir_rate5":"30", "hr_bir_rate6":"35", "hr_13th_month_ceiling":"90000"
     }
-    if request.method=="POST":
-        for k,d in defaults.items():
-            row=EmployeeHRSetting.query.filter_by(key=k).first() or EmployeeHRSetting(key=k)
-            row.value=request.form.get(k,d)
-            db.session.add(row)
-        db.session.commit(); audit("Updated Philippine Payroll / HR statutory settings")
-        flash("Payroll / HR statutory settings saved successfully.","success")
-        return redirect(url_for("employee_hr_settings"))
-    vals={k:_v1041_hr_setting(k,d) for k,d in defaults.items()}
-    return render_template("employee_hr_settings.html",settings=vals)
+
+
+@app.route("/employees/hr-settings", methods=["GET","POST"])
+@guarded
+def employee_hr_settings():
+    return _hr_moved("/tax-rules")
 
 
 @app.route("/employees/payroll-reports")
 @guarded
 def employee_payroll_reports():
-    year=int(request.args.get("year") or _dt_date.today().year)
-    rows=EmployeePayroll.query.filter(db.extract("year",EmployeePayroll.period_end)==year).order_by(EmployeePayroll.period_end,EmployeePayroll.employee_id).all()
-    total_basic=sum(_v1039_money(x.basic_salary) for x in rows); total_ot=sum(_v1039_money(x.overtime_pay) for x in rows); total_allow=sum(_v1039_money(x.allowances) for x in rows); total_net=sum(_v1039_money(x.net_pay) for x in rows)
-    stats=EmployeePayrollStatutory.query.filter(EmployeePayrollStatutory.payroll_id.in_([x.id for x in rows])).all() if rows else []
-    return render_template("employee_payroll_reports.html",year=year,rows=rows,employees={e.id:e for e in Employee.query.all()},stats=stats,total_basic=total_basic,total_ot=total_ot,total_allow=total_allow,total_net=total_net)
+    return _hr_moved("/payroll", tab="reports", year=request.args.get("year"))
 
 @app.route("/employees/13th-month")
 @guarded
 def employee_13th_month_full():
-    year=int(request.args.get("year") or _dt_date.today().year)
-    ceiling=round(_v1041_hr_float("hr_13th_month_ceiling", 90000), 2)
-    employees=Employee.query.order_by(Employee.full_name).all(); rows=[]
-    for e in employees:
-        ps=EmployeePayroll.query.filter(EmployeePayroll.employee_id==e.id,db.extract("year",EmployeePayroll.period_end)==year).all()
-        basic=sum(_v1039_money(p.basic_salary) for p in ps)
-        thirteenth=round(basic/12,2)
-        # D8 fix: the configured ceiling (default ₱90,000, the tax-exempt limit for 13th-month pay and
-        # other benefits) splits each amount into its exempt and taxable parts. Pay is unchanged.
-        exempt=min(thirteenth, ceiling)
-        rows.append((e,basic,thirteenth,exempt,round(thirteenth-exempt,2)))
-    total=sum(r[2] for r in rows)
-    taxable=sum(r[4] for r in rows)
-    return render_template("employee_13th_month_full.html",year=year,rows=rows,total=total,ceiling=ceiling,taxable=taxable)
+    return _hr_moved("/payroll", tab="13th", year=request.args.get("year"))
 
 # Make existing 13th-month link point to the full HR calculation by adding a distinct endpoint.
 try:
@@ -4385,6 +4118,8 @@ from app.routes.advances import make_advances_blueprint  # noqa: E402
 from app.routes.water import make_water_blueprint  # noqa: E402
 from app.routes.operations import make_operations_blueprint  # noqa: E402
 from app.routes.community import make_community_blueprint  # noqa: E402
+from app.routes.reports import make_reports_blueprint  # noqa: E402
+from app.routes.hr import make_hr_blueprint  # noqa: E402
 from app.routes.spa import make_spa_blueprint  # noqa: E402
 from app.utils.auth import init_auth  # noqa: E402
 
@@ -4452,6 +4187,8 @@ app.register_blueprint(make_advances_blueprint(sys.modules[__name__]))
 app.register_blueprint(make_water_blueprint(sys.modules[__name__]))
 app.register_blueprint(make_operations_blueprint(sys.modules[__name__]))
 app.register_blueprint(make_community_blueprint(sys.modules[__name__]))
+app.register_blueprint(make_reports_blueprint(sys.modules[__name__]))
+app.register_blueprint(make_hr_blueprint(sys.modules[__name__]))
 app.register_blueprint(make_spa_blueprint(os.path.join(BASE_DIR, "frontend", "dist")))
 
 # ============================================================

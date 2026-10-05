@@ -102,7 +102,7 @@ def test_excel_export_import_roundtrip(app_module, superadmin):
 
 
 def test_reports_export(superadmin):
-    resp = superadmin.get("/reports/export.xlsx")
+    resp = superadmin.get("/reports/export.xlsx", follow_redirects=True)   # the old link forwards to the API export
     assert resp.status_code == 200 and resp.data[:2] == b"PK"
 
 

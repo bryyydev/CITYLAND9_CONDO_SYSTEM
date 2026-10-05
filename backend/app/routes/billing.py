@@ -75,7 +75,7 @@ def make_billing_blueprint(legacy):
         return {
             **soa_detail(legacy, b), "unitId": b.unit_id, "unitNo": b.unit.unit_no, "unitType": b.unit.unit_type or "",
             "payerName": p["name"] if p else "—", "contact": p, "manualOverride": bool(b.soa_manual_override),
-            "previousUnpaid": [{"id": x.id, "month": x.billing_month, "balance": money(max(legacy.bill_balance(x), Decimal("0")))} for x in previous],
+            "previousUnpaid": [{"id": x.id, "month": x.billing_month, "balance": money(legacy.bill_unpaid_part(x))} for x in previous],
             "overdueMonths": legacy.overdue_months_for_unit(b.unit_id, b.billing_month),
             # The stored amounts, for the Edit SOA form.
             "stored": {k: money(getattr(b, col)) for k, (col, _, _) in SOA_INPUT.items()},

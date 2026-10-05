@@ -8,6 +8,14 @@ import type * as T from "./types";
 
 const notConnected = (feature: string) => () => Promise.reject(new NotConnectedError(feature));
 const r = (unitId: number) => `/resident/units/${unitId}`;
+const reportParams = (q: T.ReportQuery) => {
+  const params = new URLSearchParams({ period: q.period });
+  if (q.period === "custom") {
+    if (q.from) params.set("from", q.from);
+    if (q.to) params.set("to", q.to);
+  }
+  return params;
+};
 const auditParams = (q: Partial<T.AuditLogQuery>) => {
   const params = new URLSearchParams();
   for (const [k, v] of Object.entries(q)) if (v !== "" && v !== undefined) params.set(k, String(v));
@@ -158,14 +166,38 @@ export const liveApi: DataService = {
     publish: async (input) => (await http<{ announcement: T.Announcement }>("/announcements", { method: "POST", body: input })).announcement,
   },
   hr: {
-    employees: notConnected("Employees"),
-    attendance: notConnected("Attendance"),
-    saveAttendance: notConnected("Attendance"),
-    leave: notConnected("Leave"),
-    overtime: notConnected("Overtime"),
-    decideLeave: notConnected("Leave"),
-    decideOvertime: notConnected("Overtime"),
-    payroll: notConnected("Payroll"),
+    employees: () => http("/hr/employees"),
+    addEmployee: async (input) => (await http<{ employee: T.Employee }>("/hr/employees", { method: "POST", body: input })).employee,
+    updateEmployee: async (id, input) => (await http<{ employee: T.Employee }>(`/hr/employees/${id}`, { method: "PUT", body: input })).employee,
+    deleteEmployee: (id) => http(`/hr/employees/${id}`, { method: "DELETE" }),
+    attendanceDay: (date) => http(`/hr/attendance?date=${date}`),
+    saveAttendance: (date, records) => http("/hr/attendance", { method: "PUT", body: { date, records } }),
+    attendanceHistory: (id, from, to) => http(`/hr/attendance/history/${id}?from=${from}&to=${to}`),
+    overtime: () => http("/hr/overtime"),
+    fileOvertime: async (input) => (await http<{ request: T.OvertimeRequest }>("/hr/overtime", { method: "POST", body: input })).request,
+    decideOvertime: async (id, status) => (await http<{ request: T.OvertimeRequest }>(`/hr/overtime/${id}/decision`, { method: "POST", body: { status } })).request,
+    leave: () => http("/hr/leave"),
+    fileLeave: async (input) => (await http<{ request: T.LeaveRequest }>("/hr/leave", { method: "POST", body: input })).request,
+    decideLeave: async (id, status) => (await http<{ request: T.LeaveRequest }>(`/hr/leave/${id}/decision`, { method: "POST", body: { status } })).request,
+    payroll: (from, to) => http(`/hr/payroll?from=${from}&to=${to}`),
+    previewPayroll: async (input) => (await http<{ preview: T.PayrollPreview }>("/hr/payroll/preview", { method: "POST", body: input })).preview,
+    generatePayroll: async (input) => (await http<{ payroll: T.PayrollDetail }>("/hr/payroll", { method: "POST", body: input })).payroll,
+    payslip: (id) => http(`/hr/payroll/${id}`),
+    editStatutory: async (id, statutory) => (await http<{ payroll: T.PayrollDetail }>(`/hr/payroll/${id}/statutory`, { method: "PUT", body: statutory })).payroll,
+    advancePayroll: async (id, status) => (await http<{ payroll: T.PayrollDetail }>(`/hr/payroll/${id}/status`, { method: "POST", body: { status: status.toUpperCase() } })).payroll,
+    calculate: async (input) => (await http<{ statutory: T.Statutory }>("/hr/payroll/preview", { method: "POST", body: input })).statutory,
+    thirteenthMonth: (year) => http(`/hr/thirteenth-month?year=${year}`),
+    payrollReport: (year) => http(`/hr/payroll-reports?year=${year}`),
+    loans: () => http("/hr/loans"),
+    addLoan: async (input) => (await http<{ loan: T.HrLoan }>("/hr/loans", { method: "POST", body: input })).loan,
+    updateLoan: async (id, input) => (await http<{ loan: T.HrLoan }>(`/hr/loans/${id}`, { method: "PUT", body: input })).loan,
+    rules: async () => (await http<{ settings: T.PayrollRule[] }>("/hr/settings")).settings,
+    saveRules: async (values) => (await http<{ settings: T.PayrollRule[] }>("/hr/settings", { method: "PUT", body: { values } })).settings,
+  },
+  reports: {
+    get: (q) => http(`/reports?${reportParams(q)}`),
+    // A plain navigation: the server answers with an attachment, so the page stays where it is.
+    exportExcel: async (q) => window.location.assign(`/api/reports/export.xlsx?${reportParams(q)}`),
   },
   admin: {
     users: (q) => {
@@ -195,7 +227,7 @@ export const liveApi: DataService = {
     exportAuditLogs: async (q) => window.location.assign(`/api/admin/audit-logs/export.csv?${auditParams(q)}`),
     rates: async () => (await http<{ rates: T.RatesAndRules }>("/admin/rates")).rates,
     saveRates: async (input) => (await http<{ rates: T.RatesAndRules }>("/admin/rates", { method: "PUT", body: input })).rates,
-    collections: notConnected("Collections"),
+    collections: async (months) => (await http<{ months: T.CollectionSummary[] }>(`/reports/monthly?months=${months}`)).months,
     system: () => http("/admin/system"),
     importDatabase: (file) => {
       const form = new FormData();

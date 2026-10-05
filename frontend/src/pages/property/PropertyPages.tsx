@@ -1,18 +1,17 @@
 // Admin dashboard and Reports (shared with Accounting). Units Directory: UnitsPage.tsx; Water Readings: WaterPage.tsx.
-import { useState } from "react";
-import { Link } from "react-router-dom";
+import { type ReactNode, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { useAuth, useUser } from "../../auth/AuthContext";
 import { BarChart } from "../../components/base/BarChart";
 import { DataTable } from "../../components/base/DataTable";
 import { useToast } from "../../components/base/overlays";
-import { Badge, Button, Card, CardHeader, EmptyState, ErrorState, Icon, Notice, PageHeader, Skeleton, StatCard, StatusBadge, Tabs } from "../../components/base/ui";
-import { legacyUrl } from "../../components/feature/ModuleRoute";
+import { Badge, Button, Card, CardHeader, EmptyState, ErrorState, Field, Icon, Notice, PageHeader, Skeleton, StatCard, StatusBadge, Tabs } from "../../components/base/ui";
 import { ROLES } from "../../config/roles";
 import { useAsync } from "../../hooks/useAsync";
-import { monthLabel, shortMonth } from "../../lib/format";
+import { dateLabel, monthLabel, shortMonth } from "../../lib/format";
 import { peso, pesoShort, toCents } from "../../lib/money";
-import { IS_MOCK, api } from "../../services/api";
-import type { CollectionSummary } from "../../services/types";
+import { api } from "../../services/api";
+import type { CollectionSummary, PropertyReport, ReportPeriod, ReportQuery } from "../../services/types";
 import { GenerateBillsPanel } from "./Billing";
 
 const pct = (n: number) => `${Math.round(n * 100)}%`;
@@ -110,36 +109,165 @@ export function AdminDashboard() {
 }
 
 // ------------------------------------------------------------------ Reports (Admin: Property Reports, Accounting: Financial Reports)
-export function ReportsPage({ variant }: { variant: "property" | "financial" }) {
+const PERIODS: { key: ReportPeriod; label: string }[] = [
+  { key: "daily", label: "Today" }, { key: "weekly", label: "This week" }, { key: "monthly", label: "This month" }, { key: "yearly", label: "This year" }, { key: "custom", label: "Custom dates" },
+];
+const CHARGE_LABELS: [keyof PropertyReport["billing"]["charges"], string][] = [
+  ["condo", "Condo dues"], ["parking", "Parking"], ["storage", "Storage"], ["water", "Water"], ["other", "Other charges"], ["adjustment", "Adjustments"], ["penalty", "Penalties"],
+];
+
+/** The condo management report for a period (Property Reports; Accounting: Financial Reports). */
+export function ReportsPage({ variant, children }: { variant: "property" | "financial"; children?: ReactNode }) {
   const { can } = useAuth();
+  const user = useUser();
   const toast = useToast();
-  const [months, setMonths] = useState(6);
-  const { data, error, reload } = useAsync(() => api.admin.collections(months), [months]);
-  const totals = (data ?? []).reduce((s, c) => ({ billed: s.billed + toCents(c.billed), collected: s.collected + toCents(c.collected) }), { billed: 0, collected: 0 });
-  const latest = data?.at(-1);
+  const [params, setParams] = useSearchParams();
+  const period = (PERIODS.some((p) => p.key === params.get("period")) ? params.get("period") : "monthly") as ReportPeriod;
+  const query: ReportQuery = { period, from: params.get("from") ?? undefined, to: params.get("to") ?? undefined };
+  const { data, error, loading, reload } = useAsync(() => api.reports.get(query), [period, query.from, query.to]);
+  const setQuery = (next: Partial<ReportQuery>) => {
+    const p = new URLSearchParams(params);
+    for (const [k, v] of Object.entries(next)) if (v) p.set(k, v); else p.delete(k);
+    if ((next.period ?? period) !== "custom") { p.delete("from"); p.delete("to"); }
+    setParams(p, { replace: true });
+  };
+  const ledger = `/${ROLES[user.role].portal}/${variant === "financial" ? "collections" : "payments"}`;
+  async function exportExcel() {
+    try {
+      await api.reports.exportExcel({ ...query, period: "custom", from: data?.from, to: data?.to });
+    } catch (err) {
+      toast({ tone: "info", title: "Excel export", message: (err as Error).message });
+    }
+  }
   return (
     <>
       <PageHeader eyebrow={variant === "financial" ? "Finance" : "Reports"} title={variant === "financial" ? "Financial Reports" : "Property Reports"}
-        description="Billed charges versus money collected (official receipts), and receivables at the end of each month."
+        description="Charges billed, money collected (official receipts), expenses and what units still owe, for any period."
         actions={<>
-          <select className="input w-40" aria-label="Period" value={months} onChange={(e) => setMonths(Number(e.target.value))}><option value={3}>Last 3 months</option><option value={6}>Last 6 months</option><option value={12}>Last 12 months</option></select>
-          {can("reports_export") && (IS_MOCK
-            ? <Button variant="secondary" icon="file-excel-2-line" onClick={() => toast({ tone: "info", title: "Excel export runs on the server", message: "In the live system this downloads the condo report workbook." })}>Export to Excel</Button>
-            : <a className="inline-flex h-10 items-center gap-2 rounded-lg border border-ink-200 bg-white px-4 font-semibold shadow-sm hover:bg-ink-50" href={legacyUrl("/reports/export.xlsx")}><Icon name="file-excel-2-line" />Export to Excel</a>)}
+          <Button variant="secondary" icon="printer-line" disabled={!data} onClick={() => window.print()}>Print</Button>
+          {can("reports_export") && <Button variant="secondary" icon="file-excel-2-line" disabled={!data} onClick={exportExcel}>Export to Excel</Button>}
         </>} />
+      {children}
+      <Card className="no-print mb-6">
+        <div className="flex flex-wrap items-end gap-3 p-4">
+          <Tabs value={period} onChange={(p) => setQuery({ period: p })} tabs={PERIODS} />
+          {period === "custom" && (
+            <div className="flex flex-wrap items-end gap-3">
+              <Field label="From">{(id) => <input id={id} type="date" className="input w-44" value={query.from ?? data?.from ?? ""} onChange={(e) => setQuery({ from: e.target.value })} />}</Field>
+              <Field label="To">{(id) => <input id={id} type="date" className="input w-44" value={query.to ?? data?.to ?? ""} onChange={(e) => setQuery({ to: e.target.value })} />}</Field>
+            </div>
+          )}
+        </div>
+      </Card>
       {error ? <ErrorState message={error.message} onRetry={reload} /> : !data ? <Card><Skeleton rows={8} /></Card> : (
-        <>
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <StatCard icon="file-list-3-line" label={`Billed · ${months} months`} value={pesoShort(totals.billed / 100)} />
-            <StatCard tone="hero" icon="hand-coin-line" label={`Collected · ${months} months`} value={pesoShort(totals.collected / 100)} hint={`${totals.billed ? pct(totals.collected / totals.billed) : "—"} collection rate`} />
-            <StatCard tone="copper" icon="error-warning-line" label="Receivables now" value={latest ? pesoShort(latest.outstanding) : "—"} hint="Sum of balances on each unit's latest SOA" />
-            <StatCard icon="calendar-line" label="Latest month" value={latest ? monthLabel(latest.month, "short") : "—"} hint={latest && `${pct(latest.collectionRate)} collected so far`} />
+        <div className={loading ? "opacity-60 transition-opacity" : undefined} aria-busy={loading || undefined}>
+          <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
+            <h2 className="font-display text-[20px] font-bold text-ink-900">{data.label}</h2>
+            {data.period !== "custom" && <span className="text-ink-500">{dateLabel(data.from)}{data.to !== data.from && <> – {dateLabel(data.to)}</>}</span>}
           </div>
-          <Card className="mt-6"><CardHeader title="Billed vs collected" subtitle="Collected = official receipts issued in the month (bills, water and advances)." /><div className="p-5"><CollectionsChart data={data} /></div></Card>
-          <Card className="mt-6"><CardHeader title="Monthly summary" /><CollectionsTable data={data} /></Card>
-        </>
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            <StatCard icon="file-list-3-line" label="Charges billed" value={peso(data.billing.charged)} hint={`${data.billing.bills} bill${data.billing.bills === 1 ? "" : "s"} generated`} />
+            <StatCard tone="hero" icon="hand-coin-line" label="Collected" value={peso(data.collections.total)} hint={`${data.collections.receipts} official receipt${data.collections.receipts === 1 ? "" : "s"}`} />
+            <StatCard icon="wallet-3-line" label="Expenses" value={peso(data.expenses.total)} />
+            <StatCard tone={toCents(data.netCashFlow) < 0 ? "copper" : "default"} icon="scales-3-line" label="Net cash flow" value={peso(data.netCashFlow)} hint="Collected minus expenses" />
+          </div>
+          {(data.collections.voided.count > 0 || data.collections.withoutReceipt > 0) && (
+            <div className="mt-4 space-y-2">
+              {data.collections.voided.count > 0 && <Notice tone="info">{data.collections.voided.count} voided receipt{data.collections.voided.count === 1 ? "" : "s"} ({peso(data.collections.voided.amount)}) in this period {data.collections.voided.count === 1 ? "is" : "are"} not counted as collected.</Notice>}
+              {data.collections.withoutReceipt > 0 && <Notice tone="warn">{data.collections.withoutReceipt} payment{data.collections.withoutReceipt === 1 ? " was" : "s were"} recorded without an official receipt (e.g. imported from Excel). {data.collections.withoutReceipt === 1 ? "It is" : "They are"} counted and marked “No receipt” below.</Notice>}
+            </div>
+          )}
+          <div className="mt-6 grid gap-6 lg:grid-cols-3">
+            <Card>
+              <CardHeader title="Collections" subtitle="What the money paid for" />
+              <SummaryRows rows={[["Statements of account", data.collections.bills], ["Water", data.collections.water], ["Advance payments", data.collections.advances]]} total={["Total collected", data.collections.total]} />
+              <div className="border-t border-ink-100 px-5 pt-3 text-[12px] font-semibold tracking-wide text-ink-500 uppercase">By payment method</div>
+              <SummaryRows rows={Object.entries(data.collections.byMethod).map(([m, v]) => [m.charAt(0) + m.slice(1).toLowerCase(), v])} />
+            </Card>
+            <Card>
+              <CardHeader title="Charges billed" subtitle="Bills generated in the period. Earlier unpaid balances are not counted again." />
+              <SummaryRows rows={CHARGE_LABELS.filter(([k]) => toCents(data.billing.charges[k]) !== 0 || ["condo", "water", "penalty"].includes(k)).map(([k, label]) => [label, data.billing.charges[k]])}
+                total={["Total charged", data.billing.charged]} />
+              {toCents(data.billing.advanceCredits) > 0 && <p className="px-5 pb-4 text-[12.5px] text-ink-500">Advance payments covered {peso(data.billing.advanceCredits)} of these charges.</p>}
+            </Card>
+            <Card>
+              <CardHeader title="Receivables & property" subtitle="As of today" />
+              <SummaryRows rows={[["Owed by units", data.receivables.total]]} />
+              <dl className="divide-y divide-ink-100 border-t border-ink-100 text-[13.5px]">
+                {([["Units with a balance", data.receivables.units], ["…of which overdue", data.receivables.overdueUnits], ["Residential units", data.property.residentialUnits],
+                  ["Occupied / vacant", `${data.property.occupied} / ${data.property.vacant}`], ["Current tenants", data.property.currentTenants], ["Units with parking", data.property.withParking]] as [string, string | number][]).map(([k, v]) => (
+                  <div key={k} className="flex justify-between gap-3 px-5 py-2"><dt className="text-ink-500">{k}</dt><dd className="font-semibold text-ink-900 tabular">{v}</dd></div>
+                ))}
+              </dl>
+            </Card>
+          </div>
+          <Card className="mt-6">
+            <CardHeader title="Collection transactions" subtitle={`${data.transactions.length} in this period`} />
+            <DataTable rows={data.transactions} rowKey={(t) => `${t.receiptNo ?? "x"}-${t.date}-${t.unitNo}-${t.amount}-${t.description}`} empty={{ icon: "hand-coin-line", title: "No collections in this period" }}
+              columns={[
+                { key: "d", header: "Date", cell: (t) => <span className="whitespace-nowrap">{dateLabel(t.date)}</span> },
+                { key: "r", header: "OR No.", cell: (t) => (t.receiptId ? <Link className="font-semibold whitespace-nowrap text-brand-700 hover:underline" to={`${ledger}?receipt=${t.receiptId}`}>{t.receiptNo}</Link> : <Badge tone="warn" dot={false}>No receipt</Badge>) },
+                { key: "u", header: "Unit", cell: (t) => t.unitNo || "—" },
+                { key: "x", header: "For", cell: (t) => <span className="text-[13px]">{t.description}</span> },
+                { key: "m", header: "Method", cell: (t) => <>{t.method}{t.reference && <span className="block text-[12px] text-ink-500">{t.reference}</span>}</> },
+                { key: "a", header: "Amount", align: "right", cell: (t) => <b className="whitespace-nowrap">{peso(t.amount)}</b> },
+              ]} />
+          </Card>
+          <Card className="mt-6">
+            <CardHeader title="Expenses" subtitle={Object.entries(data.expenses.byCategory).map(([c, v]) => `${c} ${peso(v)}`).join(" · ") || undefined} />
+            <DataTable rows={data.expenses.rows} rowKey={(e) => e.id} empty={{ icon: "wallet-3-line", title: "No expenses in this period" }}
+              columns={[
+                { key: "d", header: "Date", cell: (e) => <span className="whitespace-nowrap">{dateLabel(e.date)}</span> },
+                { key: "c", header: "Category", cell: (e) => e.category },
+                { key: "x", header: "Description", cell: (e) => e.description },
+                { key: "a", header: "Amount", align: "right", cell: (e) => <b className="whitespace-nowrap">{peso(e.amount)}</b> },
+              ]} />
+          </Card>
+        </div>
       )}
     </>
+  );
+}
+
+/** Financial Reports: billed vs collected per month and receivables at each month end. */
+export function MonthlyTrend() {
+  const [months, setMonths] = useState(6);
+  const { data, error, loading, reload } = useAsync(() => api.admin.collections(months), [months]);
+  const totals = (data ?? []).reduce((s, c) => ({ billed: s.billed + toCents(c.billed), collected: s.collected + toCents(c.collected) }), { billed: 0, collected: 0 });
+  const latest = data?.at(-1);
+  return (
+    <section className="mb-8" aria-labelledby="trend-title">
+      <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 id="trend-title" className="font-display text-[20px] font-bold text-ink-900">Month by month</h2>
+          <p className="text-ink-500">Charges billed each month against money collected, and what units owed at each month end.</p>
+        </div>
+        <select className="input no-print w-44" aria-label="Months shown" value={months} onChange={(e) => setMonths(Number(e.target.value))}>
+          <option value={6}>Last 6 months</option><option value={12}>Last 12 months</option><option value={24}>Last 24 months</option>
+        </select>
+      </div>
+      {error ? <ErrorState message={error.message} onRetry={reload} /> : !data ? <Card><Skeleton rows={6} /></Card> : (
+        <div className={loading ? "opacity-60 transition-opacity" : undefined} aria-busy={loading || undefined}>
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            <StatCard icon="file-list-3-line" label={`Billed · ${months} months`} value={pesoShort(totals.billed / 100)} />
+            <StatCard tone="hero" icon="hand-coin-line" label={`Collected · ${months} months`} value={pesoShort(totals.collected / 100)} hint={totals.billed ? `${pct(Math.min(totals.collected / totals.billed, 1))} of billed` : undefined} />
+            <StatCard tone="copper" icon="error-warning-line" label={latest ? `Receivables · end of ${monthLabel(latest.month, "short")}` : "Receivables"} value={latest ? pesoShort(toCents(latest.outstanding) / 100) : "—"} hint="Bills up to this month, less payments" />
+            <StatCard icon="calendar-line" label="This month" value={latest ? pct(latest.collectionRate) : "—"} hint={latest ? `collected of ${monthLabel(latest.month, "short")} billing` : undefined} />
+          </div>
+          <Card className="mt-6"><CardHeader title="Billed vs collected" subtitle="Collected = official receipts issued in the month (bills, water and advances), voided receipts excluded." /><div className="p-5"><CollectionsChart data={data} /></div></Card>
+          <Card className="mt-6"><CardHeader title="Monthly summary" subtitle="Billed counts each month's own charges; earlier unpaid balances are not counted again." /><CollectionsTable data={data} /></Card>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function SummaryRows({ rows, total }: { rows: [string, string][]; total?: [string, string] }) {
+  return (
+    <dl className="px-5 py-3 text-[13.5px]">
+      {rows.map(([k, v]) => <div key={k} className="flex justify-between gap-3 py-1"><dt className="text-ink-600">{k}</dt><dd className="tabular text-ink-900">{peso(v)}</dd></div>)}
+      {total && <div className="mt-1 flex justify-between gap-3 border-t border-ink-100 pt-2 font-semibold"><dt>{total[0]}</dt><dd className="tabular">{peso(total[1])}</dd></div>}
+    </dl>
   );
 }
 

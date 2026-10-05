@@ -121,14 +121,39 @@ export interface DataService {
     publish(input: { title: string; message: string; audience: string; published: boolean }): Promise<T.Announcement>;
   };
   hr: {
-    employees(): Promise<T.Employee[]>;
-    attendance(date: T.IsoDate): Promise<T.AttendanceRecord[]>;
-    saveAttendance(input: Omit<T.AttendanceRecord, "id" | "employeeName" | "lateMinutes">): Promise<T.AttendanceRecord>;
-    leave(): Promise<T.LeaveRequest[]>;
-    overtime(): Promise<T.OvertimeRequest[]>;
-    decideLeave(id: number, status: "Approved" | "Rejected"): Promise<T.LeaveRequest>;
+    employees(): Promise<{ employees: T.Employee[]; statuses: T.EmploymentStatus[] }>;
+    addEmployee(input: T.EmployeeInput): Promise<T.Employee>;
+    updateEmployee(id: number, input: T.EmployeeInput): Promise<T.Employee>;
+    deleteEmployee(id: number): Promise<void>;
+    attendanceDay(date: T.IsoDate): Promise<T.AttendanceDay>;
+    saveAttendance(date: T.IsoDate, records: T.AttendanceInput[]): Promise<{ saved: number; cleared: number }>;
+    attendanceHistory(employeeId: number, from: T.IsoDate, to: T.IsoDate): Promise<T.AttendanceHistory>;
+    overtime(): Promise<{ requests: T.OvertimeRequest[]; multipliers: { value: number; label: string }[] }>;
+    fileOvertime(input: { employeeId: number; date: T.IsoDate; hours: string; multiplier: string; reason: string }): Promise<T.OvertimeRequest>;
     decideOvertime(id: number, status: "Approved" | "Rejected"): Promise<T.OvertimeRequest>;
-    payroll(period: T.Month): Promise<T.PayrollRecord[]>;
+    leave(): Promise<{ requests: T.LeaveRequest[]; types: string[] }>;
+    fileLeave(input: { employeeId: number; leaveType: string; from: T.IsoDate; to: T.IsoDate; reason: string }): Promise<T.LeaveRequest>;
+    decideLeave(id: number, status: "Approved" | "Rejected"): Promise<T.LeaveRequest>;
+    payroll(from: T.IsoDate, to: T.IsoDate): Promise<T.PayrollPeriod>;
+    previewPayroll(input: T.PayrollInput): Promise<T.PayrollPreview>;
+    generatePayroll(input: T.PayrollInput): Promise<T.PayrollDetail>;
+    payslip(id: number): Promise<{ payroll: T.PayrollDetail; corporation: string; address: string }>;
+    editStatutory(id: number, statutory: T.Statutory): Promise<T.PayrollDetail>;
+    advancePayroll(id: number, status: T.PayrollStatus): Promise<T.PayrollDetail>;
+    /** The statutory computation of monthly amounts with the saved Payroll Rules (nothing saved). */
+    calculate(input: T.CalculatorInput): Promise<T.Statutory>;
+    thirteenthMonth(year: number): Promise<T.ThirteenthMonth>;
+    payrollReport(year: number): Promise<T.PayrollReport>;
+    loans(): Promise<{ loans: T.HrLoan[]; types: string[] }>;
+    addLoan(input: T.LoanInput): Promise<T.HrLoan>;
+    updateLoan(id: number, input: { status: T.HrLoan["status"]; monthlyDeduction: string; notes: string }): Promise<T.HrLoan>;
+    rules(): Promise<T.PayrollRule[]>;
+    saveRules(values: Record<string, string>): Promise<T.PayrollRule[]>;
+  };
+  reports: {
+    get(query: T.ReportQuery): Promise<T.PropertyReport>;
+    /** Download the period's transactions as Excel. */
+    exportExcel(query: T.ReportQuery): Promise<void>;
   };
   admin: {
     users(query: T.UserQuery): Promise<T.UserPage>;

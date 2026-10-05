@@ -23,22 +23,22 @@ Status values: `LEGACY` (only the Jinja UI exists) · `API` (REST endpoints done
 | 7 | Operations | Move In / Out | `move_certificate`, `move_certificates` | `operations` | REACT (live; classic URLs redirect) |
 | 8 | Operations | Gate Pass | `gate_pass` | `operations` | REACT (live; classic URLs redirect) |
 | 9 | Operations | Expenses | `expenses` | `operations` | REACT (live; classic URLs redirect) |
-| 10 | Employee Mgmt | Employees | `employees`, `employee_edit`, `delete_employee` | `employees` | LEGACY |
-| 11 | Employee Mgmt | Attendance | `employee_attendance`, `employee_attendance_history` | `employees` | LEGACY |
-| 12 | Employee Mgmt | Leave | `employee_leave`, `employee_leave_status` | `employees` | LEGACY |
-| 13 | Employee Mgmt | Overtime | `employee_overtime`, `employee_overtime_status` | `employees` | LEGACY |
-| 14 | Employee Mgmt | Payroll | `employee_payroll`, `employee_payroll_print`, `employee_payroll_statutory`, `employee_payroll_statutory_print` | `payroll` | LEGACY |
-| 15 | Employee Mgmt | Loans & Deductions | `employee_hr_loans` | `payroll` | LEGACY |
-| 16 | Employee Mgmt | 13th Month | `employee_13th_month_full` (+ older `employee_13th_month`) | `payroll` | LEGACY |
-| 17 | Employee Mgmt | Payroll Rules | `employee_hr_settings` | `payroll` | LEGACY |
-| 18 | Employee Mgmt | Payroll Reports | `employee_payroll_reports` | `payroll` | LEGACY |
+| 10 | Employee Mgmt | Employees | `employees`, `employee_edit`, `delete_employee` | `employees` | REACT (live; classic URLs redirect) |
+| 11 | Employee Mgmt | Attendance | `employee_attendance`, `employee_attendance_history` | `employees` | REACT (live; classic URLs redirect) |
+| 12 | Employee Mgmt | Leave | `employee_leave`, `employee_leave_status` | `employees` | REACT (live; classic URLs redirect) |
+| 13 | Employee Mgmt | Overtime | `employee_overtime`, `employee_overtime_status` | `employees` | REACT (live; classic URLs redirect) |
+| 14 | Employee Mgmt | Payroll | `employee_payroll`, `employee_payroll_print`, `employee_payroll_statutory`, `employee_payroll_statutory_print` | `payroll` | REACT (live; classic URLs redirect) |
+| 15 | Employee Mgmt | Loans & Deductions | `employee_hr_loans` | `payroll` | REACT (live; classic URLs redirect) |
+| 16 | Employee Mgmt | 13th Month | `employee_13th_month_full` (+ older `employee_13th_month`) | `payroll` | REACT (live; classic URLs redirect) |
+| 17 | Employee Mgmt | Payroll Rules | `employee_hr_settings` | `payroll` | REACT (live; classic URLs redirect) |
+| 18 | Employee Mgmt | Payroll Reports | `employee_payroll_reports` | `payroll` | REACT (live; classic URLs redirect) |
 | 19 | Community | Resident Portal | `resident_portal` | `community` | LEGACY |
 | 20 | Community | Resident Accounts | `resident_users` | `community` | REACT (live; classic URLs redirect) |
 | 21 | Community | Announcements | `announcements` | `community` | REACT (live; classic URLs redirect) |
 | 22 | Community | Maintenance | `maintenance`, `maintenance_update` | `community` | REACT (live; classic URLs redirect) |
 | 23 | Community | Vendors | `vendors` | `community` | REACT (live; classic URLs redirect) |
 | 24 | Community | Documents | `documents` | `community` | REACT (live; classic URLs redirect) |
-| 25 | Administration | Condo Reports | `reports`, `reports_export` | `reports` | LEGACY |
+| 25 | Administration | Condo Reports | `reports`, `reports_export` | `reports` | REACT (live; classic URLs redirect) |
 | 26 | Administration | Users & Access | `users`, `reset_user_password`, `delete_user` | `admin` | REACT (live; classic URLs redirect) |
 | 27 | Administration | Audit Logs | `audit_logs` | `admin` | REACT (live; classic URLs redirect) |
 | 28 | Administration | Rates & Rules | `settings`, `database_export`, `database_import` | `admin` | REACT (live; classic URLs redirect) |
@@ -599,3 +599,13 @@ Open business questions: **Q1**–**Q9** above.
 | M5 | The classic Billing list used only its month's water readings, so older bills could show other balances than elsewhere | FIXED: one calculation everywhere |
 | M6 | The penalty rate/choices and the storage cut-off month are read when an SOA is computed, so changing them also changes unpaid bills | BY DESIGN (unchanged); the Rates & Rules page says so |
 | M7 | The resident portal showed every published announcement, including ones marked for staff only | FIXED: residents see audience "residents"/"all" only |
+| B1 | Balances carried over between months were counted again every month (3 unpaid months of ₱3,000 showed ₱12,000), and paying the latest SOA never cleared the older bills, so their amount came back on the next SOA and kept earning penalty | FIXED 2026-10-05: one running balance per unit; payments settle the oldest charges first (balances, statuses, penalty base, stored previous balance). Receipts, payments and audit history unchanged. Real data checked on a copy: no bill affected yet (one bill per unit) |
+| R1 | Reports: "Total amount billed" added each bill's previous balance, so unpaid months were counted again in every later bill | FIXED: the period's own charges (dues, parking, storage, water, other, adjustment, penalty); advance credits shown separately |
+| R2 | Reports: "Current outstanding" added the balances of all bills, each of which already contains the earlier unpaid ones | FIXED: what each unit still owes, counted once |
+| R3 | Reports: water collections used each reading's cumulative paid amount on its last payment date (a partly paid reading counted in full in the month of its last payment) | FIXED: collections come from official receipts (as Payments & ORs), voided receipts excluded; payments without a receipt are counted and flagged |
+| H1 | Payroll: generating twice for the same employee and period was allowed, paying twice and deducting loans twice | FIXED: an overlapping payroll is refused (open the existing one) |
+| H2 | Payroll status could never move past the status chosen at generation | FIXED: Draft -> Final -> Paid, forward only; a Paid payroll can't be edited |
+| H3 | Editing statutory amounts saved the typed totals and left the payslip's net pay unchanged | FIXED: totals and net pay are recomputed from the amounts |
+| H4 | Leave / overtime could be re-decided any time; overlapping leave was accepted | FIXED: filed Pending, decided once (approver recorded); overlapping leave refused |
+| H5 | Deleting an employee with records orphaned their payroll, attendance and loans | FIXED: refused; set the status to Separated |
+| H6 | The prototype's payroll calculator used different statutory rules from the server (SSS brackets on basic vs raw gross; Pag-IBIG cap 10,000 vs 5,000; PhilHealth on basic vs gross) | FIXED (display): calculator and Tax Rules page now show the server's saved rules. OPEN DECISION: which statutory formulas are correct (not changed) |

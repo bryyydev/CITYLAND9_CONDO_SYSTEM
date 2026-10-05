@@ -705,19 +705,26 @@ export interface Announcement extends Notice {
 }
 
 // ---------------------------------------------------------------- HR & payroll
+export type EmploymentStatus = "Active" | "On Leave" | "Inactive" | "Separated";
 export interface Employee {
   id: number;
   employeeNo: string;
   fullName: string;
   position: string;
   department: string;
-  status: "Active" | "On Leave" | "Resigned";
-  dateHired: IsoDate;
-  monthlySalary: Money;
+  status: EmploymentStatus;
   contactNo: string;
+  email: string;
+  dateHired: IsoDate | null;
+  monthlySalary: Money;
+  notes: string;
+  /** Has attendance, payroll, leave, overtime or loan records (then it can't be deleted). */
+  hasRecords?: boolean;
 }
+export type EmployeeInput = Omit<Employee, "id" | "hasRecords">;
 
-export type AttendanceStatus = "Present" | "Late" | "Absent" | "On Leave" | "Half Day";
+/** PRESENT, LATE, UNDERTIME, LATE/UNDERTIME, ABSENT, LEAVE, REST DAY (as the server stores them). */
+export type AttendanceStatus = string;
 export interface AttendanceRecord {
   id: number;
   employeeId: number;
@@ -726,7 +733,28 @@ export interface AttendanceRecord {
   timeIn: string | null;
   timeOut: string | null;
   status: AttendanceStatus;
+  remarks: string;
+  /** After 8:00 plus the grace period, as payroll counts it. */
   lateMinutes: number;
+  /** Before 17:00 (undertime statuses only). */
+  undertimeMinutes: number;
+}
+export interface AttendanceDay {
+  date: IsoDate;
+  statuses: AttendanceStatus[];
+  employees: { id: number; fullName: string; employeeNo: string; status: EmploymentStatus; record: AttendanceRecord | null }[];
+  schedule: { start: string; end: string; graceMinutes: number };
+}
+/** status "" removes the day's record. */
+export interface AttendanceInput { employeeId: number; status: AttendanceStatus; timeIn: string | null; timeOut: string | null; remarks: string }
+export interface AttendanceHistory {
+  employee: Employee;
+  from: IsoDate;
+  to: IsoDate;
+  records: AttendanceRecord[];
+  counts: Record<string, number>;
+  lateMinutes: number;
+  undertimeMinutes: number;
 }
 
 export type ApprovalStatus = "Pending" | "Approved" | "Rejected";
@@ -740,18 +768,22 @@ export interface LeaveRequest {
   days: number;
   reason: string;
   status: ApprovalStatus;
+  decidedBy: string;
 }
-
 export interface OvertimeRequest {
   id: number;
   employeeId: number;
   employeeName: string;
   date: IsoDate;
   hours: number;
+  multiplier: number;
+  amount: Money;
   reason: string;
   status: ApprovalStatus;
+  decidedBy: string;
 }
 
+export type PayrollStatus = "Draft" | "Final" | "Paid";
 export interface PayrollRecord {
   id: number;
   employeeId: number;
@@ -761,10 +793,75 @@ export interface PayrollRecord {
   basic: Money;
   overtime: Money;
   allowances: Money;
+  /** Other deductions incl. loan deductions. */
   deductions: Money;
+  absences: Money;
+  lateUndertime: Money;
+  gross: Money;
   netPay: Money;
-  status: "Draft" | "Released";
+  status: PayrollStatus;
+  remarks: string;
+  nextStatus: PayrollStatus | null;
 }
+export interface Statutory {
+  sssEmployee: Money; sssEmployer: Money; sssEcEmployer: Money;
+  philhealthEmployee: Money; philhealthEmployer: Money;
+  pagibigEmployee: Money; pagibigEmployer: Money;
+  withholdingTax: Money; thirteenthMonth: Money;
+  grossPay: Money; totalEmployeeDeductions: Money; totalEmployerCost: Money; netPay: Money;
+}
+export interface PayrollDetail extends PayrollRecord {
+  employee: Employee | null;
+  statutory: Statutory;
+  /** false once Paid. */
+  editable: boolean;
+}
+export interface PayrollPeriod {
+  from: IsoDate;
+  to: IsoDate;
+  payroll: PayrollRecord[];
+  employees: { id: number; fullName: string; employeeNo: string; monthlySalary: Money; hasPayroll: boolean }[];
+}
+export interface PayrollInput {
+  employeeId: number;
+  from: IsoDate;
+  to: IsoDate;
+  /** "" = the monthly salary / the approved overtime of the period. */
+  basic: string;
+  overtime: string;
+  allowances: string;
+  deductions: string;
+  status?: "DRAFT" | "FINAL" | "PAID";
+  remarks?: string;
+  formToken?: string;
+}
+export interface PayrollPreview {
+  basic: Money; overtime: Money; approvedOvertime: Money; allowances: Money; deductions: Money;
+  loanDeductions: Money; absences: Money; lateUndertime: Money; statutory: Statutory;
+}
+export interface CalculatorInput { basic: string; overtime: string; allowances: string; deductions: string; lateUndertime: string }
+export interface ThirteenthMonth {
+  year: number;
+  ceiling: Money;
+  rows: { employeeId: number; employeeName: string; employeeNo: string; payrolls: number; basicTotal: Money; thirteenth: Money; exempt: Money; taxable: Money }[];
+  total: Money;
+  taxable: Money;
+}
+export interface PayrollReport { year: number; rows: PayrollRecord[]; totals: Record<string, Money> }
+export interface HrLoan {
+  id: number;
+  employeeId: number;
+  employeeName: string;
+  loanType: string;
+  referenceNo: string;
+  originalAmount: Money;
+  balance: Money;
+  monthlyDeduction: Money;
+  status: "ACTIVE" | "HOLD" | "PAID";
+  notes: string;
+}
+export interface LoanInput { employeeId: number; loanType: string; referenceNo: string; originalAmount: string; balance: string; monthlyDeduction: string; notes: string }
+export interface PayrollRule { key: string; label: string; group: string; unit: string; value: string; default: string }
 
 // ---------------------------------------------------------------- administration
 export interface UserAccount {
@@ -948,6 +1045,42 @@ export interface ImportResult {
   message: string;
   /** Per sheet found in the workbook: rows inserted / updated. */
   counts: Record<string, { inserted: number; updated: number }>;
+}
+
+// ---------------------------------------------------------------- reports
+export type ReportPeriod = "daily" | "weekly" | "monthly" | "yearly" | "custom";
+export interface ReportQuery {
+  period: ReportPeriod;
+  /** Custom range only (YYYY-MM-DD). */
+  from?: IsoDate;
+  to?: IsoDate;
+}
+export interface ReportTransaction {
+  date: IsoDate;
+  /** null: recorded without an official receipt (e.g. imported). */
+  receiptNo: string | null;
+  receiptId: number | null;
+  unitNo: string;
+  method: string;
+  reference: string;
+  description: string;
+  amount: Money;
+}
+export interface PropertyReport {
+  period: ReportPeriod;
+  label: string;
+  from: IsoDate;
+  to: IsoDate;
+  property: { residentialUnits: number; occupied: number; vacant: number; currentTenants: number; withParking: number };
+  /** Bills generated in the period: their own charges (previous balances are not counted again). */
+  billing: { bills: number; charged: Money; advanceCredits: Money; charges: Record<"condo" | "parking" | "storage" | "water" | "other" | "adjustment" | "penalty", Money> };
+  /** Money received: official receipts (voided ones excluded) plus payments recorded without a receipt. */
+  collections: { total: Money; bills: Money; water: Money; advances: Money; byMethod: Record<string, Money>; receipts: number; withoutReceipt: number; voided: { count: number; amount: Money } };
+  expenses: { total: Money; byCategory: Record<string, Money>; rows: Expense[] };
+  netCashFlow: Money;
+  /** What units still owe today, each unit counted once. */
+  receivables: { total: Money; units: number; overdueUnits: number };
+  transactions: ReportTransaction[];
 }
 
 export interface CollectionSummary {

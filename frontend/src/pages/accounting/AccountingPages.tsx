@@ -11,7 +11,7 @@ import { BillingWorkspace } from "../property/Billing";
 import { AdvancesWorkspace, ReceiptQuickList, ReceiptsLedger } from "../property/Ledger";
 import { LegacyBridge } from "../../components/feature/ModuleRoute";
 import { MODULES } from "../../config/modules";
-import { CollectionsChart, ReportsPage } from "../property/PropertyPages";
+import { CollectionsChart, MonthlyTrend, ReportsPage } from "../property/PropertyPages";
 
 const pct = (n: number) => `${Math.round(n * 100)}%`;
 
@@ -70,4 +70,4 @@ export function BillingAdvancesPage() {
 }
 
 export const CollectionsPage = () => <ReceiptsLedger title="Collections & Official Receipts" eyebrow="Finance" recordAction />;
-export const FinancialReportsPage = () => <ReportsPage variant="financial" />;
+export const FinancialReportsPage = () => <ReportsPage variant="financial"><MonthlyTrend /></ReportsPage>;

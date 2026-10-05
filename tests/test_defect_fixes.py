@@ -51,49 +51,49 @@ def test_d1_move_certificate_is_generated(app_module, sa):
 
 def test_d5_status_values_are_checked_and_approver_recorded(app_module, sa, employee):
     m = app_module
-    sa.post("/employees/leave", data={"employee_id": employee, "start_date": "2026-11-02", "end_date": "2026-11-03",
-                                      "leave_type": "VACATION", "status": "WHATEVER"})
+    client = api(sa)
+    base = {"employeeId": employee, "from": "2026-11-02", "to": "2026-11-03", "leaveType": "VACATION"}
+    assert client.post("/api/hr/leave", json={**base, "leaveType": "WHATEVER"}).status_code == 400          # refused
     with m.app.app_context():
-        assert m.EmployeeLeave.query.filter_by(employee_id=employee).count() == 0      # refused
-    sa.post("/employees/leave", data={"employee_id": employee, "start_date": "2026-11-02", "end_date": "2026-11-03",
-                                      "leave_type": "VACATION", "status": "PENDING"})
+        assert m.EmployeeLeave.query.filter_by(employee_id=employee).count() == 0
+    req = client.post("/api/hr/leave", json=base).get_json()["request"]
+    assert req["status"] == "Pending" and not req["decidedBy"]                                             # always filed Pending
+    assert client.post(f"/api/hr/leave/{req['id']}/decision", json={"status": "paid-already"}).status_code == 400
+    done = client.post(f"/api/hr/leave/{req['id']}/decision", json={"status": "approved"}).get_json()["request"]
     with m.app.app_context():
-        leave = m.EmployeeLeave.query.filter_by(employee_id=employee).first()
-        assert leave.status == "PENDING" and not leave.approved_by
-        lid = leave.id
-    sa.post(f"/employees/leave/{lid}/status", data={"status": "approved"})
-    with m.app.app_context():
-        leave = m.db.session.get(m.EmployeeLeave, lid)
-        assert leave.status == "APPROVED" and leave.approved_by == SA_USERNAME
-    sa.post("/employees/overtime", data={"employee_id": employee, "ot_date": "2026-11-04", "hours": "2", "status": "PAID-ALREADY"})
+        leave = m.db.session.get(m.EmployeeLeave, req["id"])
+        assert leave.status == "APPROVED" and leave.approved_by == SA_USERNAME and done["decidedBy"] == SA_USERNAME
+    assert client.post(f"/api/hr/leave/{req['id']}/decision", json={"status": "rejected"}).status_code == 409   # decided once
+    assert client.post("/api/hr/overtime", json={"employeeId": employee, "date": "2026-11-04", "hours": "30"}).status_code == 400
     with m.app.app_context():
         assert m.EmployeeOvertime.query.filter_by(employee_id=employee).count() == 0
 
 
 def test_d6_payroll_is_all_or_nothing(app_module, sa, employee, monkeypatch):
     m = app_module
+    client = api(sa)
     with m.app.app_context():
         m.db.session.add(m.EmployeeHRLoan(employee_id=employee, loan_type="SSS", original_amount=5000, balance=5000,
                                           monthly_deduction=1000, status="ACTIVE"))
         m.db.session.commit()
-    form = {"employee_id": employee, "start": "2026-11-01", "end": "2026-11-15", "status": "DRAFT"}
+    form = {"employeeId": employee, "from": "2026-11-01", "to": "2026-11-15", "status": "DRAFT"}
 
     def broken(*args, **kwargs):
         raise RuntimeError("statutory table missing")
     monkeypatch.setattr(m, "_v1040_calc", broken)
-    page = sa.post("/employees/payroll", data=form, follow_redirects=True).get_data(as_text=True)
-    assert "Payroll was NOT saved" in page
+    resp = client.post("/api/hr/payroll", json={**form, "formToken": "d6-token-number-one"})
+    assert resp.status_code == 500 and "Payroll was NOT saved" in resp.get_json()["error"]["message"]
     with m.app.app_context():
         assert m.EmployeePayroll.query.filter_by(employee_id=employee).count() == 0      # no half-saved payroll
         assert float(m.EmployeeHRLoan.query.filter_by(employee_id=employee).first().balance) == 5000
     monkeypatch.undo()
-    page = sa.post("/employees/payroll", data=form, follow_redirects=True).get_data(as_text=True)
-    assert "Payroll record generated" in page
+    assert client.post("/api/hr/payroll", json={**form, "formToken": "d6-token-number-two"}).status_code == 201
     with m.app.app_context():
         p = m.EmployeePayroll.query.filter_by(employee_id=employee).one()
         assert m.EmployeePayrollStatutory.query.filter_by(payroll_id=p.id).count() == 1
         assert float(m.EmployeeHRLoan.query.filter_by(employee_id=employee).first().balance) == 4000   # reduced together
-    sa.post("/employees/payroll", data={**form, "status": "BOGUS"})                      # unknown status: refused
+    assert client.post("/api/hr/payroll", json={**form, "from": "2026-12-01", "to": "2026-12-15", "status": "BOGUS",
+                                                "formToken": "d6-token-number-three"}).status_code == 400   # unknown status: refused
     with m.app.app_context():
         assert m.EmployeePayroll.query.filter_by(employee_id=employee).count() == 1
 
@@ -105,9 +105,10 @@ def test_d8_13th_month_report_uses_the_ceiling(app_module, sa, employee):
                                            basic_salary=1200000, overtime_pay=0, allowances=0, deductions=0, absences=0,
                                            late_undertime=0, net_pay=0, status="PAID"))
         m.db.session.commit()
-    page = sa.get("/employees/13th-month?year=2031").get_data(as_text=True)
+    data = api(sa).get("/api/hr/thirteenth-month?year=2031").get_json()
+    row = next(r for r in data["rows"] if r["employeeId"] == employee)
     # 1,200,000 / 12 = 100,000 -> 90,000 tax-exempt, 10,000 taxable (default ceiling)
-    assert "₱100000.00" in page and "₱90000.00" in page and "₱10000.00" in page and "TAXABLE" in page
+    assert (row["thirteenth"], row["exempt"], row["taxable"]) == ("100000.00", "90000.00", "10000.00") and data["ceiling"] == "90000.00"
 
 
 def test_units_search_can_include_past_owners_and_tenants(app_module, sa):

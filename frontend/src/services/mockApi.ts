@@ -12,7 +12,7 @@
 
 import { addDays, addMonths, todayIso } from "../lib/format";
 import { fromCents, isAmount, toCents } from "../lib/money";
-import { previewPayroll } from "../lib/payroll";
+import { RULE_DEFAULTS, attendanceDeductions, lateMinutes, statutory, undertimeMinutes } from "../lib/payroll";
 import { permissionsForRole } from "../config/permissions";
 import { ROLES } from "../config/roles";
 import { PERSONAS } from "./personas";
@@ -339,36 +339,48 @@ const announcements: T.Announcement[] = [
   audience: (title as string).includes("(staff)") ? "staff" : "residents", published: true, createdBy: by as string }));
 
 // ------------------------------------------------------------------ HR
+const hrRules: Record<string, string> = { ...RULE_DEFAULTS };
 const employees: T.Employee[] = [
   ["Rico Dizon", "Front Desk Officer", "Administration", "22000.00"], ["Ben Salvador", "Maintenance Technician", "Engineering", "21000.00"], ["Carmela Reyes", "Admin Assistant", "Administration", "20000.00"],
   ["Rodel Manalang", "Security Guard", "Security", "19500.00"], ["Jomar Pascual", "Security Guard", "Security", "19500.00"], ["Aileen Soriano", "Housekeeping", "Housekeeping", "17500.00"],
   ["Nestor Villanueva", "Electrician", "Engineering", "24000.00"], ["Karen Uy", "Accountant", "Finance", "38000.00"], ["Melissa Bautista", "Property Manager", "Administration", "65000.00"], ["Jason Fernandez", "HR & Payroll Officer", "Human Resources", "42000.00"],
-].map(([fullName, position, department, salary], i) => ({ id: i + 1, employeeNo: `EMP-${String(101 + i)}`, fullName, position, department, status: i === 5 ? "On Leave" : "Active", dateHired: `20${16 + (i % 9)}-0${1 + (i % 9)}-01`, monthlySalary: salary, contactNo: `0917${String(3300000 + i * 1111)}` }) as T.Employee);
+].map(([fullName, position, department, salary], i) => ({ id: i + 1, employeeNo: `EMP-${String(101 + i)}`, fullName, position, department, status: i === 5 ? "On Leave" : "Active",
+  dateHired: `20${16 + (i % 9)}-0${1 + (i % 9)}-01`, monthlySalary: salary, contactNo: `0917${String(3300000 + i * 1111)}`, email: "", notes: "" }) as T.Employee);
+let nextEmployeeId = employees.length + 1;
+const empName = (id: number) => employees.find((e) => e.id === id)?.fullName ?? `Employee #${id}`;
 
+interface MockAttendance { id: number; employeeId: number; date: string; timeIn: string | null; timeOut: string | null; status: string; remarks: string }
 let nextAttendanceId = 1;
-const attendance: T.AttendanceRecord[] = [];
+const attendance: MockAttendance[] = [];
 for (let d = -6; d <= 0; d++) {
   const date = addDays(TODAY, d);
   if (new Date(`${date}T00:00:00Z`).getUTCDay() === 0) continue;
   for (const e of employees) {
     if (d === 0 && e.id > 6) continue; // today: some entries still missing
     const late = (e.id + d + 14) % 6 === 0;
-    const status: T.AttendanceStatus = e.status === "On Leave" ? "On Leave" : late ? "Late" : "Present";
-    attendance.push({ id: nextAttendanceId++, employeeId: e.id, employeeName: e.fullName, date, timeIn: status === "On Leave" ? null : late ? "08:22" : "07:55", timeOut: d === 0 || status === "On Leave" ? null : "17:04", status, lateMinutes: late ? 22 : 0 });
+    const status = e.status === "On Leave" ? "LEAVE" : late ? "LATE" : "PRESENT";
+    attendance.push({ id: nextAttendanceId++, employeeId: e.id, date, timeIn: status === "LEAVE" ? null : late ? "08:22" : "07:55", timeOut: d === 0 || status === "LEAVE" ? null : "17:04", status, remarks: "" });
   }
 }
+const attendanceOut = (a: MockAttendance): T.AttendanceRecord => ({ ...a, employeeName: empName(a.employeeId), lateMinutes: lateMinutes(a, Number(hrRules.hr_grace_minutes)), undertimeMinutes: undertimeMinutes(a) });
 
+let nextLeaveId = 5, nextOvertimeId = 4, nextPayrollId = 1, nextLoanId = 3;
 const leave: T.LeaveRequest[] = [
-  { id: 1, employeeId: 6, employeeName: "Aileen Soriano", leaveType: "Sick Leave", from: addDays(TODAY, -2), to: addDays(TODAY, 1), days: 4, reason: "Dengue, with medical certificate", status: "Approved" },
-  { id: 2, employeeId: 4, employeeName: "Rodel Manalang", leaveType: "Vacation Leave", from: addDays(TODAY, 10), to: addDays(TODAY, 12), days: 3, reason: "Family event in Pampanga", status: "Pending" },
-  { id: 3, employeeId: 2, employeeName: "Ben Salvador", leaveType: "Emergency Leave", from: addDays(TODAY, 2), to: addDays(TODAY, 2), days: 1, reason: "Child's school emergency", status: "Pending" },
-  { id: 4, employeeId: 3, employeeName: "Carmela Reyes", leaveType: "Vacation Leave", from: addDays(TODAY, -30), to: addDays(TODAY, -28), days: 3, reason: "Personal", status: "Rejected" },
+  { id: 1, employeeId: 6, employeeName: "Aileen Soriano", leaveType: "SICK", from: addDays(TODAY, -2), to: addDays(TODAY, 1), days: 4, reason: "Dengue, with medical certificate", status: "Approved", decidedBy: "jason.fernandez" },
+  { id: 2, employeeId: 4, employeeName: "Rodel Manalang", leaveType: "VACATION", from: addDays(TODAY, 10), to: addDays(TODAY, 12), days: 3, reason: "Family event in Pampanga", status: "Pending", decidedBy: "" },
+  { id: 3, employeeId: 2, employeeName: "Ben Salvador", leaveType: "EMERGENCY", from: addDays(TODAY, 2), to: addDays(TODAY, 2), days: 1, reason: "Child's school emergency", status: "Pending", decidedBy: "" },
+  { id: 4, employeeId: 3, employeeName: "Carmela Reyes", leaveType: "VACATION", from: addDays(TODAY, -30), to: addDays(TODAY, -28), days: 3, reason: "Personal", status: "Rejected", decidedBy: "jason.fernandez" },
 ];
-const overtime: T.OvertimeRequest[] = [
-  { id: 1, employeeId: 7, employeeName: "Nestor Villanueva", date: addDays(TODAY, -2), hours: 3, reason: "Emergency pump repair", status: "Pending" },
-  { id: 2, employeeId: 5, employeeName: "Jomar Pascual", date: addDays(TODAY, -4), hours: 4, reason: "Covered night shift", status: "Approved" },
-  { id: 3, employeeId: 2, employeeName: "Ben Salvador", date: addDays(TODAY, -1), hours: 2, reason: "Elevator contractor escort", status: "Pending" },
+const hourlyOf = (e: T.Employee) => toCents(e.monthlySalary) / 100 / Number(hrRules.hr_working_days) / Number(hrRules.hr_work_hours_per_day);
+const overtime: T.OvertimeRequest[] = ([[7, -2, 3, "Emergency pump repair", "Pending"], [5, -4, 4, "Covered night shift", "Approved"], [2, -1, 2, "Elevator contractor escort", "Pending"]] as const)
+  .map(([eid, d, hours, reason, status], i) => ({ id: i + 1, employeeId: eid, employeeName: empName(eid), date: addDays(TODAY, d), hours, multiplier: 1.25,
+    amount: fromCents(Math.round(hourlyOf(employees[eid - 1]) * hours * 1.25 * 100)), reason, status, decidedBy: status === "Approved" ? "jason.fernandez" : "" }));
+const loans: T.HrLoan[] = [
+  { id: 1, employeeId: 4, employeeName: "Rodel Manalang", loanType: "SSS", referenceNo: "SSS-SL-2026-0419", originalAmount: "20000.00", balance: "14000.00", monthlyDeduction: "1000.00", status: "ACTIVE", notes: "" },
+  { id: 2, employeeId: 2, employeeName: "Ben Salvador", loanType: "COMPANY", referenceNo: "", originalAmount: "6000.00", balance: "2000.00", monthlyDeduction: "1000.00", status: "ACTIVE", notes: "Cash advance" },
 ];
+interface MockPayroll extends T.PayrollDetail { createdToken?: string }
+const payrolls: MockPayroll[] = [];
 
 // ------------------------------------------------------------------ administration
 interface MockUser { id: number; username: string; role: T.Role; active: boolean; createdAt: string; mustChangePassword?: boolean; passwordChangedAt?: string }
@@ -542,6 +554,83 @@ function collectionsFor(month: string): T.CollectionSummary {
   return { month, billed: fromCents(billed), collected: fromCents(collected), outstanding: fromCents(outstanding), collectionRate: billed ? Math.min(collected / billed, 1) : 0 };
 }
 
+function reportRange(q: T.ReportQuery): [string, string, string] {
+  const today = new Date(`${TODAY}T00:00:00`);
+  const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  if (q.period === "daily") return [TODAY, TODAY, TODAY];
+  if (q.period === "weekly") { const s = addDays(TODAY, -((today.getDay() + 6) % 7)); return [s, addDays(s, 6), `Week of ${s}`]; }
+  if (q.period === "yearly") return [`${TODAY.slice(0, 4)}-01-01`, `${TODAY.slice(0, 4)}-12-31`, TODAY.slice(0, 4)];
+  if (q.period === "custom") { const a = q.from || `${THIS_MONTH}-01`, b = q.to || TODAY; return a <= b ? [a, b, `${a} – ${b}`] : [b, a, `${b} – ${a}`]; }
+  const end = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+  return [`${THIS_MONTH}-01`, iso(end), THIS_MONTH];
+}
+
+function propertyReport(q: T.ReportQuery): T.PropertyReport {
+  const [from, to, label] = reportRange(q);
+  const inRange = (d: string) => d >= from && d <= to;
+  // Prototype: a bill counts in the period of its billing month's first day.
+  const periodBills = bills.filter((b) => inRange(`${b.month}-01`));
+  const sum = (f: (b: MockBill) => number) => periodBills.reduce((s, b) => s + f(b), 0);
+  const charges = { condo: sum((b) => b.condo), parking: sum((b) => b.parking), storage: sum((b) => (storageIncluded(b) ? b.storage : 0)), water: sum((b) => b.water), other: 0, adjustment: 0, penalty: sum((b) => b.penalty) };
+  const valid = receipts.filter((r) => inRange(r.date) && !(r as { voided?: boolean }).voided);
+  const voided = receipts.filter((r) => inRange(r.date) && (r as { voided?: boolean }).voided);
+  const kind = (k: string) => valid.reduce((s, r) => s + r.items.filter((i) => i.kind === k).reduce((t, i) => t + i.cents, 0), 0);
+  const byMethod: Record<string, string> = { CASH: "0.00", CHECK: "0.00", ONLINE: "0.00" };
+  for (const m of ["CASH", "CHECK", "ONLINE"]) byMethod[m] = fromCents(valid.filter((r) => r.method === m).reduce((s, r) => s + r.amountCents, 0));
+  const exp = expenses.filter((e) => inRange(e.date)).sort((a, b) => a.date.localeCompare(b.date));
+  const expCents = exp.reduce((s, e) => s + toCents(e.amount), 0);
+  const byCategory: Record<string, string> = {};
+  for (const e of exp) byCategory[e.category] = fromCents(toCents(byCategory[e.category] ?? "0") + toCents(e.amount));
+  const collected = valid.reduce((s, r) => s + r.amountCents, 0);
+  const latest = residential().map((u) => bills.filter((b) => b.unitId === u.id).at(-1)).filter(Boolean) as MockBill[];
+  const owing = latest.filter((b) => balanceCents(b) > 0);
+  const res = residential();
+  return {
+    period: q.period, label, from, to,
+    property: { residentialUnits: res.length, occupied: res.filter((u) => u.status === "Occupied").length, vacant: res.filter((u) => u.status !== "Occupied").length,
+      currentTenants: people.filter((p) => p.type === "Tenant" && p.status === "Current").length, withParking: res.filter((u) => u.parkingId).length },
+    billing: { bills: periodBills.length, charged: fromCents(Object.values(charges).reduce((s, c) => s + c, 0)), advanceCredits: fromCents(sum((b) => b.advance)),
+      charges: Object.fromEntries(Object.entries(charges).map(([k, v]) => [k, fromCents(v)])) as T.PropertyReport["billing"]["charges"] },
+    collections: { total: fromCents(collected), bills: fromCents(kind("bill")), water: fromCents(kind("water")), advances: fromCents(kind("advance")), byMethod,
+      receipts: valid.length, withoutReceipt: 0, voided: { count: voided.length, amount: fromCents(voided.reduce((s, r) => s + r.amountCents, 0)) } },
+    expenses: { total: fromCents(expCents), byCategory, rows: exp },
+    netCashFlow: fromCents(collected - expCents),
+    receivables: { total: fromCents(owing.reduce((s, b) => s + balanceCents(b), 0)), units: owing.length, overdueUnits: owing.filter((b) => TODAY > b.dueDate).length },
+    transactions: [...valid].sort((a, b) => a.date.localeCompare(b.date) || a.seq - b.seq).map((r) => ({ date: r.date, receiptNo: orNo(r), receiptId: r.id, unitNo: unitById(r.unitId).unitNo,
+      method: r.method, reference: r.reference, description: receiptRow(r).items.map((i) => i.label).join("; "), amount: fromCents(r.amountCents) })),
+  };
+}
+
+const RULE_META: [string, string, string, string][] = [
+  ["hr_working_days", "Working days per month", "Attendance", "days"], ["hr_work_hours_per_day", "Work hours per day", "Attendance", "hours"], ["hr_grace_minutes", "Grace period for late", "Attendance", "minutes"],
+  ["hr_sss_employee_rate", "Employee share", "SSS", "%"], ["hr_sss_employer_rate", "Employer share", "SSS", "%"], ["hr_sss_max_msc", "Maximum monthly salary credit", "SSS", "₱"],
+  ["hr_sss_ec_threshold", "EC: salary credit up to", "SSS", "₱"], ["hr_sss_ec_low", "EC (employer) up to the threshold", "SSS", "₱"], ["hr_sss_ec_high", "EC (employer) above the threshold", "SSS", "₱"],
+  ["hr_philhealth_rate", "Premium rate", "PhilHealth", "%"], ["hr_philhealth_min_base", "Salary floor", "PhilHealth", "₱"], ["hr_philhealth_max_base", "Salary ceiling", "PhilHealth", "₱"], ["hr_philhealth_employee_share", "Employee share of the premium", "PhilHealth", "%"],
+  ["hr_pagibig_max_base", "Maximum fund salary", "Pag-IBIG", "₱"], ["hr_pagibig_low_rate", "Employee rate (salary ≤ ₱1,500)", "Pag-IBIG", "%"], ["hr_pagibig_high_rate", "Employee rate (above ₱1,500)", "Pag-IBIG", "%"], ["hr_pagibig_employer_rate", "Employer rate", "Pag-IBIG", "%"],
+  ["hr_bir_exempt_threshold", "Tax-exempt up to (monthly)", "BIR withholding", "₱"], ["hr_bir_bracket2", "15% bracket up to", "BIR withholding", "₱"], ["hr_bir_bracket3", "20% bracket up to", "BIR withholding", "₱"],
+  ["hr_bir_bracket4", "25% bracket up to", "BIR withholding", "₱"], ["hr_bir_bracket5", "30% bracket up to", "BIR withholding", "₱"], ["hr_bir_rate2", "Rate, 2nd bracket", "BIR withholding", "%"],
+  ["hr_bir_rate3", "Rate, 3rd bracket", "BIR withholding", "%"], ["hr_bir_rate4", "Rate, 4th bracket", "BIR withholding", "%"], ["hr_bir_rate5", "Rate, 5th bracket", "BIR withholding", "%"], ["hr_bir_rate6", "Rate, top bracket", "BIR withholding", "%"],
+  ["hr_13th_month_ceiling", "Tax-exempt 13th month & benefits", "13th month", "₱"],
+];
+const mockRules = (): T.PayrollRule[] => RULE_META.map(([key, label, group, unit]) => ({ key, label, group, unit, value: hrRules[key], default: RULE_DEFAULTS[key] }));
+
+/** A payroll preview with the server's rules (prototype). Returns an error message instead when invalid. */
+function mockPreview(input: T.PayrollInput): T.PayrollPreview | string {
+  const e = employees.find((x) => x.id === input.employeeId);
+  if (!e) return "Choose the employee.";
+  if (!input.from || !input.to || input.to < input.from) return "Enter a valid period.";
+  const monthly = toCents(e.monthlySalary) / 100;
+  const approved = overtime.filter((o) => o.employeeId === e.id && o.status === "Approved" && o.date >= input.from && o.date <= input.to).reduce((t, o) => t + toCents(o.amount), 0) / 100;
+  const ot = input.overtime === "" ? approved : toCents(input.overtime) / 100;
+  const basic = input.basic === "" ? monthly : toCents(input.basic) / 100;
+  const allowances = toCents(input.allowances || "0") / 100, deductions = toCents(input.deductions || "0") / 100;
+  const { absences, lateUndertime } = attendanceDeductions(hrRules, monthly, attendance.filter((a) => a.employeeId === e.id && a.date >= input.from && a.date <= input.to));
+  const loanCents = loans.filter((l) => l.employeeId === e.id && l.status === "ACTIVE").reduce((t, l) => t + Math.min(toCents(l.monthlyDeduction), toCents(l.balance)), 0);
+  const st = statutory(hrRules, basic + ot + allowances, basic, deductions + loanCents / 100, absences, lateUndertime);
+  return { basic: basic.toFixed(2), overtime: ot.toFixed(2), approvedOvertime: approved.toFixed(2), allowances: allowances.toFixed(2), deductions: deductions.toFixed(2),
+    loanDeductions: fromCents(loanCents), absences: absences.toFixed(2), lateUndertime: lateUndertime.toFixed(2), statutory: st };
+}
+
 const needResidentUnit = (unitId: number) => (unitId === RESIDENT_UNIT.id || currentRole !== "resident" ? null : fail(403, "You can only view your own unit."));
 const refRequired = (method: T.PaymentMethod, reference: string) => (method === "CHECK" || method === "ONLINE") && !reference.trim();
 
@@ -675,8 +764,8 @@ export const mockApi: DataService = {
     },
     hr: () => {
       const today = attendance.filter((a) => a.date === TODAY);
-      return wait({ headcount: employees.filter((e) => e.status !== "Resigned").length, presentToday: today.filter((a) => a.status === "Present" || a.status === "Late").length,
-        lateToday: today.filter((a) => a.status === "Late").length, onLeave: employees.filter((e) => e.status === "On Leave").length,
+      return wait({ headcount: employees.filter((e) => e.status !== "Separated" && e.status !== "Inactive").length, presentToday: today.filter((a) => a.status === "PRESENT" || a.status === "LATE").length,
+        lateToday: today.filter((a) => a.status === "LATE").length, onLeave: employees.filter((e) => e.status === "On Leave").length,
         pendingLeave: leave.filter((l) => l.status === "Pending").length, pendingOvertime: overtime.filter((o) => o.status === "Pending").length,
         monthlyPayroll: fromCents(employees.reduce((s, e) => s + toCents(e.monthlySalary), 0)) });
     },
@@ -1051,44 +1140,218 @@ export const mockApi: DataService = {
   },
 
   hr: {
-    employees: () => wait(employees),
-    attendance: (date) => wait(attendance.filter((a) => a.date === date)),
-    saveAttendance: (input) => {
-      const e = employees.find((x) => x.id === input.employeeId);
-      if (!e) return fail(400, "Choose an employee.");
-      const late = input.timeIn && input.timeIn > "08:00" ? (Number(input.timeIn.slice(0, 2)) - 8) * 60 + Number(input.timeIn.slice(3, 5)) : 0;
-      let row = attendance.find((a) => a.employeeId === input.employeeId && a.date === input.date);
-      if (!row) attendance.push((row = { id: nextAttendanceId++, employeeId: e.id, employeeName: e.fullName, date: input.date, timeIn: null, timeOut: null, status: "Present", lateMinutes: 0 }));
-      Object.assign(row, input, { lateMinutes: input.status === "Late" || late > 0 ? late : 0, status: input.status === "Present" && late > 0 ? "Late" : input.status });
-      audit(`Recorded attendance for ${e.fullName} on ${input.date}`);
-      return wait(row);
+    employees: () => wait({ employees: employees.map((e) => ({ ...e, hasRecords: attendance.some((a) => a.employeeId === e.id) || payrolls.some((x) => x.employeeId === e.id) })).sort((x, y) => x.fullName.localeCompare(y.fullName)),
+      statuses: ["Active", "On Leave", "Inactive", "Separated"] as T.EmploymentStatus[] }),
+    addEmployee: (input) => {
+      const errors: Record<string, string> = {};
+      if (!input.employeeNo.trim()) errors.employeeNo = "Employee No. is required.";
+      else if (employees.some((e) => e.employeeNo.toLowerCase() === input.employeeNo.trim().toLowerCase())) errors.employeeNo = "That employee number is already used.";
+      if (!input.fullName.trim()) errors.fullName = "Full name is required.";
+      if (!isAmount(input.monthlySalary || "0") && input.monthlySalary !== "0") errors.monthlySalary = "Enter the monthly salary.";
+      if (Object.keys(errors).length) return failFields(errors);
+      const e: T.Employee = { ...input, id: nextEmployeeId++, monthlySalary: fromCents(toCents(input.monthlySalary || "0")), hasRecords: false };
+      employees.push(e);
+      audit(`Added employee ${e.employeeNo} (${e.fullName})`);
+      return wait(e);
     },
-    leave: () => wait(leave),
-    overtime: () => wait(overtime),
-    // D5: requests are always created Pending; only these approval actions change the status.
-    decideLeave: (id, status) => {
-      const l = leave.find((x) => x.id === id);
-      if (!l || l.status !== "Pending") return fail(409, "This request was already decided.");
-      l.status = status;
-      audit(`${status} leave #${id} for ${l.employeeName}`);
-      return wait(l);
+    updateEmployee: (id, input) => {
+      const e = employees.find((x) => x.id === id);
+      if (!e) return fail(404, "Employee not found.");
+      if (!input.fullName.trim()) return failFields({ fullName: "Full name is required." });
+      Object.assign(e, { ...input, employeeNo: e.employeeNo, monthlySalary: fromCents(toCents(input.monthlySalary || "0")) });
+      audit(`Updated employee ${e.employeeNo}`);
+      return wait(e);
+    },
+    deleteEmployee: (id) => {
+      const i = employees.findIndex((x) => x.id === id);
+      if (i < 0) return fail(404, "Employee not found.");
+      if (attendance.some((a) => a.employeeId === id) || payrolls.some((x) => x.employeeId === id)) return fail(409, `${employees[i].fullName} has records, which must be kept. Set the status to Separated instead.`);
+      audit(`Deleted employee ${employees[i].employeeNo}`);
+      employees.splice(i, 1);
+      return wait(undefined);
+    },
+    attendanceDay: (date) => wait({ date, statuses: ["PRESENT", "LATE", "UNDERTIME", "LATE/UNDERTIME", "ABSENT", "LEAVE", "REST DAY"],
+      employees: employees.filter((e) => e.status !== "Inactive" && e.status !== "Separated").map((e) => {
+        const a = attendance.find((x) => x.employeeId === e.id && x.date === date);
+        return { id: e.id, fullName: e.fullName, employeeNo: e.employeeNo, status: e.status, record: a ? attendanceOut(a) : null };
+      }), schedule: { start: "08:00", end: "17:00", graceMinutes: Number(hrRules.hr_grace_minutes) } }),
+    saveAttendance: (date, records) => {
+      if (date > TODAY) return failFields({ date: "Attendance can't be entered for a future date." });
+      let saved = 0, cleared = 0;
+      for (const r of records) {
+        const i = attendance.findIndex((x) => x.employeeId === r.employeeId && x.date === date);
+        if (!r.status) { if (i >= 0) { attendance.splice(i, 1); cleared++; } continue; }
+        const noTimes = ["ABSENT", "LEAVE", "REST DAY"].includes(r.status);
+        if (!noTimes && r.timeIn && r.timeOut && r.timeOut <= r.timeIn) return failFields({ records: `${empName(r.employeeId)}: time out must be after time in.` });
+        const row = { employeeId: r.employeeId, date, status: r.status, timeIn: noTimes ? null : r.timeIn, timeOut: noTimes ? null : r.timeOut, remarks: r.remarks };
+        if (i >= 0) Object.assign(attendance[i], row); else attendance.push({ id: nextAttendanceId++, ...row });
+        saved++;
+      }
+      audit(`Saved attendance for ${date}: ${saved} record(s)`);
+      return wait({ saved, cleared });
+    },
+    attendanceHistory: (id, from, to) => {
+      const e = employees.find((x) => x.id === id);
+      if (!e) return fail(404, "Employee not found.");
+      const rows = attendance.filter((a) => a.employeeId === id && a.date >= from && a.date <= to).sort((x, y) => y.date.localeCompare(x.date)).map(attendanceOut);
+      const counts: Record<string, number> = {};
+      rows.forEach((r) => (counts[r.status] = (counts[r.status] ?? 0) + 1));
+      return wait({ employee: e, from, to, records: rows, counts, lateMinutes: rows.reduce((t, r) => t + r.lateMinutes, 0), undertimeMinutes: rows.reduce((t, r) => t + r.undertimeMinutes, 0) });
+    },
+    overtime: () => wait({ requests: [...overtime].sort((x, y) => y.date.localeCompare(x.date)), multipliers: [{ value: 1.25, label: "Ordinary day" }, { value: 1.3, label: "Rest / special day" }, { value: 2.6, label: "Regular holiday" }, { value: 3.38, label: "Rest day + regular holiday" }] }),
+    fileOvertime: (input) => {
+      const e = employees.find((x) => x.id === input.employeeId);
+      const hours = Number(input.hours);
+      if (!e) return failFields({ employeeId: "Choose the employee." });
+      if (!(hours >= 0.25 && hours <= 24)) return failFields({ hours: "Hours must be between 0.25 and 24." });
+      const mult = Number(input.multiplier || "1.25");
+      const o: T.OvertimeRequest = { id: nextOvertimeId++, employeeId: e.id, employeeName: e.fullName, date: input.date, hours, multiplier: mult,
+        amount: fromCents(Math.round(hourlyOf(e) * hours * mult * 100)), reason: input.reason, status: "Pending", decidedBy: "" };
+      overtime.push(o);
+      audit(`Filed overtime for ${e.fullName}`);
+      return wait(o);
     },
     decideOvertime: (id, status) => {
       const o = overtime.find((x) => x.id === id);
-      if (!o || o.status !== "Pending") return fail(409, "This request was already decided.");
-      o.status = status;
-      audit(`${status} overtime #${id} for ${o.employeeName}`);
+      if (!o) return fail(404, "Overtime request not found.");
+      if (o.status !== "Pending") return fail(409, `This overtime request was already ${o.status.toLowerCase()}.`);
+      Object.assign(o, { status, decidedBy: actor() });
+      audit(`${status} overtime request #${id}`);
       return wait(o);
     },
-    payroll: (period) => wait(employees.filter((e) => e.status !== "Resigned").map((e, i) => {
-      const otHours = overtime.filter((o) => o.employeeId === e.id && o.status === "Approved").reduce((s, o) => s + o.hours, 0);
-      const hourly = toCents(e.monthlySalary) / 100 / 22 / 8;
-      const p = previewPayroll({ basicMonthly: toCents(e.monthlySalary) / 100, overtimePay: Math.round(otHours * hourly * 1.25 * 100) / 100, taxableAllowances: 0, nonTaxableAllowances: 1500, lateUndertimeDeduction: 0, loanDeductions: i % 4 === 0 ? 1200 : 0 });
-      return { id: i + 1, employeeId: e.id, employeeName: e.fullName, periodStart: `${period}-01`, periodEnd: `${period}-30`, basic: e.monthlySalary, overtime: fromCents(Math.round(otHours * hourly * 1.25 * 100)),
-        allowances: "1500.00", deductions: p.totalDeductions, netPay: p.netPay, status: period < THIS_MONTH ? "Released" : "Draft" } as T.PayrollRecord;
-    })),
+    leave: () => wait({ requests: [...leave].sort((x, y) => y.from.localeCompare(x.from)), types: ["VACATION", "SICK", "EMERGENCY", "SERVICE INCENTIVE", "MATERNITY", "PATERNITY", "OTHER"] }),
+    fileLeave: (input) => {
+      const e = employees.find((x) => x.id === input.employeeId);
+      if (!e) return failFields({ employeeId: "Choose the employee." });
+      if (!input.from || !input.to || input.to < input.from) return failFields({ to: "The leave ends before it starts." });
+      if (leave.some((l) => l.employeeId === e.id && l.status !== "Rejected" && l.from <= input.to && l.to >= input.from)) return failFields({ from: `${e.fullName} already has leave filed for part of these dates.` });
+      const days = Math.round((Date.parse(input.to) - Date.parse(input.from)) / 86400000) + 1;
+      const l: T.LeaveRequest = { id: nextLeaveId++, employeeId: e.id, employeeName: e.fullName, leaveType: input.leaveType, from: input.from, to: input.to, days, reason: input.reason, status: "Pending", decidedBy: "" };
+      leave.push(l);
+      audit(`Filed leave for ${e.fullName}`);
+      return wait(l);
+    },
+    decideLeave: (id, status) => {
+      const l = leave.find((x) => x.id === id);
+      if (!l) return fail(404, "Leave request not found.");
+      if (l.status !== "Pending") return fail(409, `This leave request was already ${l.status.toLowerCase()}.`);
+      Object.assign(l, { status, decidedBy: actor() });
+      audit(`${status} leave request #${id}`);
+      return wait(l);
+    },
+    payroll: (from, to) => wait({ from, to, payroll: payrolls.filter((x) => x.periodStart <= to && x.periodEnd >= from),
+      employees: employees.filter((e) => e.status !== "Inactive" && e.status !== "Separated").map((e) => ({ id: e.id, fullName: e.fullName, employeeNo: e.employeeNo, monthlySalary: e.monthlySalary,
+        hasPayroll: payrolls.some((x) => x.employeeId === e.id && x.periodStart <= to && x.periodEnd >= from) })) }),
+    previewPayroll: (input) => {
+      const pv = mockPreview(input);
+      return typeof pv === "string" ? failFields({ employeeId: pv }) : wait(pv);
+    },
+    generatePayroll: (input) => {
+      const pv = mockPreview(input);
+      if (typeof pv === "string") return failFields({ employeeId: pv });
+      const e = employees.find((x) => x.id === input.employeeId)!;
+      const clash = payrolls.find((x) => x.employeeId === e.id && x.periodStart <= input.to && x.periodEnd >= input.from);
+      if (clash) return fail(409, `${e.fullName} already has a payroll for ${clash.periodStart} to ${clash.periodEnd}. Open it instead of generating another.`);
+      const status = (input.status ?? "DRAFT") === "DRAFT" ? "Draft" : input.status === "FINAL" ? "Final" : "Paid";
+      const deductions = fromCents(toCents(input.deductions || "0") + toCents(pv.loanDeductions));
+      const p: MockPayroll = { id: nextPayrollId++, employeeId: e.id, employeeName: e.fullName, periodStart: input.from, periodEnd: input.to, basic: pv.basic, overtime: pv.overtime,
+        allowances: pv.allowances, deductions, absences: pv.absences, lateUndertime: pv.lateUndertime, gross: pv.statutory.grossPay, netPay: pv.statutory.netPay,
+        status, remarks: input.remarks ?? "", nextStatus: status === "Draft" ? "Final" : status === "Final" ? "Paid" : null, employee: e, statutory: pv.statutory, editable: status !== "Paid" };
+      for (const l of loans.filter((x) => x.employeeId === e.id && x.status === "ACTIVE")) {
+        const take = Math.min(toCents(l.monthlyDeduction), toCents(l.balance));
+        l.balance = fromCents(toCents(l.balance) - take);
+        if (toCents(l.balance) <= 0) l.status = "PAID";
+      }
+      payrolls.unshift(p);
+      audit(`Generated payroll for ${e.employeeNo}, ${input.from} to ${input.to}`);
+      return wait(p);
+    },
+    payslip: (id) => {
+      const p = payrolls.find((x) => x.id === id);
+      return p ? wait({ payroll: p, corporation: rates.corporationName, address: rates.address }) : fail(404, "Payroll not found.");
+    },
+    editStatutory: (id, st) => {
+      const p = payrolls.find((x) => x.id === id);
+      if (!p) return fail(404, "Payroll not found.");
+      if (p.status === "Paid") return fail(409, "This payroll is already paid; its amounts can't be changed.");
+      const other = toCents(p.deductions) + toCents(p.absences) + toCents(p.lateUndertime);
+      const ded = toCents(st.sssEmployee) + toCents(st.philhealthEmployee) + toCents(st.pagibigEmployee) + toCents(st.withholdingTax) + other;
+      p.statutory = { ...st, grossPay: p.gross, totalEmployeeDeductions: fromCents(ded), netPay: fromCents(toCents(p.gross) - ded),
+        totalEmployerCost: fromCents(toCents(st.sssEmployer) + toCents(st.sssEcEmployer) + toCents(st.philhealthEmployer) + toCents(st.pagibigEmployer)) };
+      p.netPay = p.statutory.netPay;
+      audit(`Edited statutory amounts of payroll #${id}`);
+      return wait(p);
+    },
+    advancePayroll: (id, status) => {
+      const p = payrolls.find((x) => x.id === id);
+      if (!p) return fail(404, "Payroll not found.");
+      if (p.nextStatus !== status) return fail(409, p.nextStatus ? `A ${p.status.toLowerCase()} payroll can only move to ${p.nextStatus.toLowerCase()}.` : "This payroll is already paid.");
+      p.status = status;
+      p.nextStatus = status === "Final" ? "Paid" : null;
+      p.editable = status !== "Paid";
+      audit(`Payroll #${id} -> ${status}`);
+      return wait(p);
+    },
+    calculate: (input) => {
+      const n = (v: string) => toCents(v || "0") / 100;
+      return wait(statutory(hrRules, n(input.basic) + n(input.overtime) + n(input.allowances), n(input.basic), n(input.deductions), 0, n(input.lateUndertime)));
+    },
+    thirteenthMonth: (year) => {
+      const ceiling = Number(hrRules.hr_13th_month_ceiling);
+      const rows = employees.map((e) => {
+        const ps = payrolls.filter((x) => x.employeeId === e.id && x.periodEnd.startsWith(String(year)));
+        const basic = ps.reduce((t, x) => t + toCents(x.basic), 0) / 100;
+        const amt = Math.round(basic / 12 * 100) / 100, exempt = Math.min(amt, ceiling);
+        return { employeeId: e.id, employeeName: e.fullName, employeeNo: e.employeeNo, payrolls: ps.length, basicTotal: basic.toFixed(2), thirteenth: amt.toFixed(2), exempt: exempt.toFixed(2), taxable: (amt - exempt).toFixed(2) };
+      });
+      return wait({ year, ceiling: ceiling.toFixed(2), rows, total: fromCents(rows.reduce((t, r) => t + toCents(r.thirteenth), 0)), taxable: fromCents(rows.reduce((t, r) => t + toCents(r.taxable), 0)) });
+    },
+    payrollReport: (year) => {
+      const rows = payrolls.filter((x) => x.periodEnd.startsWith(String(year)));
+      const sum = (f: (x: MockPayroll) => string) => fromCents(rows.reduce((t, x) => t + toCents(f(x)), 0));
+      return wait({ year, rows, totals: { basic: sum((x) => x.basic), overtime: sum((x) => x.overtime), allowances: sum((x) => x.allowances), net: sum((x) => x.netPay),
+        sssEmployee: sum((x) => x.statutory.sssEmployee), sssEmployer: sum((x) => x.statutory.sssEmployer), philhealthEmployee: sum((x) => x.statutory.philhealthEmployee),
+        philhealthEmployer: sum((x) => x.statutory.philhealthEmployer), pagibigEmployee: sum((x) => x.statutory.pagibigEmployee), pagibigEmployer: sum((x) => x.statutory.pagibigEmployer),
+        withholdingTax: sum((x) => x.statutory.withholdingTax) } });
+    },
+    loans: () => wait({ loans: [...loans].sort((x, y) => y.id - x.id), types: ["SSS", "PAG-IBIG", "COMPANY", "OTHER"] }),
+    addLoan: (input) => {
+      const e = employees.find((x) => x.id === input.employeeId);
+      if (!e) return failFields({ employeeId: "Choose the employee." });
+      if (!isAmount(input.originalAmount)) return failFields({ originalAmount: "Enter the loan amount." });
+      if (!isAmount(input.monthlyDeduction)) return failFields({ monthlyDeduction: "Enter the monthly deduction." });
+      const balance = input.balance ? toCents(input.balance) : toCents(input.originalAmount);
+      if (balance > toCents(input.originalAmount)) return failFields({ balance: "The balance can't be more than the loan amount." });
+      const l: T.HrLoan = { id: nextLoanId++, employeeId: e.id, employeeName: e.fullName, loanType: input.loanType, referenceNo: input.referenceNo, originalAmount: fromCents(toCents(input.originalAmount)),
+        balance: fromCents(balance), monthlyDeduction: fromCents(toCents(input.monthlyDeduction)), status: balance > 0 ? "ACTIVE" : "PAID", notes: input.notes };
+      loans.push(l);
+      audit(`Added ${l.loanType} loan for ${e.fullName}`);
+      return wait(l);
+    },
+    updateLoan: (id, input) => {
+      const l = loans.find((x) => x.id === id);
+      if (!l) return fail(404, "Loan not found.");
+      if (input.status === "ACTIVE" && toCents(l.balance) <= 0) return failFields({ status: "This loan has no balance left." });
+      Object.assign(l, { status: input.status, monthlyDeduction: fromCents(toCents(input.monthlyDeduction)), notes: input.notes });
+      audit(`Updated loan #${id}`);
+      return wait(l);
+    },
+    rules: () => wait(mockRules()),
+    saveRules: (values) => {
+      for (const [k, v] of Object.entries(values)) {
+        if (!(k in RULE_DEFAULTS)) return failFields({ [k]: "Unknown rule." });
+        if (!/^\d+(\.\d+)?$/.test(String(v).trim())) return failFields({ [k]: "Enter a number." });
+      }
+      Object.assign(hrRules, values);
+      audit("Updated Payroll Rules");
+      return wait(mockRules());
+    },
   },
 
+  reports: {
+    get: (q) => wait(propertyReport(q)),
+    exportExcel: async () => { throw new ApiError(0, "Excel export runs on the server. In the live system this downloads the report workbook."); },
+  },
   admin: {
     users: ({ q, role, status, page, perPage }) => {
       const needle = q.trim().toLowerCase();
