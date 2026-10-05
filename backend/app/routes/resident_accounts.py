@@ -5,6 +5,13 @@
     POST  /api/admin/resident-accounts                             create {username, password, unitId, personType, personId?, displayName?}
     PATCH /api/admin/resident-accounts/<user_id>                   change link / name / status {unitId?, personType?, personId?, displayName?, active?, reason?}
     POST  /api/admin/resident-accounts/<user_id>/password          set a temporary password {newPassword}
+    GET   /api/admin/resident-accounts/people?q=&state=            current owners/tenants and their portal account state
+    POST  /api/admin/resident-accounts/provision                   generate an account {personType, personId, mode, linkUserId?, formToken}
+    POST  /api/admin/resident-accounts/<user_id>/activation-code   issue a new activation code {formToken}
+    POST  /api/admin/resident-accounts/<user_id>/links/<link_id>/end   end access to one unit {reason?}
+
+Provisioning, activation codes and multi-unit links: backend/app/services/resident_provisioning.py.
+An activation code appears ONLY in the response to the request that issued it.
 
 Every route needs the classic page's permission key `resident_users` (Superadmin only,
 backend/app/core/permissions.py). Rows are keyed by the USER id, so resident logins that the old
@@ -31,11 +38,13 @@ from sqlalchemy.exc import IntegrityError
 
 from ..core import security
 from ..core.roles import RESIDENT
+from ..services import resident_provisioning as prov
 from ..utils.auth import json_error, permission_required, protect_api_blueprint
 
 USERNAME_RE = re.compile(r"^[A-Za-z0-9._-]{3,80}$")
 PERSON_TYPES = ("Owner", "Tenant")
-STATUSES = ("active", "ended", "inactive", "unlinked")
+STATUSES = ("active", "pending", "ended", "inactive", "unlinked")
+PEOPLE_STATES = ("none", "pending", "active", "disabled", "ended")
 PER_PAGE_MAX = 100
 NAME_MAX = 200
 REASON_MAX = 500
@@ -80,7 +89,14 @@ def make_resident_accounts_blueprint(legacy, *, end_sessions):
         if not user.active or not profile.active:
             return "inactive", "Deactivated. The resident can't sign in until the account is reactivated."
         problem = legacy.resident_access_problem(user)
-        return ("ended", problem) if problem else ("active", None)
+        if problem:
+            return "ended", problem
+        if user.must_change_password:
+            exp = getattr(user, "temp_password_expires_at", None)
+            if exp and legacy.activation_expired(user):
+                return "pending", "Activation code expired. Issue a new one."
+            return "pending", "Waiting for the resident to sign in with the activation code and choose a password."
+        return "active", None
 
     def row(user):
         profile = getattr(user, "resident_profile", None)
@@ -101,8 +117,18 @@ def make_resident_accounts_blueprint(legacy, *, end_sessions):
             "statusReason": reason,
             "active": bool(user.active and profile and profile.active),
             "mustChangePassword": bool(getattr(user, "must_change_password", False)),
+            "activationExpiresAt": _iso(getattr(user, "temp_password_expires_at", None)) if user.must_change_password else None,
+            "activationExpired": bool(legacy.activation_expired(user)),
+            "links": [link_row(l) for l in legacy.resident_links(user, active_only=False) if l.id is not None or l.active],
             "createdAt": _iso((profile.created_at if profile else None) or user.created_at),
         }
+
+    def link_row(link):
+        person = db.session.get(person_model(link.person_type), link.person_id) if link.person_id else None
+        unit = db.session.get(Unit, link.unit_id)
+        return {"id": link.id, "unitId": link.unit_id, "unitNo": unit.unit_no if unit else "", "personType": link.person_type,
+                "personId": link.person_id, "personName": person_name(person) if person else None, "active": bool(link.active),
+                "problem": legacy.link_problem(link) if link.active else None, "endedAt": _iso(link.ended_at), "endReason": link.end_reason}
 
     def validate_link(data, errors, current_user_id=None, partial=None):
         """Reads unitId / personType / personId / displayName. `partial` is the existing profile on
@@ -229,6 +255,10 @@ def make_resident_accounts_blueprint(legacy, *, end_sessions):
             db.session.flush()
             db.session.add(Profile(user_id=user.id, unit_id=unit.id, person_type=person_type,
                                    person_id=person.id if person else None, display_name=display_name, active=True))
+            db.session.add(legacy.ResidentUnitLink(user_id=user.id, unit_id=unit.id, person_type=person_type,
+                                                   person_id=person.id if person else None, active=True,
+                                                   active_key=legacy.link_key(person_type, person.id if person else None),
+                                                   created_by=legacy.session.get("username")))
             legacy.audit(f"Created resident portal user {username} for unit {unit.unit_no}", entity_type="user",
                          entity_id=user.id, commit=False,
                          details={"username": username, "unit": unit.unit_no, "personType": person_type,
@@ -287,6 +317,17 @@ def make_resident_accounts_blueprint(legacy, *, end_sessions):
         if before == after:
             return json_error(400, "Nothing to change: the account is already like this.")
 
+        link_moved = (before["unitId"], before["personType"], before["personId"]) != (after["unitId"], after["personType"], after["personId"])
+        if link_moved:
+            for old in [l for l in legacy.resident_links(user) if l.id is not None and l.unit_id == before["unitId"]
+                        and l.person_type == before["personType"] and l.person_id == before["personId"]]:
+                old.active, old.active_key = False, None
+                old.ended_at, old.ended_by, old.end_reason = legacy.datetime.utcnow(), legacy.session.get("username"), "link changed under Resident Accounts"
+            db.session.flush()
+            db.session.add(legacy.ResidentUnitLink(user_id=user.id, unit_id=after["unitId"], person_type=after["personType"],
+                                                   person_id=after["personId"], active=True,
+                                                   active_key=legacy.link_key(after["personType"], after["personId"]),
+                                                   created_by=legacy.session.get("username")))
         if profile is None:
             profile = Profile(user_id=user.id, unit_id=after["unitId"], display_name=after["displayName"])
             db.session.add(profile)
@@ -313,7 +354,11 @@ def make_resident_accounts_blueprint(legacy, *, end_sessions):
             parts.append("reactivated" if new_active else "deactivated")
         legacy.audit(f"Updated resident portal user {user.username}: {', '.join(parts)}", entity_type="user",
                      entity_id=user.id, reason=reason or None, details={"before": before, "after": after}, commit=False)
-        db.session.commit()
+        try:
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+            return field_errors({"personId": "That owner/tenant already has a portal account."}, status=409)
         return jsonify({"account": row(user)})
 
     @bp.post("/<int:user_id>/password")
@@ -331,5 +376,95 @@ def make_resident_accounts_blueprint(legacy, *, end_sessions):
                      entity_id=user.id, commit=False)
         db.session.commit()
         return "", 204
+
+    # ---------------------------------------------------------------- provisioning
+    def prov_error(exc):
+        body = {"status": exc.status, "message": exc.message, **exc.extra}
+        if exc.field:
+            body["fields"] = {exc.field: exc.message}
+        response = jsonify({"error": body})
+        response.status_code = exc.status
+        return response
+
+    def actor():
+        return legacy.session.get("username")
+
+    @bp.get("/people")
+    @permission_required("resident_users")
+    def people():
+        """Current owners/tenants of active residential units with their portal account state:
+        none | pending | active | disabled | ended. Billing never depends on this."""
+        q = request.args.get("q", "").strip().lower()
+        state = request.args.get("state", "").strip()
+        if state and state not in PEOPLE_STATES:
+            return json_error(400, "Unknown state filter.")
+        links = {}
+        for link in legacy.ResidentUnitLink.query.order_by(legacy.ResidentUnitLink.id).all():
+            if link.person_id:
+                prev = links.get((link.person_type, link.person_id))
+                if prev is None or link.active or not prev.active:
+                    links[(link.person_type, link.person_id)] = link
+        rows = []
+        for unit in Unit.query.filter(Unit.active.is_(True), Unit.unit_type.notin_(prov.NON_RESIDENTIAL)).order_by(Unit.unit_no).all():
+            for person_type, model in (("Owner", Owner), ("Tenant", Tenant)):
+                for p in model.query.filter_by(unit_id=unit.id, status="Current").order_by(model.id).all():
+                    link = links.get((person_type, p.id))
+                    user = link.user if link else None
+                    st = prov.account_state(legacy, user) if (link and link.active and user) else "none"
+                    rows.append({"personType": person_type, "personId": p.id, "name": person_name(p), "unitId": unit.id, "unitNo": unit.unit_no,
+                                 "email": p.email or "", "contactNo": p.contact_no or "", "state": st,
+                                 "account": {"id": user.id, "username": user.username} if (user and link.active) else None})
+        counts = {k: sum(1 for r in rows if r["state"] == k) for k in PEOPLE_STATES}
+        if q:
+            rows = [r for r in rows if q in r["name"].lower() or q in r["unitNo"].lower() or (r["account"] and q in r["account"]["username"].lower())]
+        if state:
+            rows = [r for r in rows if r["state"] == state]
+        return jsonify({"people": rows, "counts": counts, "activationDays": prov.activation_days(legacy)})
+
+    @bp.post("/provision")
+    @permission_required("resident_users")
+    def provision():
+        data = request.get_json(silent=True) or {}
+        if "role" in data and data.get("role") != RESIDENT:
+            return json_error(400, "Provisioning only creates Resident accounts.")
+        try:
+            result = prov.provision(legacy, person_type=str(data.get("personType") or ""), person_id=data.get("personId"),
+                                    mode=str(data.get("mode") or "auto"), link_user_id=data.get("linkUserId"), actor=actor(),
+                                    form_token=data.get("formToken"))
+        except prov.ProvisionError as exc:
+            return prov_error(exc)
+        response = jsonify({"account": row(result["account_user"]), "credentials": result["credentials"], "linked": result["linked"]})
+        response.status_code = 200 if result["linked"] else 201
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @bp.post("/<int:user_id>/activation-code")
+    @permission_required("resident_users")
+    def new_activation_code(user_id):
+        user = get_target(user_id)
+        if not user:
+            return json_error(404, "Resident account not found.")
+        try:
+            credentials = prov.reissue_code(legacy, user, actor=actor(), form_token=(request.get_json(silent=True) or {}).get("formToken"))
+        except prov.ProvisionError as exc:
+            return prov_error(exc)
+        response = jsonify({"account": row(user), "credentials": credentials})
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @bp.post("/<int:user_id>/links/<int:link_id>/end")
+    @permission_required("resident_users")
+    def end_link(user_id, link_id):
+        user = get_target(user_id)
+        if not user:
+            return json_error(404, "Resident account not found.")
+        reason = str((request.get_json(silent=True) or {}).get("reason") or "").strip()
+        if len(reason) > 300:
+            return field_errors({"reason": "Keep the note under 300 characters."})
+        try:
+            prov.end_link(legacy, user, link_id, actor=actor(), reason=reason)
+        except prov.ProvisionError as exc:
+            return prov_error(exc)
+        return jsonify({"account": row(user)})
 
     return bp

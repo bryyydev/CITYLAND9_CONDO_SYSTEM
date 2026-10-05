@@ -17,6 +17,7 @@ warnings.filterwarnings("ignore")
 
 
 def main():
+    path = None
     if "--sqlite" in sys.argv:
         path = os.path.abspath(sys.argv[sys.argv.index("--sqlite") + 1])
         os.environ["DATABASE_URL"] = "sqlite:///" + path.replace("\\", "/")
@@ -26,6 +27,10 @@ def main():
     else:
         sys.exit(__doc__)
     sys.path.insert(0, os.path.join(ROOT, "backend"))
+    sys.path.insert(0, os.path.join(ROOT, "database"))
+    sys.path.insert(0, os.path.join(ROOT, "database", "tools"))
+    from schema_compat import flag_old_schema
+    flag_old_schema(path if "--sqlite" in sys.argv else None)   # database not upgraded yet (e.g. before a migration)
     import legacy_app as m
 
     out = {}

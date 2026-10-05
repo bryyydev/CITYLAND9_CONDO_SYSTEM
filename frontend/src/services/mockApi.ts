@@ -405,7 +405,9 @@ const userRow = (u: MockUser): T.UserAccount => {
 };
 const failFields = (fields: Record<string, string>): Promise<never> =>
   new Promise((_, rej) => setTimeout(() => rej(new ApiError(400, Object.values(fields)[0], fields)), LATENCY));
-interface MockResidentAccount { id: number; username: string; unitId: number | null; personType: "Owner" | "Tenant"; personId: number | null; displayName: string; active: boolean; mustChangePassword: boolean; createdAt: string }
+interface MockResidentAccount { id: number; username: string; unitId: number | null; personType: "Owner" | "Tenant"; personId: number | null; displayName: string; active: boolean; mustChangePassword: boolean; createdAt: string; codeExpires?: string | null }
+const mockCode = () => Array.from({ length: 3 }, () => Array.from({ length: 4 }, () => "ABCDEFGHJKMNPQRSTUVWXYZ23456789"[Math.floor(Math.random() * 31)]).join("")).join("-");
+const mockExpiry = () => new Date(Date.now() + 7 * 86400000).toISOString().replace(/\.\d+Z$/, "Z");
 let nextResidentAccountId = 1001;
 const residentAccount = (username: string, unitNo: string, personType: "Owner" | "Tenant", link: boolean, name?: string): MockResidentAccount => {
   const unit = unitByNo(unitNo)!;
@@ -427,10 +429,13 @@ const residentRow = (a: MockResidentAccount): T.ResidentAccount => {
     : !a.active ? ["inactive", "Deactivated. The resident can't sign in until the account is reactivated."]
     : !unit.active ? ["ended", "Your unit is no longer active in the system. Please contact the administrator."]
     : a.personId && (!person || person.status !== "Current") ? ["ended", `Your resident portal access has ended because you are no longer listed as a current ${a.personType.toLowerCase()} of unit ${unit.unitNo}. Please contact the administrator if this is a mistake.`]
+    : a.mustChangePassword ? ["pending", "Waiting for the resident to sign in with the activation code and choose a password."]
     : ["active", null];
   return { id: a.id, username: a.username, displayName: a.displayName, unit: unit ? { id: unit.id, unitNo: unit.unitNo } : null, personType: a.personType,
     personId: a.personId, linked: Boolean(person), linkedName: person?.name ?? null, linkedStatus: person?.status ?? null, status, statusReason,
-    active: a.active && Boolean(unit), mustChangePassword: a.mustChangePassword, createdAt: a.createdAt };
+    active: a.active && Boolean(unit), mustChangePassword: a.mustChangePassword, createdAt: a.createdAt,
+    activationExpiresAt: a.mustChangePassword ? a.codeExpires ?? null : null, activationExpired: false,
+    links: unit ? [{ id: a.id, unitId: unit.id, unitNo: unit.unitNo, personType: a.personType, personId: a.personId, personName: person?.name ?? null, active: true, problem: null, endedAt: null, endReason: null }] : [] };
 };
 /** Same checks as backend/app/routes/resident_accounts.py validate_link; returns the display name to save. */
 const residentLinkErrors = (input: Partial<T.ResidentAccountLink>, fields: Record<string, string>, selfId: number | null, existing?: MockResidentAccount) => {
@@ -476,8 +481,26 @@ const billRow = (b: MockBill): T.BillRow => {
 };
 function soaDetail(b: MockBill): T.SoaDetail {
   const r = readingFor(b.unitId, b.month);
+  const u = unitById(b.unitId);
+  const owner = people.find((p) => p.unitId === u.id && p.type === "Owner" && p.status === "Current");
+  const tenant = people.find((p) => p.unitId === u.id && p.type === "Tenant" && p.status === "Current");
+  const [y, m] = b.month.split("-").map(Number);
+  const rate = Number(rates.penaltyRate || "4");
   return {
     ...soaRow(b),
+    statementNo: `SOA-${b.month.replace("-", "")}-${String(b.id).padStart(5, "0")}`,
+    issueDate: `${b.month}-01`,
+    periodStart: `${b.month}-01`,
+    periodEnd: `${b.month}-${String(new Date(y, m, 0).getDate()).padStart(2, "0")}`,
+    issuedAmount: null,
+    account: { unitNo: u.unitNo, unitType: u.type, floor: u.floor, billTo: tenant?.name ?? owner?.name ?? "", ownerName: owner?.name ?? "", tenantName: tenant?.name ?? "" },
+    property: { name: rates.corporationName, address: rates.address },
+    bases: { condo: u.ratePerSqmCents ? { kind: "condo", basis: "sqm", unitNo: null, area: u.areaSqm.toFixed(2), rate: fromCents(u.ratePerSqmCents) } : null, parking: null, storage: null, recorded: false },
+    penaltyInfo: { amount: fromCents(b.penalty), rate: String(rate), base: fromCents(Math.round(b.penalty * 100 / (rate || 1))), eligible: ["condo dues"], overdue: TODAY > b.dueDate, recorded: false,
+      explanation: b.penalty > 0 ? `${rate}% of the unpaid condo dues from earlier statements, assessed because this statement is past its due date.` : `A ${rate}% penalty on unpaid condo dues applies after the due date. Water and other charges are not penalized.` },
+    previousUnpaid: bills.filter((x) => x.unitId === b.unitId && x.month < b.month && balanceCents(x) > 0).map((x) => ({ id: x.id, month: x.month, dueDate: x.dueDate, balance: fromCents(balanceCents(x)) })),
+    correctedByHand: b.manual,
+    payment: { instructions: "Pay at the Admin Office by cash, check or online transfer. Please bring this statement or quote the unit number and statement no.", onlinePaymentUrl: null, qrAvailable: false },
     charges: {
       condoDues: fromCents(b.condo), parking: fromCents(b.parking), storage: fromCents(b.storage), storageIncluded: storageIncluded(b), storageFrom: rates.storageInTotalFrom,
       water: fromCents(b.water), waterUsage: r ? Math.max(r.current - r.previous, 0) : null, waterRate: r ? fromCents(r.rateCents) : null, waterPaidSeparately: !waterIncluded(b),
@@ -682,6 +705,7 @@ export const mockApi: DataService = {
       const rows = receipts.filter((r) => r.unitId === unitId).sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id);
       return needResidentUnit(unitId) ?? wait({ receipts: rows.map(receiptRow), totalPaid: fromCents(rows.reduce((s, r) => s + r.amountCents, 0)) });
     },
+    downloadStatementPdf: () => fail(501, "PDF downloads are generated by the server; the prototype has no server. Use Print instead."),
     receipt: (unitId, receiptId) => {
       const r = receipts.find((x) => x.id === receiptId);
       if (!r || r.unitId !== unitId) return fail(404, "Receipt not found.");
@@ -834,7 +858,7 @@ export const mockApi: DataService = {
         status: input.moveOut ? "Past" : "Current", moveIn: input.moveIn || null, moveOut: input.moveOut || null });
       if (kind === "Tenant" && !input.moveOut) u.status = "Occupied";
       audit(`Added ${kind.toLowerCase()} ${input.name} to unit ${u.unitNo}`);
-      return wait(unitDetailOut(u));
+      return wait({ ...unitDetailOut(u), createdPersonId: nextPersonId - 1 });
     },
     updatePerson: (id, kind, personId, input) => {
       const p = people.find((x) => x.id === personId && x.unitId === id && x.type === kind);
@@ -910,6 +934,7 @@ export const mockApi: DataService = {
       return wait(billDetail(b));
     },
     emailBill: () => (rates.smtpHost && rates.smtpSender ? wait({ sent: 1, skipped: 0, failed: 0, errors: [] }) : fail(409, "Set the SMTP host and sender email under Rates & Rules before sending SOAs.")),
+    downloadSoaPdf: () => fail(501, "PDF downloads are generated by the server; the prototype has no server. Use Print instead."),
     emailOverview: (month) => wait({ month, smtpConfigured: Boolean(rates.smtpHost && rates.smtpSender), optedIn: 0,
       rows: bills.filter((b) => b.month === month).map((b) => ({ billId: b.id, unitNo: unitById(b.unitId).unitNo, status: statusOf(b), recipients: [] })) }),
   },
@@ -1461,6 +1486,57 @@ export const mockApi: DataService = {
         next.personId !== a.personId || next.personType !== a.personType ? "link changed" : "", next.displayName !== a.displayName ? "name changed" : ""].filter(Boolean);
       Object.assign(a, next);
       audit(`Updated resident portal user ${a.username}: ${parts.join(", ")}`);
+      return wait(residentRow(a));
+    },
+    residentPeople: ({ q, state }) => {
+      const rows: T.PortalPerson[] = [];
+      for (const u of units.filter((x) => x.active && x.type !== "PARKING" && x.type !== "STORAGE")) {
+        for (const p of people.filter((x) => x.unitId === u.id && x.status === "Current")) {
+          const acc = residentAccounts.find((a) => a.personId === p.id && a.personType === p.type);
+          const st: T.PortalState = !acc ? "none" : !acc.active ? "disabled" : acc.mustChangePassword ? "pending" : "active";
+          rows.push({ personType: p.type, personId: p.id, name: p.name, unitId: u.id, unitNo: u.unitNo, email: p.email, contactNo: p.contactNo, state: st, account: acc ? { id: acc.id, username: acc.username } : null });
+        }
+      }
+      const counts = Object.fromEntries((["none", "pending", "active", "disabled", "ended"] as T.PortalState[]).map((k) => [k, rows.filter((r) => r.state === k).length])) as Record<T.PortalState, number>;
+      const needle = q.trim().toLowerCase();
+      return wait({ people: rows.filter((r) => (!needle || r.name.toLowerCase().includes(needle) || r.unitNo.toLowerCase().includes(needle)) && (!state || r.state === state)), counts, activationDays: 7 });
+    },
+    provisionResident: (input) => {
+      const p = people.find((x) => x.id === input.personId && x.type === input.personType && x.status === "Current");
+      if (!p) return fail(409, "This person is not a current owner or tenant.");
+      if (residentAccounts.some((a) => a.personId === p.id && a.personType === p.type && a.active)) return fail(409, `${p.name} already has a portal account.`);
+      const same = residentAccounts.filter((a) => a.active && a.displayName.toLowerCase() === p.name.toLowerCase());
+      if (input.mode === "auto" && same.length) {
+        return Promise.reject(new ApiError(409, "Another portal account may belong to the same person. Confirm before continuing.", {},
+          { needsReview: true, candidates: same.map((a) => ({ userId: a.id, username: a.username, displayName: a.displayName, units: [unitById(a.unitId!).unitNo], reasons: ["same name"] })) }));
+      }
+      if (input.mode === "link") {
+        const target = residentAccounts.find((a) => a.id === input.linkUserId);
+        if (!target) return fail(404, "Resident account not found.");
+        audit(`Linked unit ${unitById(p.unitId).unitNo} to resident portal account ${target.username}`);
+        return wait({ account: residentRow(target), credentials: null, linked: true });
+      }
+      const parts = p.name.toLowerCase().replace(/[^a-z ]/g, "").split(/\s+/).filter(Boolean);
+      let username = parts.length > 1 ? `${parts[0]}.${parts[parts.length - 1]}` : parts[0] ?? "resident";
+      for (let n = 2; residentAccounts.some((a) => a.username === username) || users.some((u) => u.username === username); n++) username = `${username.replace(/\d+$/, "")}${n}`;
+      const acc: MockResidentAccount = { id: nextResidentAccountId++, username, unitId: p.unitId, personType: p.type, personId: p.id, displayName: p.name, active: true, mustChangePassword: true, createdAt: nowUtc(), codeExpires: mockExpiry() };
+      residentAccounts.push(acc);
+      audit(`Provisioned resident portal account ${username}`);
+      return wait({ account: residentRow(acc), credentials: { username, activationCode: mockCode(), expiresAt: acc.codeExpires! }, linked: false });
+    },
+    issueActivationCode: (userId) => {
+      const a = residentAccounts.find((x) => x.id === userId);
+      if (!a) return fail(404, "Resident account not found.");
+      if (!a.active) return fail(409, "The account is disabled. Reactivate it before issuing a code.");
+      Object.assign(a, { mustChangePassword: true, codeExpires: mockExpiry() });
+      audit(`Issued a new activation code for resident portal account ${a.username}`);
+      return wait({ account: residentRow(a), credentials: { username: a.username, activationCode: mockCode(), expiresAt: a.codeExpires! } });
+    },
+    endResidentLink: (userId) => {
+      const a = residentAccounts.find((x) => x.id === userId);
+      if (!a) return fail(404, "Resident account not found.");
+      a.unitId = null;
+      audit(`Ended resident portal access of ${a.username}`);
       return wait(residentRow(a));
     },
     resetResidentPassword: (userId, newPassword) => {

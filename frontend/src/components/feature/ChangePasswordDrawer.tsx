@@ -43,7 +43,7 @@ export function ChangePasswordForm({ onDone, submitLabel = "Change password", fo
     <form id={formId} className="space-y-4" noValidate onSubmit={(e) => { e.preventDefault(); void submit(); }}>
       {serverError && <Notice tone="warn">{serverError}</Notice>}
       {(["current", "next", "confirm"] as const).map((k) => (
-        <Field key={k} label={{ current: "Current password", next: "New password", confirm: "Confirm new password" }[k]} error={touched && errors[k]}
+        <Field key={k} label={{ current: user?.activationPending ? "Activation code" : "Current password", next: "New password", confirm: "Confirm new password" }[k]} error={touched && errors[k]}
           hint={k === "next" ? `At least ${minLength} characters. Avoid common passwords and your username.` : undefined}>
           {(id) => <input id={id} type="password" className="input" autoComplete={k === "current" ? "current-password" : "new-password"}
             aria-invalid={Boolean(touched && errors[k])} value={form[k]} onChange={(e) => setForm({ ...form, [k]: e.target.value })} />}

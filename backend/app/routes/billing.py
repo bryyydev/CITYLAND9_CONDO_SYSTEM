@@ -27,6 +27,7 @@ from decimal import Decimal
 from flask import Blueprint, jsonify, request
 
 from ..core.numbers import InputError, parse_amount
+from ..services.soa_pdf import pdf_response
 from ..services.soa import money, soa_detail, soa_row
 from ..utils.auth import json_error, permission_required, protect_api_blueprint
 
@@ -71,11 +72,9 @@ def make_billing_blueprint(legacy):
 
     def detail(b):
         p = payer(b.unit)
-        previous = legacy.unpaid_previous_bills(b.unit_id, b.billing_month)
         return {
             **soa_detail(legacy, b), "unitId": b.unit_id, "unitNo": b.unit.unit_no, "unitType": b.unit.unit_type or "",
             "payerName": p["name"] if p else "—", "contact": p, "manualOverride": bool(b.soa_manual_override),
-            "previousUnpaid": [{"id": x.id, "month": x.billing_month, "balance": money(legacy.bill_unpaid_part(x))} for x in previous],
             "overdueMonths": legacy.overdue_months_for_unit(b.unit_id, b.billing_month),
             # The stored amounts, for the Edit SOA form.
             "stored": {k: money(getattr(b, col)) for k, (col, _, _) in SOA_INPUT.items()},
@@ -89,6 +88,15 @@ def make_billing_blueprint(legacy):
 
     def get_bill(bid):
         return db.session.get(Billing, bid)
+
+    @bp.get("/<int:bid>/soa.pdf")
+    @permission_required("billing")
+    def soa_pdf(bid):
+        """The SOA as a PDF download (same figures as GET /api/billing/<id>)."""
+        b = get_bill(bid)
+        if not b:
+            return json_error(404, "Statement not found.")
+        return pdf_response(legacy, b)
 
     # ---------------------------------------------------------------- list / preview / generate
     @bp.get("")

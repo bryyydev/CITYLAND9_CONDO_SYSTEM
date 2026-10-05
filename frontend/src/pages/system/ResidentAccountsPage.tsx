@@ -10,26 +10,110 @@ import { useAction, useAsync } from "../../hooks/useAsync";
 import { dateTimeLabel } from "../../lib/format";
 import { api } from "../../services/api";
 import { ApiError } from "../../services/http";
-import type { ResidentAccount, ResidentAccountOptions, ResidentAccountStatus } from "../../services/types";
+import type { PortalPerson, PortalState, ResidentAccount, ResidentAccountOptions, ResidentAccountStatus } from "../../services/types";
+import { ProvisionDrawer, type ProvisionTarget, ReissueDrawer } from "../../components/feature/ResidentProvisioning";
 
 const PER_PAGE = 20;
 const STATUS_META: Record<ResidentAccountStatus, { label: string; tone: Tone }> = {
   active: { label: "Active", tone: "ok" },
+  pending: { label: "Pending activation", tone: "info" },
   ended: { label: "Access ended", tone: "warn" },
   inactive: { label: "Deactivated", tone: "neutral" },
   unlinked: { label: "No unit", tone: "bad" },
 };
 type StatusFilter = ResidentAccountStatus | "all";
 
+const PORTAL_META: Record<PortalState, { label: string; tone: Tone }> = {
+  none: { label: "No portal account", tone: "neutral" },
+  pending: { label: "Pending activation", tone: "info" },
+  active: { label: "Active", tone: "ok" },
+  disabled: { label: "Disabled", tone: "bad" },
+  ended: { label: "Access ended", tone: "warn" },
+};
+
 export default function ResidentAccountsPage() {
+  const [params, setParams] = useSearchParams();
+  const view = params.get("view") === "people" ? "people" : "accounts";
+  const setView = (v: "people" | "accounts", q?: string) => {
+    const next = new URLSearchParams();
+    if (v === "people") next.set("view", "people");
+    if (q) next.set("q", q);
+    setParams(next, { replace: true });
+  };
+  return (
+    <>
+      <PageHeader eyebrow="Administration" title="Resident Accounts"
+        description="Resident portal logins. The system generates the username and a one-time activation code; residents never sign up themselves. Every change is recorded in the audit log."
+        actions={view === "accounts" && <Button icon="user-add-line" onClick={() => setView("people")}>Generate resident account</Button>} />
+      <div className="mb-4"><Tabs value={view} onChange={(v) => setView(v)} tabs={[{ key: "accounts", label: "Portal accounts" }, { key: "people", label: "Owners & tenants" }]} /></div>
+      {view === "people" ? <PeoplePanel onOpenAccount={(username) => setView("accounts", username)} /> : <AccountsPanel initialQuery={params.get("q") ?? ""} />}
+    </>
+  );
+}
+
+// ------------------------------------------------------------------ owners & tenants -> generate accounts
+function PeoplePanel({ onOpenAccount }: { onOpenAccount: (username: string) => void }) {
   const [search, setSearch] = useState("");
+  const [state, setState] = useState<PortalState | "all">("none");
+  const q = useDebounced(search);
+  const list = useAsync(() => api.admin.residentPeople({ q, state: state === "all" ? "" : state }), [q, state]);
+  const [target, setTarget] = useState<ProvisionTarget | null>(null);
+  const counts = list.data?.counts;
+  const tabs: { key: PortalState | "all"; label: string; count?: number }[] = [
+    { key: "none", label: "No portal account", count: counts?.none },
+    { key: "pending", label: "Pending activation", count: counts?.pending },
+    { key: "active", label: "Active", count: counts?.active },
+    { key: "disabled", label: "Disabled", count: counts?.disabled },
+    { key: "all", label: "All" },
+  ];
+  const action = (p: PortalPerson) => p.state === "none"
+    ? <Button size="sm" icon="user-add-line" onClick={() => setTarget({ personType: p.personType, personId: p.personId, name: p.name, unitNo: p.unitNo })}>Generate account</Button>
+    : p.account ? <Button size="sm" variant="secondary" icon="arrow-right-line" onClick={() => onOpenAccount(p.account!.username)}>Open {p.account.username}</Button> : null;
+  return (
+    <>
+      <Notice tone="info">Only current owners and tenants of active residential units are listed. An account is created only when you choose it here (or when adding an owner/tenant in the Units Directory); nothing is created in bulk. Activation codes expire after {list.data?.activationDays ?? 7} days.</Notice>
+      <Card className="mt-4">
+        <div className="flex flex-wrap items-end gap-3 border-b border-ink-100 p-4">
+          <Field label="Search" className="min-w-[200px] flex-1 sm:max-w-xs">{(id) => <input id={id} type="search" className="input" placeholder="Name or unit" value={search} onChange={(e) => setSearch(e.target.value)} />}</Field>
+          <div className="min-w-0 max-w-full"><Tabs tabs={tabs} value={state} onChange={setState} /></div>
+        </div>
+        {list.error ? <ErrorState title="Couldn't load the owners and tenants" message={list.error.message} onRetry={list.reload} />
+          : !list.data ? <Skeleton rows={6} />
+          : list.data.people.length === 0 ? <EmptyState icon="user-search-line" title="Nobody here">{state === "none" ? "Every current owner and tenant already has a portal account." : "No owners or tenants match."}</EmptyState>
+          : (
+            <div className={cx("overflow-x-auto", list.loading && "opacity-60")}>
+              <table className="w-full min-w-[640px] border-collapse text-[13.5px]">
+                <thead><tr><th className="th">Person</th><th className="th">Unit</th><th className="th">Portal account</th><th className="th text-right">Action</th></tr></thead>
+                <tbody>
+                  {list.data.people.map((p) => (
+                    <tr key={`${p.personType}:${p.personId}`} className="align-top">
+                      <td className="border-b border-ink-100 px-4 py-2.5"><b className="text-ink-900">{p.name}</b><span className="block text-[12.5px] text-ink-500">{p.personType}{p.email ? ` · ${p.email}` : ""}</span></td>
+                      <td className="border-b border-ink-100 px-4 py-2.5 font-semibold tabular">{p.unitNo}</td>
+                      <td className="border-b border-ink-100 px-4 py-2.5"><Badge tone={PORTAL_META[p.state].tone}>{PORTAL_META[p.state].label}</Badge>{p.account && <span className="mt-0.5 block text-[12.5px] text-ink-500">{p.account.username}</span>}</td>
+                      <td className="border-b border-ink-100 px-4 py-2 text-right">{action(p)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+      </Card>
+      <ProvisionDrawer target={target} onClose={() => setTarget(null)} onDone={() => list.reload()} />
+    </>
+  );
+}
+
+// ------------------------------------------------------------------ portal accounts
+function AccountsPanel({ initialQuery }: { initialQuery: string }) {
+  const [search, setSearch] = useState(initialQuery);
   const [status, setStatus] = useState<StatusFilter>("all");
   const [page, setPage] = useState(1);
   const q = useDebounced(search);
   const list = useAsync(() => api.admin.residentAccounts({ q, status: status === "all" ? "" : status, page, perPage: PER_PAGE }), [q, status, page]);
   const [editing, setEditing] = useState<ResidentAccount | "new" | null>(null);
-  const [resetting, setResetting] = useState<ResidentAccount | null>(null);
+  const [reissuing, setReissuing] = useState<ResidentAccount | null>(null);
   const [toggling, setToggling] = useState<ResidentAccount | null>(null);
+  const [linksOf, setLinksOf] = useState<ResidentAccount | null>(null);
   const [params, setParams] = useSearchParams();
   const movedForm = params.get("moved") === "form";
   const toast = useToast();
@@ -41,8 +125,8 @@ export default function ResidentAccountsPage() {
   useEffect(() => { if (data && page > pages) setPage(pages); }, [data, page, pages]);
 
   const tabs: { key: StatusFilter; label: string; count?: number }[] = [
-    { key: "all", label: "All", count: counts ? counts.active + counts.ended + counts.inactive + counts.unlinked : undefined },
-    ...(["active", "ended", "inactive", "unlinked"] as const)
+    { key: "all", label: "All", count: counts ? counts.active + counts.pending + counts.ended + counts.inactive + counts.unlinked : undefined },
+    ...(["active", "pending", "ended", "inactive", "unlinked"] as const)
       .filter((s) => s !== "unlinked" || (counts?.unlinked ?? 0) > 0 || status === "unlinked")
       .map((s) => ({ key: s, label: STATUS_META[s].label, count: counts?.[s] })),
   ];
@@ -51,8 +135,9 @@ export default function ResidentAccountsPage() {
     <div className={cx("flex gap-2", stacked ? "w-full flex-wrap" : "justify-end whitespace-nowrap")}>
       <Button size="sm" variant="secondary" icon="links-line" className={cx(stacked && "flex-1")} aria-label={`Edit unit and link for ${a.username}`}
         title={`Change the unit, owner/tenant link or name of ${a.username}`} onClick={() => setEditing(a)}>{a.unit ? "Edit link" : "Link to unit"}</Button>
-      <Button size="sm" variant="secondary" icon="key-2-line" className={cx(stacked && "flex-1")} aria-label={`Reset password for ${a.username}`}
-        title={`Set a temporary password for ${a.username}`} onClick={() => setResetting(a)}>Reset password</Button>
+      <Button size="sm" variant="secondary" icon="key-2-line" className={cx(stacked && "flex-1")} aria-label={`New activation code for ${a.username}`}
+        title={`Issue a new one-time activation code for ${a.username}`} disabled={!a.active} onClick={() => setReissuing(a)}>New activation code</Button>
+      {a.links.length > 0 && <Button size="sm" variant="ghost" icon="building-2-line" className={cx(stacked && "flex-1")} aria-label={`Units of ${a.username}`} onClick={() => setLinksOf(a)}>Units ({a.links.filter((l) => l.active).length})</Button>}
       {a.unit && (
         <Button size="sm" variant="ghost" icon={a.active ? "user-forbid-line" : "user-follow-line"}
           className={cx(a.active && "text-red-700 hover:bg-red-50 hover:text-red-800", stacked && "flex-1")}
@@ -64,7 +149,7 @@ export default function ResidentAccountsPage() {
   const nameCell = (a: ResidentAccount) => (
     <>
       <span className={cx("font-semibold", a.status === "active" ? "text-ink-900" : "text-ink-500")}>{a.displayName}</span>
-      {a.mustChangePassword && a.active && <TemporaryBadge />}
+      {a.mustChangePassword && a.active && a.status !== "pending" && <TemporaryBadge />}
       <span className="block text-[12.5px] text-ink-500">{a.username}</span>
     </>
   );
@@ -76,15 +161,12 @@ export default function ResidentAccountsPage() {
     <>
       <Badge tone={STATUS_META[a.status].tone}>{STATUS_META[a.status].label}</Badge>
       {a.statusReason && a.status !== "inactive" && <span className="mt-1 block max-w-xs text-[12px] leading-snug text-ink-500">{a.statusReason}</span>}
+      {a.status === "pending" && a.activationExpiresAt && !a.activationExpired && <span className="mt-0.5 block text-[12px] text-ink-500">Code valid until {dateTimeLabel(a.activationExpiresAt)}</span>}
     </>
   );
 
   return (
     <>
-      <PageHeader eyebrow="Administration" title="Resident Accounts"
-        description="Resident portal logins. Link each one to the owner or tenant record, so access ends by itself when that person moves out. Every change is recorded in the audit log."
-        actions={<Button icon="user-add-line" onClick={() => setEditing("new")}>Add resident account</Button>} />
-
       {movedForm && (
         <div className="mb-4" role="status">
           <Notice tone="warn">
@@ -120,8 +202,8 @@ export default function ResidentAccountsPage() {
           : !data ? <Skeleton rows={6} />
           : data.accounts.length === 0 ? (search || status !== "all"
             ? <EmptyState icon="search-line" title="No accounts match" action={<Button variant="secondary" onClick={() => { setSearch(""); setStatus("all"); }}>Clear filters</Button>}>Try another name, username or unit.</EmptyState>
-            : <EmptyState icon="user-heart-line" title="No resident accounts yet" action={<Button icon="user-add-line" onClick={() => setEditing("new")}>Add resident account</Button>}>
-                Create a portal login for an owner or tenant so they can see their statements, payments and water usage.
+            : <EmptyState icon="user-heart-line" title="No resident accounts yet">
+                Open <b>Owners &amp; tenants</b> and choose <b>Generate account</b> for a resident, or tick “Create resident portal account” when adding an owner or tenant in the Units Directory.
               </EmptyState>)
           : (
             <div className={cx(list.loading && "opacity-60 transition-opacity")} aria-busy={list.loading || undefined}>
@@ -141,7 +223,7 @@ export default function ResidentAccountsPage() {
                     {data.accounts.map((a) => (
                       <tr key={a.id} className={cx("align-top hover:bg-ink-50/60", a.status !== "active" && "bg-ink-50/40")}>
                         <td className="border-b border-ink-100 px-4 py-2.5">{nameCell(a)}</td>
-                        <td className="border-b border-ink-100 px-4 py-2.5 font-semibold text-ink-800 tabular">{a.unit?.unitNo ?? <span className="font-normal text-ink-400">—</span>}</td>
+                        <td className="border-b border-ink-100 px-4 py-2.5 font-semibold text-ink-800 tabular">{a.links.filter((l) => l.active).map((l) => l.unitNo).join(", ") || a.unit?.unitNo || <span className="font-normal text-ink-400">—</span>}</td>
                         <td className="border-b border-ink-100 px-4 py-2.5">{linkCell(a)}</td>
                         <td className="border-b border-ink-100 px-4 py-2.5">{statusCell(a)}</td>
                         <td className="border-b border-ink-100 px-4 py-2">{actions(a)}</td>
@@ -192,7 +274,8 @@ export default function ResidentAccountsPage() {
             ? { tone: "success", title: `Account ${a.username} created`, message: `For ${a.displayName}, unit ${a.unit?.unitNo}. Give them the temporary password securely; they choose their own at first sign-in.` }
             : { tone: "success", title: `${a.username} updated`, message: a.statusReason ?? "Saved." });
         }} />
-      <ResetPasswordDrawer account={resetting} minLength={data?.minPasswordLength ?? 10} onClose={() => setResetting(null)} />
+      <ReissueDrawer account={reissuing} onClose={() => setReissuing(null)} onDone={() => list.reload()} />
+      <LinksDrawer account={linksOf} onClose={() => setLinksOf(null)} onChanged={(a) => { setLinksOf(a); list.reload(); }} />
       <ToggleAccessDialog account={toggling} onClose={() => setToggling(null)}
         onDone={(a) => {
           setToggling(null); list.reload();
@@ -413,41 +496,55 @@ function ToggleAccessDialog({ account, onClose, onDone }: { account: ResidentAcc
   );
 }
 
-// ------------------------------------------------------------------ reset password
-function ResetPasswordDrawer({ account, minLength, onClose }: { account: ResidentAccount | null; minLength: number; onClose: () => void }) {
-  const [pw, setPw] = useState({ next: "", confirm: "" });
-  const [touched, setTouched] = useState(false);
-  const [serverError, setServerError] = useState("");
+// ------------------------------------------------------------------ units of an account (one account per person)
+function LinksDrawer({ account, onClose, onChanged }: { account: ResidentAccount | null; onClose: () => void; onChanged: (a: ResidentAccount) => void }) {
+  const [ending, setEnding] = useState<number | null>(null);
+  const [reason, setReason] = useState("");
+  const [error, setError] = useState("");
   const { busy, act } = useAction();
   const toast = useToast();
-  const formRef = useRef<HTMLFormElement>(null);
-  const errors = {
-    next: account ? passwordProblem(pw.next, account.username, minLength) : "",
-    confirm: pw.confirm !== pw.next ? "The passwords don't match." : "",
-  };
-  const close = () => { if (busy) return; setPw({ next: "", confirm: "" }); setTouched(false); setServerError(""); onClose(); };
-  async function submit() {
-    setTouched(true);
+  async function end(linkId: number) {
     if (!account || busy) return;
-    if (errors.next || errors.confirm) { focusFirstInvalid(formRef); return; }
     try {
-      await act(() => api.admin.resetResidentPassword(account.id, pw.next));
-      toast({ tone: "success", title: `Temporary password set for ${account.username}`, message: "They were signed out everywhere and must choose a new password at their next sign-in. Give them the temporary password securely." });
-      setPw({ next: "", confirm: "" }); setTouched(false); setServerError(""); onClose();
+      const a = await act(() => api.admin.endResidentLink(account.id, linkId, reason.trim()));
+      toast({ tone: "success", title: "Access to the unit ended", message: "The account's other units are not affected." });
+      setEnding(null); setReason(""); setError("");
+      onChanged(a);
     } catch (err) {
-      setServerError((err as Error).message);
+      setError((err as Error).message);
     }
   }
   return (
-    <Drawer open={!!account} onClose={close} title="Reset password" subtitle={account ? `For ${account.username} (${account.displayName}${account.unit ? `, unit ${account.unit.unitNo}` : ""})` : ""} width="max-w-md"
-      footer={<><Button variant="secondary" onClick={close} disabled={busy}>Cancel</Button><Button icon="key-2-line" loading={busy} onClick={submit}>Set temporary password</Button></>}>
-      <form ref={formRef} className="space-y-4" noValidate onSubmit={(e) => { e.preventDefault(); void submit(); }}>
-        <Notice>This replaces <b>{account?.username}</b>'s password and signs them out everywhere. They must choose their own password at the next sign-in.</Notice>
-        {serverError && <Notice tone="warn">{serverError}</Notice>}
-        <Field label="Temporary password" error={touched && errors.next} hint={`At least ${minLength} characters, not containing the username.`}>{(id) => <PasswordInput id={id} value={pw.next} invalid={touched && !!errors.next} onChange={(v) => setPw({ ...pw, next: v })} />}</Field>
-        <Field label="Confirm temporary password" error={touched && errors.confirm}>{(id) => <PasswordInput id={id} value={pw.confirm} invalid={touched && !!errors.confirm} onChange={(v) => setPw({ ...pw, confirm: v })} />}</Field>
-        <button type="submit" hidden />
-      </form>
+    <Drawer open={!!account} onClose={() => { if (!busy) { setEnding(null); setError(""); onClose(); } }} width="max-w-lg" title={account ? `Units of ${account.username}` : ""}
+      subtitle="One account per person. To add a unit, use Generate account for that owner/tenant and confirm it is the same person.">
+      {account && (
+        <ul className="space-y-3">
+          {account.links.map((l, i) => (
+            <li key={l.id ?? `v${i}`} className={cx("rounded-xl border p-3 text-[13.5px]", l.active ? "border-ink-200" : "border-ink-100 bg-ink-50 text-ink-500")}>
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <b className="text-ink-900">Unit {l.unitNo}</b> <span className="text-ink-500">· {l.personType}{l.personName ? ` ${l.personName}` : ""}</span>
+                  {!l.active && <span className="block text-[12.5px]">Ended{l.endedAt ? ` ${dateTimeLabel(l.endedAt)}` : ""}{l.endReason ? ` · ${l.endReason}` : ""}</span>}
+                  {l.active && l.problem && <span className="block text-[12.5px] text-amber-800">{l.problem}</span>}
+                </div>
+                {l.active && l.id !== null && ending !== l.id && <Button size="sm" variant="ghost" className="text-red-700 hover:bg-red-50" onClick={() => { setEnding(l.id); setReason(""); setError(""); }}>End access</Button>}
+              </div>
+              {ending === l.id && l.id !== null && (
+                <div className="mt-3 space-y-2">
+                  <label className="block text-[12.5px] font-semibold text-ink-700">Reason (kept in the audit log)
+                    <input className="input mt-1 font-normal" maxLength={300} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Unit sold" />
+                  </label>
+                  {error && <p className="text-[12.5px] text-red-600" role="alert">{error}</p>}
+                  <div className="flex justify-end gap-2">
+                    <Button size="sm" variant="secondary" disabled={busy} onClick={() => setEnding(null)}>Cancel</Button>
+                    <Button size="sm" variant="danger" loading={busy} disabled={busy} onClick={() => end(l.id!)}>End access to unit {l.unitNo}</Button>
+                  </div>
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
     </Drawer>
   );
 }

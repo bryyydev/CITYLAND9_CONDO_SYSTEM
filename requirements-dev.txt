@@ -1,2 +1,4 @@
 -r requirements.txt
 pytest>=8
+pypdf>=6                   # tests: read the text of generated PDFs
+pypdfium2>=5               # verification: render PDF pages to images

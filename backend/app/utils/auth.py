@@ -19,11 +19,13 @@ from ..core.roles import RESIDENT, normalize_role
 UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 
-def init_auth(app, *, current_user, resident_unit_id, resident_access_problem=None):
+def init_auth(app, *, current_user, resident_unit_id, resident_access_problem=None, resident_unit_ids=None):
     """current_user() -> User or None;  resident_unit_id(user) -> int or None (None = no access);
+    resident_unit_ids(user) -> every unit the resident may open (one account, several units);
     resident_access_problem(user) -> reason text or None."""
     app.extensions["cityland9_auth"] = {"current_user": current_user, "resident_unit_id": resident_unit_id,
-                                        "resident_access_problem": resident_access_problem}
+                                        "resident_access_problem": resident_access_problem,
+                                        "resident_unit_ids": resident_unit_ids}
 
 
 def _hooks():
@@ -72,7 +74,7 @@ def permission_required(permission):
 def require_unit_ownership(unit_param="unit_id"):
     """IDOR protection for unit-scoped endpoints.
 
-    A RESIDENT may only reach the unit linked to their resident profile: the unit id in
+    A RESIDENT may only reach the units their account is linked to (and still eligible for): the unit id in
     the URL (route parameter `unit_param`) must match, otherwise 403. Other roles pass
     through unchanged (their access is decided by @role_required / @permission_required,
     which must be applied as well).
@@ -87,13 +89,14 @@ def require_unit_ownership(unit_param="unit_id"):
             if not user:
                 return json_error(401, "Not signed in.")
             if user.role == RESIDENT:
-                own_unit = _hooks()["resident_unit_id"](user)
+                ids_hook = _hooks().get("resident_unit_ids")
+                own_units = ids_hook(user) if ids_hook else [u for u in [_hooks()["resident_unit_id"](user)] if u is not None]
                 requested = kwargs.get(unit_param)
-                if own_unit is None:
+                if not own_units:
                     reason = _hooks()["resident_access_problem"]
                     return json_error(403, (reason(user) if reason else None) or "Your resident portal access is not active.")
-                if requested is None or int(requested) != int(own_unit):
-                    current_app.logger.warning("IDOR blocked: resident %s requested unit %s (own unit %s)", user.username, requested, own_unit)
+                if requested is None or int(requested) not in {int(u) for u in own_units}:
+                    current_app.logger.warning("IDOR blocked: resident %s requested unit %s (own units %s)", user.username, requested, own_units)
                     return json_error(403, "You can only view your own unit.")
             return fn(*args, **kwargs)
         return wrapper

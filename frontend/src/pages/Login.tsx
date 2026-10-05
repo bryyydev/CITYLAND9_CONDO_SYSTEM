@@ -96,6 +96,9 @@ export default function Login() {
             </Field>
             <Button type="submit" className="h-11 w-full" loading={busy} icon="login-box-line">Sign in</Button>
           </form>
+          <p className="mt-4 text-[12.5px] leading-relaxed text-ink-500">
+            <b className="text-ink-700">Residents signing in for the first time:</b> use the username and activation code from the Admin Office (the code goes in the password box). You'll then choose your own password.
+          </p>
 
           {IS_MOCK && (
             <div className="mt-8 rounded-xl border border-copper-200 bg-copper-50 p-4">

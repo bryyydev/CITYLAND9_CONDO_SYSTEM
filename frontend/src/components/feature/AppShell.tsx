@@ -172,6 +172,7 @@ export default function AppShell() {
         <div className="flex-1" />
         <span className={cx("hidden rounded-md px-2.5 py-1 text-[11.5px] font-semibold tracking-wide whitespace-nowrap sm:inline-block", cfg.badge)}>{cfg.label.toUpperCase()}</span>
         {IS_MOCK && <RoleSwitcher />}
+        <ResidentUnitSwitcher />
         <UserMenu onChangePassword={() => setPwOpen(true)} onSignOut={() => setConfirmOut(true)} />
       </header>
 
@@ -190,5 +191,22 @@ export default function AppShell() {
         onClose={() => setConfirmOut(false)}
         onConfirm={async () => { setConfirmOut(false); await logout(); navigate("/login", { replace: true }); }} />
     </div>
+  );
+}
+
+/** Residents who own or rent several units choose which one the portal shows. */
+function ResidentUnitSwitcher() {
+  const user = useUser();
+  const { selectUnit } = useAuth();
+  const navigate = useNavigate();
+  if (user.role !== "resident" || !user.units || user.units.length < 2) return null;
+  return (
+    <label className="flex items-center gap-2 text-[13px] text-ink-600">
+      <span className="hidden sm:inline">Unit</span>
+      <select aria-label="Choose the unit to view" className="input h-9 w-auto py-0" value={user.unitId ?? ""}
+        onChange={(e) => { selectUnit(Number(e.target.value)); navigate("/resident", { replace: true }); }}>
+        {user.units.map((u) => <option key={u.id} value={u.id}>{u.unitNo} · {u.personType}</option>)}
+      </select>
+    </label>
   );
 }

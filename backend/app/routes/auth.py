@@ -24,9 +24,13 @@ from ..utils.auth import csrf_token, json_error, protect_api_blueprint, signed_i
 
 
 def make_auth_blueprint(*, User, audit, check_password_hash, commit, home_endpoint, resident_access_problem,
-                        start_session, set_password, client_address):
+                        start_session, set_password, client_address, resident_unit_id=None, resident_access_links=None,
+                        activation_expired=None):
     """Build the blueprint with the application's objects (no import cycle)."""
     bp = protect_api_blueprint(Blueprint("api_auth", __name__, url_prefix="/api"))
+    resident_unit_id = resident_unit_id or (lambda user: user.resident_profile.unit_id if user.resident_profile else None)
+    resident_access_links = resident_access_links or (lambda user: [])
+    activation_expired = activation_expired or (lambda user: False)
 
     def user_payload(user):
         return {
@@ -35,7 +39,12 @@ def make_auth_blueprint(*, User, audit, check_password_hash, commit, home_endpoi
             "roleLabel": ROLE_LABELS.get(user.role, user.role),
             "portal": PORTALS.get(user.role),
             "home": home_endpoint(user),
-            "unitId": user.resident_profile.unit_id if user.role == RESIDENT and user.resident_profile else None,
+            "unitId": resident_unit_id(user) if user.role == RESIDENT else None,
+            # Every unit the resident may open (one account per person; usually one unit).
+            "units": [{"id": l.unit_id, "unitNo": l.unit.unit_no if l.unit else "", "personType": l.person_type}
+                      for l in resident_access_links(user)] if user.role == RESIDENT else [],
+            # The temporary password is a resident activation code (expires; chosen password replaces it).
+            "activationPending": bool(user.must_change_password and getattr(user, "temp_password_expires_at", None)),
             "permissions": permissions_for_role(user.role),
             "mustChangePassword": bool(user.must_change_password),
             "passwordPolicy": security.password_policy(),
@@ -61,10 +70,17 @@ def make_auth_blueprint(*, User, audit, check_password_hash, commit, home_endpoi
             return response
         # Only active accounts may sign in; every failure gets the same message.
         user = User.query.filter_by(username=username, active=True).first()
+        if user and getattr(user, "temp_password_expires_at", None) and user.must_change_password:
+            # Activation codes are issued in capitals; accept them typed in any case.
+            password = password.strip().upper()
         if not user or not check_password_hash(user.password_hash, password):
             security.login_throttle.failure(username, client)
             current_app.logger.warning("Failed sign-in for %r from %s", username, client)
             return json_error(401, "Invalid username or password.")
+        if activation_expired(user):
+            # Counted like a failure (throttled); no session is started.
+            security.login_throttle.failure(username, client)
+            return json_error(403, "This activation code has expired. Ask the Admin Office for a new one.")
         if user.role == RESIDENT:
             problem = resident_access_problem(user)
             if problem:
@@ -76,7 +92,7 @@ def make_auth_blueprint(*, User, audit, check_password_hash, commit, home_endpoi
         start_session(user)
         if user.role == RESIDENT:
             # Convenience copy for the UI. Authorization always re-reads the unit from the database.
-            session["unit_id"] = user.resident_profile.unit_id
+            session["unit_id"] = resident_unit_id(user)
         csrf_token()  # new token for the new session
         audit("Login")
         return jsonify({"user": user_payload(user), "csrfToken": session["csrf_token"]})
@@ -107,6 +123,10 @@ def make_auth_blueprint(*, User, audit, check_password_hash, commit, home_endpoi
         data = request.get_json(silent=True) or {}
         current = str(data.get("currentPassword", ""))
         new = str(data.get("newPassword", ""))
+        if activation_expired(user):
+            return json_error(403, "This activation code has expired. Ask the Admin Office for a new one.")
+        if getattr(user, "temp_password_expires_at", None) and user.must_change_password:
+            current = current.strip().upper()
         if not check_password_hash(user.password_hash, current):
             return json_error(400, "Current password is incorrect.")
         problem = security.password_problem(new, user.username)
@@ -115,9 +135,12 @@ def make_auth_blueprint(*, User, audit, check_password_hash, commit, home_endpoi
         if check_password_hash(user.password_hash, new):
             return json_error(400, "New password must be different from the current password.")
         # Ends the account's other sessions (other PCs/browsers); this one stays signed in.
+        activating = bool(user.must_change_password and getattr(user, "temp_password_expires_at", None))
+        # One step: the code is replaced by the chosen password (consumed) and the account is active.
         set_password(user, new, temporary=False, keep_current_session=True)
         commit()
-        audit(f"Changed password for user {user.username}")
+        audit(f"Activated resident portal account {user.username}" if activating else f"Changed password for user {user.username}",
+              entity_type="user", entity_id=user.id)
         return "", 204
 
     @bp.route("/<path:unknown>", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])

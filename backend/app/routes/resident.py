@@ -30,6 +30,7 @@ from flask import Blueprint, jsonify, request
 from ..core.roles import RESIDENT
 from ..services import receipts as receipt_json
 from ..services import soa as soa_json
+from ..services.soa_pdf import pdf_response
 from ..utils.auth import json_error, permission_required, protect_api_blueprint, require_unit_ownership, signed_in_user
 
 CATEGORIES = ("General", "Plumbing", "Electrical", "Aircon", "Common Area", "Other")  # same options as the legacy form
@@ -96,6 +97,15 @@ def make_resident_blueprint(legacy):
             return json_error(404, "Unit not found.")
         bills = legacy.Billing.query.filter_by(unit_id=unit_id).order_by(legacy.Billing.billing_month.desc(), legacy.Billing.id.desc()).all()
         return jsonify({"statements": [bill_row(b) for b in bills]})
+
+    @bp.get("/units/<int:unit_id>/soa/<int:bill_id>/pdf")
+    @unit_scoped
+    def soa_pdf(unit_id, bill_id):
+        """The resident's own SOA as a PDF download (same figures as the SOA page)."""
+        bill = legacy.db.session.get(legacy.Billing, bill_id)
+        if not bill or bill.unit_id != unit_id:
+            return json_error(404, "Statement not found.")
+        return pdf_response(legacy, bill)
 
     @bp.get("/units/<int:unit_id>/soa/<int:bill_id>")
     @unit_scoped
@@ -261,23 +271,24 @@ def make_resident_blueprint(legacy):
         return jsonify({"pass": pass_row(p)})
 
     # ---- Profile & contact details --------------------------------------------------------
-    def linked_person(user):
-        """The owner/tenant record the resident account is linked to, or None."""
-        profile = getattr(user, "resident_profile", None)
-        if not profile or not profile.person_id:
+    def linked_person(user, unit_id):
+        """The owner/tenant record through which the resident account opens this unit, or None."""
+        link = legacy.resident_link_for(user, unit_id)
+        if not link or not link.person_id:
             return None
-        model = legacy.Tenant if (profile.person_type or "").lower() == "tenant" else legacy.Owner
-        person = legacy.db.session.get(model, profile.person_id)
-        return person if person and person.unit_id == profile.unit_id else None
+        model = legacy.Tenant if (link.person_type or "").lower() == "tenant" else legacy.Owner
+        person = legacy.db.session.get(model, link.person_id)
+        return person if person and person.unit_id == unit_id else None
 
     def profile_payload(user, unit):
         profile = getattr(user, "resident_profile", None)
-        person = linked_person(user) if user.role == RESIDENT else None
+        person = linked_person(user, unit.id) if user.role == RESIDENT else None
+        link = legacy.resident_link_for(user, unit.id) if user.role == RESIDENT else None
         return {
             "username": user.username,
             "displayName": profile.display_name if profile else user.username,
             "unit": {"unitNo": unit.unit_no, "floor": unit.floor, "type": unit.unit_type, "areaSqm": unit.area_sqm},
-            "personType": (profile.person_type if profile else None) or "Owner",
+            "personType": (link.person_type if link else None) or (profile.person_type if profile else None) or "Owner",
             "name": (getattr(person, "tenant_name", None) or getattr(person, "owner_name", None)) if person else None,
             "contactNo": (person.contact_no or "") if person else "",
             "email": (person.email or "") if person else "",
@@ -300,7 +311,7 @@ def make_resident_blueprint(legacy):
         if not unit:
             return json_error(404, "Unit not found.")
         user = signed_in_user()
-        person = linked_person(user) if user.role == RESIDENT else None
+        person = linked_person(user, unit_id) if user.role == RESIDENT else None
         if not person:
             return json_error(409, "Your account is not linked to an owner or tenant record, so the office "
                                    "must update your contact details. Please contact the administrator.")

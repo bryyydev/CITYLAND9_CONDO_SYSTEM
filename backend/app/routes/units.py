@@ -178,7 +178,7 @@ def make_units_blueprint(legacy):
             calc = legacy._bill_calc(b)
             bills.append({"id": b.id, "month": b.billing_month, "dueDate": b.due_date.isoformat() if b.due_date else None,
                           "total": money(calc["total"]), "paid": money(b.amount_paid),
-                          "balance": money(max(calc["balance"], Decimal("0"))), "status": legacy.bill_status(b)})
+                          "balance": money(calc["balance"]), "status": legacy.bill_status(b)})
         owners = Owner.query.filter_by(unit_id=u.id).order_by(Owner.status.desc(), Owner.id.desc()).all()
         tenants = Tenant.query.filter_by(unit_id=u.id).order_by(Tenant.status.desc(), Tenant.id.desc()).all()
         return {**row(u, assigned_to, latest), "owners": [person(o, "Owner") for o in owners],
@@ -408,7 +408,8 @@ def make_units_blueprint(legacy):
         legacy.audit(f"Added owner {o.owner_name} to unit {u.unit_no}", entity_type="owner", entity_id=o.id, commit=False,
                      details={"after": person_snapshot(o, "Owner")})
         db.session.commit()
-        return jsonify({"unit": detail(u)}), 201
+        # createdPersonId: lets the form offer the resident portal account for exactly this record.
+        return jsonify({"unit": detail(u), "createdPersonId": o.id}), 201
 
     @bp.put("/<int:uid>/owners/<int:oid>")
     @permission_required("edit_owner")
@@ -466,7 +467,7 @@ def make_units_blueprint(legacy):
         legacy.audit(f"Added tenant {t.tenant_name} to unit {u.unit_no}", entity_type="tenant", entity_id=t.id, commit=False,
                      details={"after": person_snapshot(t, "Tenant")})
         db.session.commit()
-        return jsonify({"unit": detail(u)}), 201
+        return jsonify({"unit": detail(u), "createdPersonId": t.id}), 201
 
     @bp.put("/<int:uid>/tenants/<int:tid>")
     @permission_required("edit_tenant")

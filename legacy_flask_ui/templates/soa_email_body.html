@@ -1,12 +1,41 @@
-<!doctype html><html><body style="font-family:Arial,sans-serif;color:#222;line-height:1.5"><h2>CITYLAND 9 CONDOMINIUM CORPORATION</h2><h3>Statement of Account</h3><p><strong>Unit:</strong> {{bill.unit.unit_no}}<br><strong>Billing Period:</strong> {{bill.billing_month|month_year}}<br><strong>Statement No.:</strong> BILL-{{'%03d'|format(bill.id)}}<br><strong>Due Date:</strong> {{bill.due_date.strftime('%B %d, %Y') if bill.due_date else '—'}}</p><p><strong>Owner/Tenant:</strong> {{recipient_name}}</p><table cellpadding="8" cellspacing="0" border="1" style="border-collapse:collapse;width:100%;max-width:650px"><tr><th align="left">Charge</th><th align="right">Amount</th></tr><tr><td>Condo Dues</td><td align="right">{{bill.assessment|currency}}</td></tr><tr><td>Water</td><td align="right">{{bill.water|currency}}</td></tr><tr><td>Parking</td><td align="right">{{bill.parking_dues|currency}}</td></tr><tr><td>Storage</td><td align="right">{{bill.storage_dues|currency}}</td></tr><tr><td>Previous Balance</td><td align="right">{{bill.previous_balance|currency}}</td></tr><tr><td>Penalty</td><td align="right">{{bill.penalty|currency}}</td></tr><tr><td>Other / Adjustment</td><td align="right">{{bill.other|currency}} + {{bill.adjustment|currency}}</td></tr><tr><th align="left">TOTAL AMOUNT DUE</th><th align="right">{{bill_total(bill)|currency}}</th></tr></table>{% if water_reading %}<p><strong>Water Consumption:</strong> {{water_reading.usage|num}} m³ × {{water_reading.rate|currency}}/m³ = {{water_reading.bill_amount|currency}}</p>{% endif %}<p>{{setting('online_payment_instructions','Please contact Admin for payment instructions.')}}</p><p>This is an automated message from the CityLand 9 Condo Web System.</p><script>
-(function(){
- function syncTheme(){
-   var b=document.body,r=document.documentElement;
-   var t=(r.getAttribute('data-theme')||b.getAttribute('data-theme')||'').toLowerCase();
-   if(t==='dark') b.classList.add('cl-dark');
-   else if(t==='light') b.classList.remove('cl-dark');
- }
- syncTheme();
- new MutationObserver(syncTheme).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
-})();
-</script></body></html>
+{# SOA email. Figures come from the shared statement (backend/app/services/soa.py), the same ones the
+   SOA page and PDF show; the PDF is attached. Inline styles only (email clients ignore stylesheets). #}
+{%- set c = s.charges -%}
+{%- macro amt(v) -%}₱{{ '{:,.2f}'.format(v|float|abs) }}{%- endmacro -%}
+<!doctype html>
+<html><body style="margin:0;padding:24px;background:#f4f7f8;font-family:Arial,Helvetica,sans-serif;color:#1f2933;line-height:1.5">
+<table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #d5dbe0;border-radius:10px">
+<tr><td style="padding:22px 26px 12px;border-bottom:2px solid #0b6b7a">
+  <div style="font-size:17px;font-weight:bold;color:#0f2a3d">{{ s.property.name }}</div>
+  <div style="font-size:12.5px;color:#5b6773">{{ s.property.address }}</div>
+  <div style="margin-top:8px;font-size:12px;font-weight:bold;letter-spacing:1.5px;color:#0b6b7a">STATEMENT OF ACCOUNT · No. {{ s.statementNo }}</div>
+</td></tr>
+<tr><td style="padding:16px 26px">
+  <p style="margin:0 0 12px">Dear {{ recipient_name or s.account.billTo or "Unit owner" }},</p>
+  <p style="margin:0 0 14px">Here is the statement of account for unit <b>{{ s.account.unitNo }}</b>, billing period <b>{{ s.billingMonth|month_year }}</b>. The full statement is attached as a PDF.</p>
+  <table cellpadding="6" cellspacing="0" style="width:100%;border-collapse:collapse;font-size:14px">
+    <tr><td style="color:#5b6773">Statement date</td><td align="right">{{ s.issueDate or "—" }}</td></tr>
+    <tr><td style="color:#5b6773">Due date</td><td align="right"><b>{{ s.dueDate or "—" }}</b></td></tr>
+  </table>
+  <table cellpadding="7" cellspacing="0" style="width:100%;border-collapse:collapse;font-size:14px;margin-top:12px">
+    <tr style="border-bottom:2px solid #0f2a3d"><th align="left" style="font-size:11px;color:#5b6773;letter-spacing:1px">CHARGE</th><th align="right" style="font-size:11px;color:#5b6773;letter-spacing:1px">AMOUNT</th></tr>
+    <tr style="border-bottom:1px solid #e5e9ec"><td>Condo dues</td><td align="right">{{ amt(c.condoDues) }}</td></tr>
+    {% if c.parking|float != 0 %}<tr style="border-bottom:1px solid #e5e9ec"><td>Parking</td><td align="right">{{ amt(c.parking) }}</td></tr>{% endif %}
+    {% if c.storageIncluded and c.storage|float != 0 %}<tr style="border-bottom:1px solid #e5e9ec"><td>Storage</td><td align="right">{{ amt(c.storage) }}</td></tr>{% endif %}
+    {% if not c.waterPaidSeparately %}<tr style="border-bottom:1px solid #e5e9ec"><td>Water{% if c.waterUsage is not none %} <span style="color:#5b6773;font-size:12px">({{ c.waterUsage }} m³ × ₱{{ c.waterRate }})</span>{% endif %}</td><td align="right">{{ amt(c.water) }}</td></tr>{% endif %}
+    {% if c.other|float != 0 %}<tr style="border-bottom:1px solid #e5e9ec"><td>Other charges</td><td align="right">{{ amt(c.other) }}</td></tr>{% endif %}
+    {% if c.adjustment|float != 0 %}<tr style="border-bottom:1px solid #e5e9ec"><td>Adjustment{% if c.adjustment|float < 0 %} (credit){% endif %}</td><td align="right">{% if c.adjustment|float < 0 %}− {% endif %}{{ amt(c.adjustment) }}</td></tr>{% endif %}
+    {% if c.previousBalance|float != 0 %}<tr style="border-bottom:1px solid #e5e9ec"><td>Previous unpaid balance</td><td align="right">{{ amt(c.previousBalance) }}</td></tr>{% endif %}
+    {% if c.penalty|float != 0 %}<tr style="border-bottom:1px solid #e5e9ec"><td>Late payment penalty ({{ s.penaltyInfo.rate }}%)</td><td align="right">{{ amt(c.penalty) }}</td></tr>{% endif %}
+    {% if c.advanceApplied|float != 0 %}<tr style="border-bottom:1px solid #e5e9ec"><td>Advance payment applied</td><td align="right">− {{ amt(c.advanceApplied) }}</td></tr>{% endif %}
+    <tr><td><b>Total amount due</b></td><td align="right"><b>{{ amt(s.total) }}</b></td></tr>
+    <tr><td>Payments received</td><td align="right">{% if s.amountPaid|float %}− {% endif %}{{ amt(s.amountPaid) }}</td></tr>
+    <tr style="background:#e6f2f4;border-top:2px solid #0f2a3d"><td style="font-size:16px;color:#0f2a3d"><b>{{ "Credit (overpaid)" if s.balance|float < 0 else "Balance due" }}</b></td><td align="right" style="font-size:16px;color:#0f2a3d"><b>{{ amt(s.balance) }}</b></td></tr>
+  </table>
+  <p style="margin:14px 0 0;font-size:12.5px;color:#5b6773">{{ s.penaltyInfo.explanation }}</p>
+  <p style="margin:14px 0 0"><b>How to pay.</b> {{ s.payment.instructions }}</p>
+  <p style="margin:6px 0 0;font-size:12.5px;color:#5b6773">Quote statement no. {{ s.statementNo }} and unit {{ s.account.unitNo }}. For questions, contact the Admin Office.</p>
+</td></tr>
+<tr><td style="padding:12px 26px 18px;border-top:1px solid #e5e9ec;font-size:11.5px;color:#7b8794">This message was sent by the {{ s.property.name }} office system. Please do not reply to this email.</td></tr>
+</table>
+</body></html>

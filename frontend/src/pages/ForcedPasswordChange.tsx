@@ -20,9 +20,11 @@ export default function ForcedPasswordChange() {
           <div className="mb-4 flex gap-3">
             <span className="grid size-10 shrink-0 place-items-center rounded-full bg-copper-50 text-xl text-copper-600"><Icon name="lock-password-line" /></span>
             <div>
-              <h1 className="text-[20px] font-semibold text-ink-900">Choose a new password</h1>
+              <h1 className="text-[20px] font-semibold text-ink-900">{user.activationPending ? "Activate your account" : "Choose a new password"}</h1>
               <p className="text-ink-500">
-                Signed in as <b className="text-ink-800">{user.username}</b>. Your current password is temporary, so it must be changed before you continue.
+                {user.activationPending
+                  ? <>Welcome, <b className="text-ink-800">{user.username}</b>. Enter your activation code again and choose your own password. After this, the code no longer works.</>
+                  : <>Signed in as <b className="text-ink-800">{user.username}</b>. Your current password is temporary, so it must be changed before you continue.</>}
               </p>
             </div>
           </div>

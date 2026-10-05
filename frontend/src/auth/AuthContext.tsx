@@ -19,6 +19,19 @@ interface AuthValue {
   /** Prototype only: switch the whole workspace to another role. */
   switchRole: (role: Role) => Promise<SessionUser>;
   can: (permission: string) => boolean;
+  /** Residents with several units: which unit the portal shows (checked by the server on every request). */
+  selectUnit: (unitId: number) => void;
+}
+
+const UNIT_KEY = "cl9.residentUnit";
+/** Apply the unit the resident chose earlier in this browser session, when they still have it. */
+function withChosenUnit(u: SessionUser): SessionUser {
+  if (u.role !== "resident" || !u.units || u.units.length < 2) return u;
+  try {
+    const chosen = Number(sessionStorage.getItem(UNIT_KEY));
+    if (chosen && u.units.some((x) => x.id === chosen)) return { ...u, unitId: chosen };
+  } catch { /* storage unavailable: keep the default unit */ }
+  return u;
 }
 
 const AuthContext = createContext<AuthValue | null>(null);
@@ -30,7 +43,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const refresh = useCallback(async () => {
     setCheckError(null);
     try {
-      setUser(await api.auth.me());
+      setUser(withChosenUnit(await api.auth.me()));
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) setUser(null);
       else setCheckError(err instanceof Error ? err.message : "Can't reach the server.");
@@ -41,7 +54,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(async (username: string, password: string) => {
     const { user: signedIn } = await api.auth.login(username, password);
-    setUser(signedIn);
+    setUser(withChosenUnit(signedIn));
     return signedIn;
   }, []);
 
@@ -61,13 +74,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return next;
   }, []);
 
+  const selectUnit = useCallback((unitId: number) => {
+    setUser((u) => (u && u.units?.some((x) => x.id === unitId) ? { ...u, unitId } : u));
+    try { sessionStorage.setItem(UNIT_KEY, String(unitId)); } catch { /* not remembered: fine */ }
+  }, []);
+
   const value = useMemo<AuthValue>(() => {
     const allowed = new Set(user?.permissions ?? []);
     return {
-      user, checkError, refresh, login, logout, switchRole,
+      user, checkError, refresh, login, logout, switchRole, selectUnit,
       can: (permission) => permission === "index" || permission === "change_password" || allowed.has(permission),
     };
-  }, [user, checkError, refresh, login, logout, switchRole]);
+  }, [user, checkError, refresh, login, logout, switchRole, selectUnit]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

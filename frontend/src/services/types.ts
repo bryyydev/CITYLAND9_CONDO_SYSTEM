@@ -25,6 +25,10 @@ export interface SessionUser {
   subtitle?: string;
   /** Temporary password: a new one must be chosen before anything else. */
   mustChangePassword?: boolean;
+  /** The temporary password is a resident activation code (first sign-in). */
+  activationPending?: boolean;
+  /** Residents: every unit the account may open (one account per person). */
+  units?: { id: number; unitNo: string; personType: string }[];
   passwordPolicy?: { minLength: number; maxLength: number };
 }
 
@@ -72,8 +76,32 @@ export interface SoaPayment {
   reversed?: boolean;
 }
 
+/** How one dues line was priced (only when it really gives the charged amount; null = not recorded). */
+export interface ChargeBasis {
+  kind: "condo" | "parking" | "storage";
+  basis: "sqm" | "manual";
+  unitNo: string | null;
+  area: string | null;
+  rate: string | null;
+}
+
 export interface SoaDetail extends SoaRow {
+  /** e.g. SOA-202609-00012 */
+  statementNo: string;
+  issueDate: IsoDate | null;
+  periodStart: IsoDate;
+  periodEnd: IsoDate;
+  /** Amount due as first issued (null for statements issued before this was recorded). */
+  issuedAmount: Money | null;
+  account: { unitNo: string; unitType: string; floor: string; billTo: string; ownerName: string; tenantName: string };
+  property: { name: string; address: string };
   charges: SoaCharges;
+  bases: { condo: ChargeBasis | null; parking: ChargeBasis | null; storage: ChargeBasis | null; recorded: boolean };
+  penaltyInfo: { amount: Money; rate: string; base: Money; eligible: string[]; overdue: boolean; recorded: boolean; explanation: string };
+  /** Earlier months whose charges are still unpaid (they make up the previous balance). */
+  previousUnpaid: { id: number; month: Month; dueDate: IsoDate | null; balance: Money }[];
+  correctedByHand: boolean;
+  payment: { instructions: string; onlinePaymentUrl: string | null; qrAvailable: boolean };
   note: string;
   payments: SoaPayment[];
 }
@@ -327,7 +355,6 @@ export interface BillDetail extends SoaDetail {
   payerName: string;
   manualOverride: boolean;
   contact?: { name: string; kind: "Owner" | "Tenant"; contactNo: string; email: string } | null;
-  previousUnpaid?: { id: number; month: Month; balance: Money }[];
   overdueMonths?: Month[];
   /** Stored amounts, for the Edit SOA form. */
   stored?: SoaAmounts;
@@ -912,7 +939,7 @@ export interface UserPage {
 
 /** active: can use the portal · ended: the linked owner/tenant moved out or the unit closed ·
  *  inactive: deactivated by an administrator · unlinked: a resident login with no unit yet. */
-export type ResidentAccountStatus = "active" | "ended" | "inactive" | "unlinked";
+export type ResidentAccountStatus = "active" | "pending" | "ended" | "inactive" | "unlinked";
 
 export interface ResidentAccount {
   /** The login's user id. */
@@ -931,8 +958,48 @@ export interface ResidentAccount {
   statusReason: string | null;
   active: boolean;
   mustChangePassword: boolean;
+  /** Pending activation: when the current activation code stops working (null: no expiry / not pending). */
+  activationExpiresAt: IsoDateTime | null;
+  activationExpired: boolean;
+  /** Units this account may open (one account per person; history included). */
+  links: ResidentUnitLink[];
   createdAt: IsoDateTime | null;
 }
+
+export interface ResidentUnitLink {
+  id: number | null;
+  unitId: number;
+  unitNo: string;
+  personType: "Owner" | "Tenant";
+  personId: number | null;
+  personName: string | null;
+  active: boolean;
+  /** Why this link gives no access now (moved out, unit inactive), or null. */
+  problem: string | null;
+  endedAt: IsoDateTime | null;
+  endReason: string | null;
+}
+
+/** none | pending activation | active | disabled | ended (no unit left) */
+export type PortalState = "none" | "pending" | "active" | "disabled" | "ended";
+export interface PortalPerson {
+  personType: "Owner" | "Tenant";
+  personId: number;
+  name: string;
+  unitId: number;
+  unitNo: string;
+  email: string;
+  contactNo: string;
+  state: PortalState;
+  account: { id: number; username: string } | null;
+}
+export interface PortalPeoplePage { people: PortalPerson[]; counts: Record<PortalState, number>; activationDays: number }
+
+/** Shown ONCE, to the administrator who issued it. */
+export interface ActivationCredentials { username: string; activationCode: string; expiresAt: IsoDateTime }
+export interface ProvisionCandidate { userId: number; username: string; displayName: string; units: string[]; reasons: string[] }
+export interface ProvisionInput { personType: "Owner" | "Tenant"; personId: number; mode: "auto" | "new" | "link"; linkUserId?: number; formToken: string }
+export interface ProvisionResult { account: ResidentAccount; credentials: ActivationCredentials | null; linked: boolean }
 
 export interface ResidentAccountQuery {
   q: string;

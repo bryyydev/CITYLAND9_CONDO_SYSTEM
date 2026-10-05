@@ -71,12 +71,12 @@ def test_validation_saves_nothing(app_module, sa):
 
 
 def test_save_persists_and_is_audited(app_module, sa):
-    resp = sa.put(BASE, json={"waterRate": "55.25", "ratesPerSqm": {"studio": "60"}, "penaltyIncludes": {"water": True},
+    resp = sa.put(BASE, json={"waterRate": "55.25", "ratesPerSqm": {"studio": "60"}, "penaltyIncludes": {"parking": True},
                               "booksClosedThrough": "2026-08", "smtpPort": "465", "onlinePaymentUrl": "https://pay.example/cl9"})
     assert resp.status_code == 200, resp.get_json()
     body = resp.get_json()
     assert body["rates"]["waterRate"] == "55.25" and body["rates"]["ratesPerSqm"]["studio"] == "60"
-    assert body["rates"]["penaltyIncludes"]["water"] is True and body["rates"]["booksClosedThrough"] == "2026-08"
+    assert body["rates"]["penaltyIncludes"]["parking"] is True and body["rates"]["booksClosedThrough"] == "2026-08"
     with app_module.app.app_context():
         assert app_module.setting("water_rate") == "55.25"
         assert app_module.books_closed_through() == "2026-08"
@@ -89,6 +89,17 @@ def test_save_persists_and_is_audited(app_module, sa):
     assert sa.put(BASE, json={"waterRate": "55.25"}).get_json()["changed"] == []
     with app_module.app.app_context():
         assert app_module.AuditLog.query.count() == count
+    assert sa.put(BASE, json={"penaltyIncludes": {"parking": False}}).status_code == 200   # back to the default
+
+
+def test_water_can_never_be_penalty_eligible(app_module, sa):
+    """Confirmed rule (2026-10-06): water and unrelated charges never increase the penalty base."""
+    resp = sa.put(BASE, json={"penaltyIncludes": {"water": True}})
+    assert resp.status_code == 400 and "penaltyIncludes.water" in resp.get_json()["error"]["fields"]
+    with app_module.app.app_context():
+        assert app_module.setting("penalty_include_water", "0") != "1"
+        # Even a stored "1" (e.g. from before this rule) is ignored by the calculator.
+        assert "water" not in app_module.current_penalty_rules()[1]
 
 
 def test_smtp_password_replace_and_remove(app_module, sa):

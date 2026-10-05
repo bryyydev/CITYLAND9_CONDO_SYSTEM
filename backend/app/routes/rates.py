@@ -13,7 +13,8 @@ classic screen's (legacy.SETTINGS_NUMBERS: decimals, minimum, maximum) plus:
 Saving changes ONLY the settings rows: no bill, payment or receipt row is written. (Existing billing
 behaviour, unchanged: issued bills keep their stored condo dues, parking and water, but the penalty
 rule and the storage cut-off month are applied when a statement is computed, so they also affect
-unpaid bills, exactly as with the classic screen.) All rows and one audit entry (before/after of what changed, never the password) are
+unpaid bills issued before migration 0010; bills issued since keep the penalty rate, eligible charge
+types and storage decision recorded when they were issued. Water can't be made penalty-eligible.) All rows and one audit entry (before/after of what changed, never the password) are
 saved in one transaction. A typed-value problem answers 400 with per-field messages and saves nothing.
 """
 import re
@@ -65,7 +66,7 @@ DEFAULTS = {
     "water_rate": "50", "water_auto_compute": "1",
     "studio_rate_per_sqm": "50", "one_bed_rate_per_sqm": "75", "two_bed_rate_per_sqm": "100", "three_bed_rate_per_sqm": "125",
     "parking_rate_per_sqm": "100", "storage_rate_per_sqm": "50", "storage_in_total_from": "9999-12",
-    "penalty_rate": "10",
+    "penalty_rate": "4",        # confirmed 2026-10-06 (was 10); used only when no rate is saved
     "penalty_include_condo": "1", "penalty_include_parking": "0", "penalty_include_storage": "0", "penalty_include_water": "0",
     "online_payment_url": "",
     "online_payment_instructions": "Please use the online payment link or scan the Payment QR shown on this SOA.",
@@ -166,6 +167,9 @@ def make_rates_blueprint(legacy):
                 continue
             if not isinstance(raw, bool):
                 errors[_field(path)] = "Choose yes or no."
+            elif key == "penalty_include_water" and raw:
+                # Confirmed rule (2026-10-06): water never increases the penalty base.
+                errors[_field(path)] = "Water can't be included in the penalty base: penalties apply to dues only."
             else:
                 new_values[key] = "1" if raw else "0"
         for name, key in MONTHS.items():

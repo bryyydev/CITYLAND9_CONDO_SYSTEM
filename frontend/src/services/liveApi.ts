@@ -3,7 +3,7 @@
 // them live: false so their pages link to the classic screen instead of calling here.
 
 import type { DataService } from "./api";
-import { NotConnectedError, http, setCsrfToken } from "./http";
+import { NotConnectedError, downloadFile, http, setCsrfToken } from "./http";
 import type * as T from "./types";
 
 const notConnected = (feature: string) => () => Promise.reject(new NotConnectedError(feature));
@@ -47,6 +47,7 @@ export const liveApi: DataService = {
     statement: (unitId, billId) => http(`${r(unitId)}/soa/${billId}`),
     receipts: (unitId) => http(`${r(unitId)}/receipts`),
     receipt: (unitId, receiptId) => http(`${r(unitId)}/receipts/${receiptId}`),
+    downloadStatementPdf: (unitId, billId) => downloadFile(`${r(unitId)}/soa/${billId}/pdf`, { expect: "application/pdf", fallbackName: `SOA_${billId}.pdf` }),
     water: async (unitId) => (await http<{ readings: T.WaterReadingRow[] }>(`${r(unitId)}/water`)).readings,
     tickets: (unitId) => http(`${r(unitId)}/maintenance`),
     fileTicket: async (unitId, input) =>
@@ -84,8 +85,10 @@ export const liveApi: DataService = {
     detail: async (id) => (await http<{ unit: T.UnitDetail }>(`/units/${id}`)).unit,
     create: async (input) => (await http<{ unit: T.UnitDetail }>("/units", { method: "POST", body: input })).unit,
     update: async (id, input) => (await http<{ unit: T.UnitDetail }>(`/units/${id}`, { method: "PUT", body: input })).unit,
-    addPerson: async (id, kind, input) =>
-      (await http<{ unit: T.UnitDetail }>(`/units/${id}/${kind === "Owner" ? "owners" : "tenants"}`, { method: "POST", body: input })).unit,
+    addPerson: async (id, kind, input) => {
+      const r = await http<{ unit: T.UnitDetail; createdPersonId?: number }>(`/units/${id}/${kind === "Owner" ? "owners" : "tenants"}`, { method: "POST", body: input });
+      return { ...r.unit, createdPersonId: r.createdPersonId };
+    },
     updatePerson: async (id, kind, personId, input) =>
       (await http<{ unit: T.UnitDetail }>(`/units/${id}/${kind === "Owner" ? "owners" : "tenants"}/${personId}`, { method: "PUT", body: input })).unit,
   },
@@ -103,6 +106,7 @@ export const liveApi: DataService = {
     correctSoa: async (id, input) => (await http<{ bill: T.BillDetail }>(`/billing/${id}/soa`, { method: "PUT", body: input })).bill,
     emailBill: (id) => http(`/billing/${id}/email`, { method: "POST" }),
     emailOverview: (month) => http(`/billing/email?month=${month}`),
+    downloadSoaPdf: (id, fallbackName) => downloadFile(`/billing/${id}/soa.pdf`, { expect: "application/pdf", fallbackName }),
   },
   advances: {
     list: (q = {}) => {
@@ -222,6 +226,16 @@ export const liveApi: DataService = {
     updateResidentAccount: async (userId, input) =>
       (await http<{ account: T.ResidentAccount }>(`/admin/resident-accounts/${userId}`, { method: "PATCH", body: input })).account,
     resetResidentPassword: (userId, newPassword) => http(`/admin/resident-accounts/${userId}/password`, { method: "POST", body: { newPassword } }),
+    residentPeople: (q) => {
+      const params = new URLSearchParams();
+      if (q.q) params.set("q", q.q);
+      if (q.state) params.set("state", q.state);
+      return http(`/admin/resident-accounts/people?${params}`);
+    },
+    provisionResident: (input) => http("/admin/resident-accounts/provision", { method: "POST", body: input }),
+    issueActivationCode: (userId, formToken) => http(`/admin/resident-accounts/${userId}/activation-code`, { method: "POST", body: { formToken } }),
+    endResidentLink: async (userId, linkId, reason) =>
+      (await http<{ account: T.ResidentAccount }>(`/admin/resident-accounts/${userId}/links/${linkId}/end`, { method: "POST", body: { reason } })).account,
     auditLogs: (q) => http(`/admin/audit-logs?${auditParams(q)}`),
     // A plain navigation: the server answers with a CSV attachment, so the page stays where it is.
     exportAuditLogs: async (q) => window.location.assign(`/api/admin/audit-logs/export.csv?${auditParams(q)}`),

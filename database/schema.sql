@@ -6,7 +6,7 @@
 --   CREATE DATABASE cityland9 CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 --   mysql -u <user> -p cityland9 < database/schema.sql
 --
--- Tables: 31 (ordered so foreign-key targets are created first)
+-- Tables: 32 (ordered so foreign-key targets are created first)
 
 SET NAMES utf8mb4;
 
@@ -144,6 +144,7 @@ CREATE TABLE user (
 	session_version INTEGER NOT NULL DEFAULT '0', 
 	must_change_password BOOL NOT NULL DEFAULT '0', 
 	password_changed_at DATETIME(6), 
+	temp_password_expires_at DATETIME(6), 
 	updated_at DATETIME(6), 
 	updated_by VARCHAR(80), 
 	PRIMARY KEY (id), 
@@ -207,6 +208,21 @@ CREATE TABLE billing (
 	soa_note VARCHAR(1000), 
 	soa_manual_override BOOL, 
 	created_at DATETIME(6), 
+	issued_at DATETIME(6), 
+	issued_amount NUMERIC(12, 2), 
+	penalty_rate NUMERIC(7, 4), 
+	penalty_basis VARCHAR(60), 
+	storage_included BOOL, 
+	dues_basis VARCHAR(10), 
+	condo_area NUMERIC(10, 2), 
+	condo_rate NUMERIC(12, 4), 
+	parking_unit_no VARCHAR(50), 
+	parking_area NUMERIC(10, 2), 
+	parking_rate NUMERIC(12, 4), 
+	storage_unit_no VARCHAR(50), 
+	storage_basis VARCHAR(10), 
+	storage_area NUMERIC(10, 2), 
+	storage_rate NUMERIC(12, 4), 
 	updated_at DATETIME(6), 
 	updated_by VARCHAR(80), 
 	PRIMARY KEY (id), 
@@ -433,6 +449,28 @@ CREATE TABLE resident_profile (
 	FOREIGN KEY(user_id) REFERENCES user (id), 
 	FOREIGN KEY(unit_id) REFERENCES unit (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+-- resident_unit_link
+CREATE TABLE resident_unit_link (
+	id INTEGER NOT NULL AUTO_INCREMENT, 
+	user_id INTEGER NOT NULL, 
+	unit_id INTEGER NOT NULL, 
+	person_type VARCHAR(20) NOT NULL, 
+	person_id INTEGER, 
+	active BOOL NOT NULL DEFAULT '1', 
+	active_key VARCHAR(40), 
+	created_at DATETIME(6), 
+	created_by VARCHAR(80), 
+	ended_at DATETIME(6), 
+	ended_by VARCHAR(80), 
+	end_reason VARCHAR(300), 
+	PRIMARY KEY (id), 
+	CONSTRAINT uq_resident_unit_link_active_key UNIQUE (active_key), 
+	FOREIGN KEY(user_id) REFERENCES user (id), 
+	FOREIGN KEY(unit_id) REFERENCES unit (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE INDEX ix_resident_unit_link_unit ON resident_unit_link (unit_id);
+CREATE INDEX ix_resident_unit_link_user ON resident_unit_link (user_id);
 
 -- tenant
 CREATE TABLE tenant (

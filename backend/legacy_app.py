@@ -8,7 +8,7 @@ import smtplib
 import time
 from email.message import EmailMessage
 from datetime import datetime, date, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from functools import wraps
 
 from flask import Flask, render_template, request, redirect, url_for, session, flash, send_file, g, jsonify, abort, has_request_context, has_app_context, get_flashed_messages
@@ -141,6 +141,11 @@ def _stamp_changes(sess, flush_context, instances):
 # -----------------------------
 # Helpers
 # -----------------------------
+CENT = Decimal("0.01")   # rounding policy: money is rounded half-up to the centavo (ROUND_HALF_UP)
+DEFAULT_PENALTY_RATE = 4   # % per overdue month; confirmed 2026-10-06 (was 10). Used only when no rate is saved.
+PENALTY_KINDS = ("condo", "parking", "storage")   # water is never penalty-eligible (confirmed rule)
+
+
 def money(v):
     """Internal values (database columns, computed figures) -> Decimal. NOT for user input:
     typed amounts go through form_amount()/form_decimal(), which reject bad input."""
@@ -271,12 +276,20 @@ def end_other_sessions(user, keep_current=False):
         session["sv"] = user.session_version
 
 
-def set_password(user, new_password, *, temporary, keep_current_session=False):
-    """Store a new password hash. temporary=True forces a change at the next sign-in."""
+def set_password(user, new_password, *, temporary, keep_current_session=False, expires_at=None):
+    """Store a new password hash. temporary=True forces a change at the next sign-in. expires_at:
+    when that temporary password (a resident activation code) stops working (None = no expiry)."""
     user.password_hash = generate_password_hash(new_password)
     user.must_change_password = bool(temporary)
     user.password_changed_at = datetime.utcnow()
+    user.temp_password_expires_at = expires_at if temporary else None
     end_other_sessions(user, keep_current=keep_current_session)
+
+
+def activation_expired(user):
+    """True when the account's temporary password is a resident activation code that has expired."""
+    exp = getattr(user, "temp_password_expires_at", None)
+    return bool(user.must_change_password and exp and datetime.utcnow() > exp)
 
 
 def get_smtp_password():
@@ -461,6 +474,54 @@ def parking_dues(unit):
     rate = dec(assigned.unit_rate_per_sqm) or dec(setting("parking_rate_per_sqm", "0"))
     return round_money(dec(assigned.area_sqm) * rate)
 
+def charge_basis(unit):
+    """How each dues amount is priced: area and rate per sqm (or a manual monthly amount), with the
+    same formulas and rounding as unit_dues / parking_dues / storage_dues."""
+    manual = money(getattr(unit, "manual_monthly_dues", 0) or 0)
+    if getattr(unit, "dues_mode", "per_sqm") == "manual" and manual > 0:
+        condo = {"basis": "manual", "area": None, "rate": None}
+    else:
+        condo = {"basis": "sqm", "area": dec(unit.area_sqm), "rate": dec(unit.unit_rate_per_sqm) or dec(rate_for_type(unit.unit_type))}
+    out = {"condo": condo, "parking": None, "storage": None}
+    park = assigned_asset(unit, "assigned_parking_unit_id")
+    if park:
+        out["parking"] = {"basis": "sqm", "unit_no": park.unit_no, "area": dec(park.area_sqm),
+                          "rate": dec(park.unit_rate_per_sqm) or dec(setting("parking_rate_per_sqm", "0"))}
+    store = assigned_asset(unit, "assigned_storage_unit_id") if getattr(unit, "include_storage", False) else None
+    if store:
+        if getattr(store, "dues_mode", "per_sqm") == "manual" and money(getattr(store, "manual_monthly_dues", 0)) > 0:
+            out["storage"] = {"basis": "manual", "unit_no": store.unit_no, "area": None, "rate": None}
+        else:
+            out["storage"] = {"basis": "sqm", "unit_no": store.unit_no, "area": dec(store.area_sqm),
+                              "rate": dec(store.unit_rate_per_sqm) or dec(setting("storage_rate_per_sqm", "0"))}
+    return out
+
+
+def apply_charge_basis(bill, unit):
+    """Record on the bill how its condo / parking / storage dues were priced (snapshot)."""
+    b = charge_basis(unit)
+    bill.dues_basis, bill.condo_area, bill.condo_rate = b["condo"]["basis"], b["condo"]["area"], b["condo"]["rate"]
+    p, st = b["parking"] or {}, b["storage"] or {}
+    bill.parking_unit_no, bill.parking_area, bill.parking_rate = p.get("unit_no"), p.get("area"), p.get("rate")
+    bill.storage_unit_no, bill.storage_basis, bill.storage_area, bill.storage_rate = st.get("unit_no"), st.get("basis"), st.get("area"), st.get("rate")
+
+
+def current_penalty_rules():
+    """(rate %, eligible charge types) from Rates & Rules. Water is never eligible (confirmed rule)."""
+    kinds = [k for k in PENALTY_KINDS if setting(f"penalty_include_{k}", "1" if k == "condo" else "0") == "1"]
+    return Decimal(str(setting_float("penalty_rate", DEFAULT_PENALTY_RATE))), kinds
+
+
+def bill_penalty_rules(bill, current=None):
+    """(rate as a fraction, eligible kinds) for one statement: its issue-time snapshot, or the current
+    rules for bills issued before the snapshot existed (documented limitation)."""
+    if getattr(bill, "penalty_rate", None) is not None:
+        kinds = {k for k in (bill.penalty_basis or "").split(",") if k in PENALTY_KINDS}
+        return Decimal(str(bill.penalty_rate)) / Decimal("100"), kinds
+    rate, kinds = current or current_penalty_rules()
+    return rate / Decimal("100"), set(kinds)
+
+
 def storage_dues(unit):
     if not getattr(unit, "include_storage", False):
         return Decimal("0.00")
@@ -480,6 +541,10 @@ def storage_cutoff():
 
 
 def storage_charged(bill):
+    """Storage counts in this statement's total: as recorded when it was issued; for bills issued
+    before that was recorded, by the current cut-off month (documented limitation)."""
+    if getattr(bill, "storage_included", None) is not None:
+        return bool(bill.storage_included)
     return bool(bill.billing_month) and bill.billing_month >= storage_cutoff()
 
 
@@ -549,7 +614,7 @@ def _advance_balance_cached(advance):
         return Decimal("0.00")
     if advance.id not in cache:
         applied = db.session.query(func.coalesce(func.sum(AdvanceApplication.amount), 0)).filter(AdvanceApplication.advance_payment_id == advance.id).scalar() or Decimal("0")
-        cache[advance.id] = max(money(advance.amount) - money(applied), Decimal("0")).quantize(Decimal("0.01"))
+        cache[advance.id] = max(money(advance.amount) - money(applied), Decimal("0")).quantize(CENT, ROUND_HALF_UP)
     return cache[advance.id]
 
 
@@ -601,13 +666,7 @@ def _prepare_bill_calculation_cache():
         advance_map[bid] = money(total)
 
     result = {}
-    penalty_rate = Decimal(str(setting_float("penalty_rate", 10))) / Decimal("100")
-    penalty_include = {
-        "condo": setting("penalty_include_condo", "1") == "1",
-        "parking": setting("penalty_include_parking", "0") == "1",
-        "storage": setting("penalty_include_storage", "0") == "1",
-        "water": setting("penalty_include_water", "0") == "1",
-    }
+    current_rules = current_penalty_rules()
 
     # Balances carry over as ONE running balance per unit (fix 2026-10-05, bug B1):
     #   previous balance of a bill = everything charged on the unit's earlier bills minus everything
@@ -639,11 +698,12 @@ def _prepare_bill_calculation_cache():
                 m_end += 1
             month_rows = unit_bills[k:m_end]
             # Bills of the same month (duplicates) don't affect one another.
-            penalty_base = sum((amt for amt, kind in buckets if penalty_include.get(kind)), zero).quantize(Decimal("0.01"))
             delta = zero
             month_buckets, month_paid = [], zero
             for bill in month_rows:
                 reading = water_map.get((bill.unit_id, bill.billing_month))
+                rate, kinds = bill_penalty_rules(bill, current_rules)
+                penalty_base = sum((amt for amt, kind in buckets if kind in kinds), zero).quantize(CENT, ROUND_HALF_UP)
                 if getattr(bill, "soa_manual_override", False):
                     condo = money(bill.assessment)
                     parking = money(bill.parking_dues)
@@ -653,11 +713,16 @@ def _prepare_bill_calculation_cache():
                 else:
                     # Issued bills are frozen: condo dues and parking are the amounts stored
                     # when the bill was generated (or last recalculated on purpose), not
-                    # today's rates. Water follows the month's reading, as before.
+                    # today's rates. Water: the amount stored on the bill (saving a reading for a
+                    # billed month updates it, audited) for bills with an issue snapshot; older
+                    # bills follow the month's reading, as before.
                     condo = money(bill.assessment)
                     parking = money(bill.parking_dues)
-                    water = money(reading.bill_amount) if reading else money(bill.water)
-                    penalty = (penalty_base * penalty_rate).quantize(Decimal("0.01")) if is_overdue(bill) else zero
+                    if getattr(bill, "issued_at", None) is not None or not reading:
+                        water = money(bill.water)
+                    else:
+                        water = money(reading.bill_amount)
+                    penalty = (penalty_base * rate).quantize(CENT, ROUND_HALF_UP) if is_overdue(bill) else zero
                     previous = running
 
                 storage = money(bill.storage_dues) if storage_charged(bill) else zero
@@ -672,12 +737,12 @@ def _prepare_bill_calculation_cache():
                 current += other + adjustment
 
                 advance = min(advance_map.get(bill.id, zero), max(current, zero))
-                total = (current + previous + penalty - advance).quantize(Decimal("0.01"))
+                total = (current + previous + penalty - advance).quantize(CENT, ROUND_HALF_UP)
                 paid = money(bill.amount_paid)
-                statement_balance = (total - paid).quantize(Decimal("0.01"))
-                charge = (total - previous).quantize(Decimal("0.01"))      # what this bill adds
+                statement_balance = (total - paid).quantize(CENT, ROUND_HALF_UP)
+                charge = (total - previous).quantize(CENT, ROUND_HALF_UP)      # what this bill adds
                 if getattr(bill, "soa_manual_override", False):
-                    charge = (total - running).quantize(Decimal("0.01"))   # its typed previous balance replaces the running one
+                    charge = (total - running).quantize(CENT, ROUND_HALF_UP)   # its typed previous balance replaces the running one
                 delta += charge - paid
 
                 result[bill.id] = {
@@ -778,7 +843,7 @@ def previous_outstanding(unit_id, month):
         if b.billing_month >= month:
             break
         total += bill_unpaid_part(b)
-    return total.quantize(Decimal("0.01"))
+    return total.quantize(CENT, ROUND_HALF_UP)
 
 
 def selected_penalty_base_for_unit(unit_id, month):
@@ -789,8 +854,7 @@ def selected_penalty_base_for_unit(unit_id, month):
     if bill is not None:
         return _bill_calc(bill)["penalty_base"]
     # No bill for the month yet (bill generation): what the unit's earlier bills leave unpaid.
-    enabled = {k for k in ("condo", "parking", "storage", "water")
-               if setting(f"penalty_include_{k}", "1" if k == "condo" else "0") == "1"}
+    enabled = set(current_penalty_rules()[1])
     probe = [b for b in _billing_history_for_unit(unit_id) if b.billing_month < month]
     return _penalty_base_after(probe, enabled)
 
@@ -813,7 +877,7 @@ def _penalty_base_after(prior_bills, enabled):
             used = min(bucket[0], pool)
             bucket[0] -= used
             pool -= used
-    return sum((amt for amt, kind in buckets if kind in enabled), Decimal("0.00")).quantize(Decimal("0.01"))
+    return sum((amt for amt, kind in buckets if kind in enabled), Decimal("0.00")).quantize(CENT, ROUND_HALF_UP)
 
 
 def penalty_for_unit(unit_id, month):
@@ -821,7 +885,7 @@ def penalty_for_unit(unit_id, month):
     if not bill or not is_overdue(bill):
         return Decimal("0.00")
     base = selected_penalty_base_for_unit(unit_id, month)
-    return (base * (Decimal(str(setting_float("penalty_rate", 10))) / Decimal("100"))).quantize(Decimal("0.01"))
+    return (base * (current_penalty_rules()[0] / Decimal("100"))).quantize(CENT, ROUND_HALF_UP)
 
 def refresh_penalties(month):
     changed = False
@@ -841,13 +905,18 @@ def allocate_advances_for_month(month, unit_id=None):
         bills_q = bills_q.filter_by(unit_id=unit_id)
     bills = bills_q.all()
     changed = False
+    db.session.flush()
+    reset_financial_caches()
 
     for bill in bills:
         # Advance payments apply to condo dues only.
         condo = money(bill.assessment)  # issued (frozen) condo dues
 
         already = money(advance_for_bill(bill))
-        need = max(money(condo) - already, Decimal("0"))
+        # Never more than the bill still owes (fix 2026-10-06): an advance recorded after the bill was
+        # paid in cash used to be applied on top of the cash payment (each peso counted twice). What
+        # isn't needed stays as remaining credit on the advance.
+        need = min(max(money(condo) - already, Decimal("0")), max(bill_balance(bill), Decimal("0")))
         if need <= 0:
             continue
 
@@ -876,7 +945,7 @@ def allocate_advances_for_month(month, unit_id=None):
             months = max(int(adv.coverage_months or 1), 1)
             monthly = money(adv.monthly_amount)
             if monthly <= 0:
-                monthly = (money(adv.amount) / months).quantize(Decimal("0.01"))
+                monthly = (money(adv.amount) / months).quantize(CENT, ROUND_HALF_UP)
 
             amount = min(need, monthly, remaining)
             if amount <= 0:
@@ -892,9 +961,9 @@ def allocate_advances_for_month(month, unit_id=None):
             )
 
             if existing:
-                if money(existing.amount) != amount:
-                    existing.amount = amount
-                    changed = True
+                # Recorded allocations are history: never rewritten here (see
+                # database/tools/detect_overpayment_allocations.py for older double allocations).
+                continue
             else:
                 db.session.add(
                     AdvanceApplication(
@@ -988,7 +1057,7 @@ def soa_bill_total(bill, include_paid_water=False, penalty_amount=None):
     current += calc["other"] + calc["adjustment"]      # counted, as in _bill_calc (fix 2026-10-04)
     applied_penalty = penalty if penalty_amount is None else penalty_amount
     advance = min(advance_for_bill(bill), current)
-    return (current + previous + applied_penalty - advance).quantize(Decimal("0.01"))
+    return (current + previous + applied_penalty - advance).quantize(CENT, ROUND_HALF_UP)
 
 def soa_bill_balance(bill, include_paid_water=False, penalty_amount=None):
     return soa_bill_total(bill, include_paid_water=include_paid_water, penalty_amount=penalty_amount) - money(bill.amount_paid)
@@ -998,7 +1067,7 @@ def soa_penalty_base(bill):
     return selected_penalty_base_for_unit(bill.unit_id, bill.billing_month) if is_overdue(bill) else Decimal("0.00")
 
 def soa_penalty_amount(bill):
-    return (soa_penalty_base(bill) * (Decimal(str(setting_float("penalty_rate", 10))) / Decimal("100"))).quantize(Decimal("0.01")) if is_overdue(bill) else Decimal("0.00")
+    return (soa_penalty_base(bill) * bill_penalty_rules(bill)[0]).quantize(CENT, ROUND_HALF_UP) if is_overdue(bill) else Decimal("0.00")
 
 def water_payment_status(bill):
     if not bill:
@@ -1038,6 +1107,10 @@ class User(ChangeTracked, db.Model):
     session_version = db.Column(db.Integer, nullable=False, default=0, server_default="0")
     must_change_password = db.Column(db.Boolean, nullable=False, default=False, server_default="0")
     password_changed_at = db.Column(db.DateTime, nullable=True)
+    # Expiry of a system-generated resident activation code (a one-time temporary password; migration
+    # 0011). NULL = no expiry. Left out only when a read-only tool loads a database not upgraded yet.
+    if os.getenv("CL9_SCHEMA_BEFORE_0011") != "1":
+        temp_password_expires_at = db.Column(db.DateTime, nullable=True)
 
     @validates("role")
     def _validate_role(self, key, value):
@@ -1179,6 +1252,25 @@ class Billing(ChangeTracked, db.Model):
     soa_note = db.Column(db.String(1000), default="")
     soa_manual_override = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    # Issue-time snapshot (migration 0010). Set when the bill is generated; NULL on bills issued
+    # before it (their rules were not recorded and are not invented: they follow the current rules).
+    # Left out only when a read-only tool loads a database not upgraded yet (database/tools/schema_compat.py).
+    if os.getenv("CL9_SCHEMA_BEFORE_0010") != "1":
+        issued_at = db.Column(db.DateTime)
+        issued_amount = db.Column(db.Numeric(12, 2))          # amount due as first issued
+        penalty_rate = db.Column(db.Numeric(7, 4))            # % applied to this statement
+        penalty_basis = db.Column(db.String(60))              # eligible charge types, e.g. "condo"
+        storage_included = db.Column(db.Boolean)              # storage counted in this statement's total
+        dues_basis = db.Column(db.String(10))                 # "sqm" or "manual"
+        condo_area = db.Column(db.Numeric(10, 2))
+        condo_rate = db.Column(db.Numeric(12, 4))
+        parking_unit_no = db.Column(db.String(50))
+        parking_area = db.Column(db.Numeric(10, 2))
+        parking_rate = db.Column(db.Numeric(12, 4))
+        storage_unit_no = db.Column(db.String(50))
+        storage_basis = db.Column(db.String(10))
+        storage_area = db.Column(db.Numeric(10, 2))
+        storage_rate = db.Column(db.Numeric(12, 4))
     unit = db.relationship("Unit", back_populates="bills")
     payments = db.relationship("Payment", back_populates="billing", lazy=True, cascade="all, delete-orphan")
 
@@ -1554,6 +1646,40 @@ class ResidentProfile(ChangeTracked, db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     user = db.relationship("User", backref=db.backref("resident_profile", uselist=False))
     unit = db.relationship("Unit")
+
+
+class ResidentUnitLink(db.Model):
+    """A unit a resident portal account may open, through one owner/tenant record (migration 0011).
+
+    One account per person: a verified person who owns or rents several units has one account with
+    several links. active_key ("Owner:12") is set while the link is active and is UNIQUE, so one
+    owner/tenant record can have only one active portal account. Links are never deleted; ending
+    one keeps the history (ended_at/by, end_reason). The account's ResidentProfile keeps its first
+    unit and display name (older screens and reports read it)."""
+    __tablename__ = "resident_unit_link"
+    __table_args__ = (db.UniqueConstraint("active_key", name="uq_resident_unit_link_active_key"),
+                      db.Index("ix_resident_unit_link_user", "user_id"), db.Index("ix_resident_unit_link_unit", "unit_id"))
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    unit_id = db.Column(db.Integer, db.ForeignKey("unit.id"), nullable=False)
+    person_type = db.Column(db.String(20), nullable=False, default="Owner")
+    person_id = db.Column(db.Integer)
+    active = db.Column(db.Boolean, nullable=False, default=True, server_default="1")
+    active_key = db.Column(db.String(40))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_by = db.Column(db.String(80))
+    ended_at = db.Column(db.DateTime)
+    ended_by = db.Column(db.String(80))
+    end_reason = db.Column(db.String(300))
+    # Resident logins are never deleted (Users & Access refuses it); if a user row is ever removed
+    # (tests, tooling) its links go with it instead of pointing at nobody.
+    user = db.relationship("User", backref=db.backref("unit_links", lazy="select", order_by="ResidentUnitLink.id",
+                                                      cascade="all, delete-orphan"))
+    unit = db.relationship("Unit")
+
+
+def link_key(person_type, person_id):
+    return f"{person_type}:{person_id}" if person_id else None
 
 
 class Announcement(db.Model):
@@ -2039,6 +2165,7 @@ def generate_bills(month):
     check_open_period(month, "Bills")
     due_date = due_date_for(month)
     created = skipped = 0
+    new_bills = []
     for u in Unit.query.filter_by(active=True).all():
         if u.unit_type in ("PARKING", "STORAGE"):
             continue
@@ -2052,12 +2179,22 @@ def generate_bills(month):
         condo = Decimal(str(unit_dues(u)))
         parking = Decimal(str(parking_dues(u)))
         storage = Decimal(str(storage_dues(u)))
+        rate, kinds = current_penalty_rules()
         bill = Billing(unit_id=u.id, billing_month=month, assessment=condo, parking_dues=parking,
             storage_dues=storage, water=water, other=0, penalty=penalty, adjustment=0, previous_balance=max(previous, Decimal("0")),
-            amount_paid=0, due_date=due_date, status="Unpaid")
+            amount_paid=0, due_date=due_date, status="Unpaid",
+            issued_at=datetime.utcnow(), penalty_rate=rate, penalty_basis=",".join(kinds),
+            storage_included=month >= setting("storage_in_total_from", "9999-12"))   # read fresh, not the request cache
+        apply_charge_basis(bill, u)
         db.session.add(bill)
+        new_bills.append(bill)
         created += 1
     allocate_advances_for_month(month)
+    # Amount due as first issued (after advances), kept apart from later payments / restatements.
+    db.session.flush()
+    reset_financial_caches()
+    for bill in new_bills:
+        bill.issued_amount = bill_total(bill)
     audit(f"Generated {created} detailed bills for {month}", entity_type="billing_month", reason=None,
           details={"month": month, "created": created, "due_date": due_date.isoformat()}, commit=False)
     db.session.commit()
@@ -2181,14 +2318,18 @@ def record_bill_payment(bid, *, amount, payment_method, payment_type, reference,
         db.session.add(bill_payment)
 
     if excess_amount > 0:
+        # The excess is credit for the NEXT billing month. (Fix 2026-10-06: it started in this bill's
+        # month and was applied to this same, already settled bill: the excess was counted twice and
+        # the bill went to a hidden negative balance.) Applied now if next month is already billed,
+        # otherwise when that month is generated.
+        credit_month = month_shift(b.billing_month, 1)
         excess_adv = AdvancePayment(
-            unit_id=b.unit_id, payment_date=payment_date, amount=excess_amount, start_month=b.billing_month,
+            unit_id=b.unit_id, payment_date=payment_date, amount=excess_amount, start_month=credit_month,
             coverage_months=1, monthly_amount=excess_amount, payment_method=payment_method, reference=reference,
             remarks=(remarks + " " if remarks else "") + f"Automatic advance from excess payment for {b.billing_month}.")
         db.session.add(excess_adv)
         db.session.flush()
-        # The bill is already settled above, so this advance remains available for the next month.
-        allocate_advances_for_month(b.billing_month, b.unit_id)
+        allocate_advances_for_month(credit_month, b.unit_id)
 
     receipt = issue_receipt(b.unit_id, payment_date, payment_method, reference, remarks,
                             [("bill", bill_payment, amount_to_bill), ("advance", excess_adv, excess_amount)])
@@ -2222,10 +2363,19 @@ def send_soa_email_to_contact(bill, contact):
     host=setting("smtp_host","").strip(); port=int(setting("smtp_port","587") or 587); sender=setting("smtp_sender","").strip()
     username=setting("smtp_username","").strip() or os.getenv("SMTP_USERNAME","").strip(); password=get_smtp_password() or os.getenv("SMTP_PASSWORD","")
     if not host or not sender: raise RuntimeError("Configure SMTP Host and Sender Email under Rates & Rules before sending email.")
-    water_reading=WaterReading.query.filter_by(unit_id=bill.unit_id,reading_month=bill.billing_month).order_by(WaterReading.id.desc()).first()
-    body_html=render_template("soa_email_body.html",bill=bill,contact=contact,recipient_name=contact["name"],water_reading=water_reading)
+    # The same statement as the SOA page and PDF (fix 2026-10-06: the email listed the raw stored
+    # columns while its total came from the billing engine, so they could disagree).
+    from app.services.soa import soa_detail
+    from app.services.soa_pdf import build_soa_pdf
+    statement = soa_detail(sys.modules[__name__], bill)
+    body_html=render_template("soa_email_body.html",s=statement,recipient_name=contact["name"])
     msg=EmailMessage(); msg["Subject"]=f"Statement of Account - Unit {bill.unit.unit_no} - {bill.billing_month}"; msg["From"]=sender; msg["To"]=contact["email"]
-    msg.set_content(f"Statement of Account for Unit {bill.unit.unit_no}, Billing Period {bill.billing_month}. Total Amount Due: {bill_total(bill):,.2f}"); msg.add_alternative(body_html,subtype="html")
+    msg.set_content(f"Statement of Account {statement['statementNo']} for Unit {bill.unit.unit_no}, billing period {bill.billing_month}. "
+                    f"Total amount due: {Decimal(statement['total']):,.2f}; balance: {Decimal(statement['balance']):,.2f}. The statement is attached as a PDF.")
+    msg.add_alternative(body_html,subtype="html")
+    unit_safe = re.sub(r"[^A-Za-z0-9-]+", "-", bill.unit.unit_no).strip("-") or "unit"
+    msg.add_attachment(build_soa_pdf(statement, soa_qr_payload(bill, configured_only=True)), maintype="application", subtype="pdf",
+                       filename=f"SOA_{unit_safe}_{bill.billing_month}.pdf")
     with smtplib.SMTP(host,port,timeout=20) as smtp:
         smtp.ehlo(); smtp.starttls(); smtp.ehlo()
         if username and password: smtp.login(username,password)
@@ -2329,6 +2479,7 @@ def recalculate_bill(bid):
     b.assessment = Decimal(str(unit_dues(b.unit)))
     b.parking_dues = Decimal(str(parking_dues(b.unit)))
     b.storage_dues = Decimal(str(storage_dues(b.unit)))
+    apply_charge_basis(b, b.unit)
     after = (money(b.assessment), money(b.parking_dues), money(b.storage_dues))
     reset_financial_caches()
     b.status = bill_status(b)
@@ -2448,6 +2599,18 @@ def void_receipt_record(rid, reason, form_token):
     return r
 
 
+def soa_qr_payload(b, configured_only=False):
+    """What an SOA's payment QR encodes: the configured online payment link with the unit, month and
+    balance; without a link, a plain reference (or None when configured_only). Only text: opening or
+    scanning it never records a payment or marks a bill paid."""
+    pay_url = (setting("online_payment_url", "") or "").strip()
+    amount = f"{float(max(bill_balance(b), Decimal('0'))):.2f}"
+    if pay_url:
+        sep = "&" if "?" in pay_url else "?"
+        return f"{pay_url}{sep}unit={b.unit.unit_no}&billing_month={b.billing_month}&amount={amount}"
+    return None if configured_only else f"CITYLAND9|UNIT:{b.unit.unit_no}|BILL:{b.billing_month}|AMOUNT:{amount}"
+
+
 @app.route("/billing/<int:bid>/qr")
 @guarded
 def billing_qr(bid):
@@ -2456,13 +2619,7 @@ def billing_qr(bid):
         return "Bill not found", 404
     if qrcode is None:
         return "Install qrcode to enable QR generation.", 500
-    pay_url = setting("online_payment_url", "")
-    if pay_url:
-        sep = "&" if "?" in pay_url else "?"
-        payload = f"{pay_url}{sep}unit={b.unit.unit_no}&billing_month={b.billing_month}&amount={float(max(bill_balance(b), Decimal('0'))):.2f}"
-    else:
-        payload = f"CITYLAND9|UNIT:{b.unit.unit_no}|BILL:{b.billing_month}|AMOUNT:{float(max(bill_balance(b), Decimal('0'))):.2f}"
-    img = qrcode.make(payload)
+    img = qrcode.make(soa_qr_payload(b))
     buf = BytesIO(); img.save(buf, format="PNG"); buf.seek(0)
     return send_file(buf, mimetype="image/png", download_name=f"bill_{b.unit.unit_no}_{b.billing_month}_qr.png")
 
@@ -3522,6 +3679,12 @@ def init_db():
                         "status": "VARCHAR(30) DEFAULT 'Unpaid'",
                         "soa_note": "VARCHAR(1000) DEFAULT ''",
                         "soa_manual_override": "BOOLEAN DEFAULT 0",
+                        # Issue-time snapshot (MySQL: migration 0010).
+                        "issued_at": "DATETIME", "issued_amount": "NUMERIC(12,2)", "penalty_rate": "NUMERIC(7,4)",
+                        "penalty_basis": "VARCHAR(60)", "storage_included": "BOOLEAN", "dues_basis": "VARCHAR(10)",
+                        "condo_area": "NUMERIC(10,2)", "condo_rate": "NUMERIC(12,4)", "parking_unit_no": "VARCHAR(50)",
+                        "parking_area": "NUMERIC(10,2)", "parking_rate": "NUMERIC(12,4)", "storage_unit_no": "VARCHAR(50)",
+                        "storage_basis": "VARCHAR(10)", "storage_area": "NUMERIC(10,2)", "storage_rate": "NUMERIC(12,4)",
                     },
                     "water_reading": {
                         "paid": "BOOLEAN DEFAULT 0",
@@ -3532,11 +3695,12 @@ def init_db():
                     "payment": {"reversed_at": "DATETIME"},
                     "advance_payment": {"reversed_at": "DATETIME"},
                     "audit_log": {"entity_type": "VARCHAR(40)", "entity_id": "INTEGER", "reason": "VARCHAR(500)", "details": "TEXT"},
-                    # Session security (MySQL: migration 0008).
+                    # Session security (MySQL: migration 0008); activation-code expiry (0011).
                     "user": {
                         "session_version": "INTEGER NOT NULL DEFAULT 0",
                         "must_change_password": "BOOLEAN NOT NULL DEFAULT 0",
                         "password_changed_at": "DATETIME",
+                        "temp_password_expires_at": "DATETIME",
                     },
                     # Resident gate pass / move requests (MySQL: migration 0007).
                     "gate_pass": {
@@ -3635,7 +3799,7 @@ def init_db():
             "parking_rate_per_sqm": "100",
             "storage_rate_per_sqm": "50",
             "storage_in_total_from": month_shift(datetime.now().strftime("%Y-%m"), 1),
-            "penalty_rate": "10",
+            "penalty_rate": str(DEFAULT_PENALTY_RATE),   # new installations only; a saved rate is never overwritten
             "penalty_day": "8",
             "online_payment_url": "",
             "smtp_host": "",
@@ -3647,6 +3811,26 @@ def init_db():
         for key, value in defaults.items():
             if not Setting.query.filter_by(key=key).first():
                 db.session.add(Setting(key=key, value=value))
+
+        # Resident unit links (migration 0011 on MySQL): every profile without a link row gets its
+        # first link, same unit / owner-tenant record / active state. Idempotent.
+        try:
+            linked = {uid for (uid,) in db.session.query(ResidentUnitLink.user_id).distinct()}
+            keys = {k for (k,) in db.session.query(ResidentUnitLink.active_key).filter(ResidentUnitLink.active_key.isnot(None))}
+            for prof in ResidentProfile.query.order_by(ResidentProfile.created_at, ResidentProfile.id).all():
+                if prof.user_id in linked:
+                    continue
+                key = link_key(prof.person_type or "Owner", prof.person_id) if prof.active else None
+                if key in keys:
+                    key = None
+                keys.add(key)
+                db.session.add(ResidentUnitLink(user_id=prof.user_id, unit_id=prof.unit_id, person_type=prof.person_type or "Owner",
+                                                person_id=prof.person_id, active=bool(prof.active), active_key=key,
+                                                created_at=prof.created_at, created_by="startup backfill"))
+            db.session.flush()
+        except Exception:
+            db.session.rollback()
+            app.logger.exception("Resident unit link backfill failed")
 
         # No default administrator is created any more (it used to be superadmin / admin123).
         # The first Superadmin is created on the server with:  python database\create_admin.py
@@ -4124,42 +4308,92 @@ from app.routes.spa import make_spa_blueprint  # noqa: E402
 from app.utils.auth import init_auth  # noqa: E402
 
 
-def resident_access_problem(user):
-    """Why a resident may NOT use the portal right now, or None when access is fine.
-
-    Access ends automatically when the owner/tenant record the account is linked to is
-    no longer "Current" (moved out) or has left the unit, or when the account or unit is
-    deactivated. Accounts not linked to a specific owner/tenant cannot be checked this
-    way and keep access to their unit (link them under Resident Accounts)."""
+def resident_links(user, active_only=True):
+    """The account's unit links (oldest first). Accounts created before migration 0011 always got
+    one (backfilled); a profile without any link row is read as its single link."""
+    rows = list(getattr(user, "unit_links", None) or [])
+    if rows:
+        return [l for l in rows if l.active or not active_only]
     profile = getattr(user, "resident_profile", None)
     if not profile:
-        return "Your resident account is not linked to a unit yet. Please contact the administrator."
-    if not profile.active:
-        return "Your resident portal access has been deactivated. Please contact the administrator."
-    unit = db.session.get(Unit, profile.unit_id)
+        return []
+    virtual = ResidentUnitLink(user_id=user.id, unit_id=profile.unit_id, person_type=profile.person_type or "Owner",
+                               person_id=profile.person_id, active=bool(profile.active))
+    return [virtual] if (virtual.active or not active_only) else []
+
+
+def link_problem(link):
+    """Why this link gives no access now (None = it does): link ended, unit inactive, or the owner/
+    tenant record is no longer current in that unit (moved out, sold)."""
+    if not link.active:
+        return "This unit link was ended by the administrator."
+    unit = db.session.get(Unit, link.unit_id)
     if not unit or not unit.active:
         return "Your unit is no longer active in the system. Please contact the administrator."
-    if profile.person_id:
-        model = Tenant if (profile.person_type or "").lower() == "tenant" else Owner
-        person = db.session.get(model, profile.person_id)
-        if not person or person.unit_id != profile.unit_id or person.status != "Current":
+    if link.person_id:
+        model = Tenant if (link.person_type or "").lower() == "tenant" else Owner
+        person = db.session.get(model, link.person_id)
+        if not person or person.unit_id != link.unit_id or person.status != "Current":
             role_name = "tenant" if model is Tenant else "owner"
             return (f"Your resident portal access has ended because you are no longer listed as a current "
                     f"{role_name} of unit {unit.unit_no}. Please contact the administrator if this is a mistake.")
     return None
 
 
+def resident_access_links(user):
+    """The links that give portal access now (each checked on its own: one ending never removes
+    the others)."""
+    profile = getattr(user, "resident_profile", None)
+    if not profile or not profile.active or not user.active:
+        return []
+    return [l for l in resident_links(user) if link_problem(l) is None]
+
+
+def resident_access_problem(user):
+    """Why a resident may NOT use the portal right now, or None when access is fine.
+
+    Access to each unit ends automatically when the owner/tenant record that unit's link uses is no
+    longer "Current" (moved out) or has left the unit, or the unit is deactivated; the account keeps
+    its other valid units. With no valid unit left, or the account deactivated, there is no access.
+    Links without a specific owner/tenant keep access to their unit (link them under Resident Accounts)."""
+    profile = getattr(user, "resident_profile", None)
+    if not profile:
+        return "Your resident account is not linked to a unit yet. Please contact the administrator."
+    if not profile.active:
+        return "Your resident portal access has been deactivated. Please contact the administrator."
+    if resident_access_links(user):
+        return None
+    links = resident_links(user, active_only=False)
+    reasons = [link_problem(l) for l in links if l.active] or ["Your resident portal access has ended. Please contact the administrator."]
+    return reasons[0]
+
+
+def resident_unit_ids(user):
+    """Every unit the resident may open now."""
+    return [l.unit_id for l in resident_access_links(user)]
+
+
 def resident_unit_id(user):
-    """The resident's unit, or None when they currently have no portal access."""
-    return None if resident_access_problem(user) else user.resident_profile.unit_id
+    """The resident's default unit (their first unit while it is valid), or None without access."""
+    ids = resident_unit_ids(user)
+    if not ids:
+        return None
+    profile = user.resident_profile
+    return profile.unit_id if profile.unit_id in ids else ids[0]
 
 
-init_auth(app, current_user=current_user, resident_unit_id=resident_unit_id,
+def resident_link_for(user, unit_id):
+    """The access-giving link of this unit (owner/tenant record), or None."""
+    return next((l for l in resident_access_links(user) if l.unit_id == unit_id), None)
+
+
+init_auth(app, current_user=current_user, resident_unit_id=resident_unit_id, resident_unit_ids=resident_unit_ids,
           resident_access_problem=resident_access_problem)
 app.register_blueprint(make_auth_blueprint(
     User=User, audit=audit, check_password_hash=check_password_hash, commit=db.session.commit,
     home_endpoint=home_endpoint, resident_access_problem=resident_access_problem,
     start_session=start_session, set_password=set_password, client_address=client_address,
+    resident_unit_id=resident_unit_id, resident_access_links=resident_access_links, activation_expired=activation_expired,
 ))
 app.register_blueprint(make_resident_blueprint(sys.modules[__name__]))
 def _expected_schema_revision():

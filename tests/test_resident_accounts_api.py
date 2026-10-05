@@ -76,7 +76,7 @@ def test_create_linked_account_and_list_it(app_module, sa, unit_with_people):
     assert resp.status_code == 201, resp.get_json()
     acc = resp.get_json()["account"]
     assert acc["displayName"] == "Olivia Owner"          # defaults to the owner's name
-    assert acc["linked"] and acc["status"] == "active" and acc["mustChangePassword"]
+    assert acc["linked"] and acc["status"] == "pending" and acc["mustChangePassword"]   # until the first sign-in
     assert acc["unit"]["unitNo"] == "RA-TEST-01"
     with app_module.app.app_context():
         u = app_module.db.session.get(app_module.User, acc["id"])
@@ -124,7 +124,7 @@ def test_deactivate_reactivate_and_relink(app_module, sa, unit_with_people):
     assert resp.status_code == 200 and resp.get_json()["account"]["status"] == "inactive"
     assert resident.get("/api/auth/me").status_code == 401                    # signed out everywhere
     assert sa.patch(f"{BASE}/{uid}", json={"active": False}).status_code == 400   # nothing to change
-    assert sa.patch(f"{BASE}/{uid}", json={"active": True}).get_json()["account"]["status"] == "active"
+    assert sa.patch(f"{BASE}/{uid}", json={"active": True}).get_json()["account"]["status"] == "pending"   # reactivated; still has its temporary password
     # Re-link to the tenant record.
     acc = sa.patch(f"{BASE}/{uid}", json={"unitId": ids["unit"], "personType": "Tenant", "personId": ids["tenant"],
                                           "displayName": "Tomas Tenant"}).get_json()["account"]

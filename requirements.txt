@@ -11,3 +11,4 @@ cryptography==50.0.1       # MySQL 8 auth + encryption of stored secrets (SMTP p
 alembic==1.19.2            # versioned schema migrations (database/db_migrate.py)
 openpyxl==3.1.5            # Excel export/import and report export
 qrcode[pil]==8.2           # SOA payment QR code
+reportlab==5.0.1           # SOA PDF download (generated on the server, offline)

@@ -7,6 +7,7 @@ import { useAuth } from "../../auth/AuthContext";
 import { Drawer, useToast } from "../../components/base/overlays";
 import { Badge, Button, Card, EmptyState, ErrorState, Field, Icon, IconButton, Notice, PageHeader, Skeleton, StatusBadge, Tabs, cx } from "../../components/base/ui";
 import { focusFirstInvalid, useDebounced } from "../../components/feature/AccountFields";
+import { ProvisionDrawer, type ProvisionTarget } from "../../components/feature/ResidentProvisioning";
 import { legacyUrl } from "../../components/feature/ModuleRoute";
 import { useAction, useAsync } from "../../hooks/useAsync";
 import { dateLabel, monthLabel } from "../../lib/format";
@@ -178,6 +179,7 @@ function UnitDetailDrawer({ unitId, options, onClose, onChanged }:
   const detail = useAsync(() => (unitId ? api.units.detail(unitId) : Promise.resolve(null)), [unitId]);
   const [editing, setEditing] = useState(false);
   const [person, setPerson] = useState<{ kind: "Owner" | "Tenant"; record: UnitPersonRecord | null } | null>(null);
+  const [provisionFor, setProvisionFor] = useState<ProvisionTarget | null>(null);
   const { can } = useAuth();
   const toast = useToast();
   const u = detail.data;
@@ -258,7 +260,9 @@ function UnitDetailDrawer({ unitId, options, onClose, onChanged }:
       </Drawer>
       {u && <UnitFormDrawer open={editing} unit={u} options={options} onClose={() => setEditing(false)} onSaved={(next) => { setEditing(false); updated(next, `Unit ${next.unitNo} updated`); }} />}
       {u && person && <PersonDrawer unit={u} kind={person.kind} record={person.record} onClose={() => setPerson(null)}
-        onSaved={(next, msg) => { setPerson(null); updated(next, msg); }} />}
+        onSaved={(next, msg, provision) => { setPerson(null); updated(next, msg); if (provision) setProvisionFor(provision); }} />}
+      {/* The owner/tenant record is saved first (usable for billing even without a portal account). */}
+      <ProvisionDrawer target={provisionFor} onClose={() => setProvisionFor(null)} onDone={() => undefined} />
     </>
   );
 }
@@ -398,7 +402,9 @@ function UnitFormDrawer({ open, unit, options, onClose, onSaved }:
 
 // ------------------------------------------------------------------ add / edit owner or tenant
 function PersonDrawer({ unit, kind, record, onClose, onSaved }:
-  { unit: UnitDetail; kind: "Owner" | "Tenant"; record: UnitPersonRecord | null; onClose: () => void; onSaved: (u: UnitDetail, message: string) => void }) {
+  { unit: UnitDetail; kind: "Owner" | "Tenant"; record: UnitPersonRecord | null; onClose: () => void; onSaved: (u: UnitDetail, message: string, provision?: ProvisionTarget) => void }) {
+  const { can } = useAuth();
+  const [createAccount, setCreateAccount] = useState(false);
   const [form, setForm] = useState<PersonInput>(() => record
     ? { name: record.name, contactNo: record.contactNo, email: record.email, moveIn: record.moveIn ?? "", moveOut: record.moveOut ?? "", status: record.status,
         notes: record.notes, receiveSoaEmail: record.receiveSoaEmail, includeInSoa: record.includeInSoa, representative: record.representative }
@@ -416,14 +422,23 @@ function PersonDrawer({ unit, kind, record, onClose, onSaved }:
   const err = (k: string) => (touched ? errors[k] : "") || serverFields[k] || "";
   const set = (p: Partial<PersonInput>, keys: string[] = []) => { setForm({ ...form, ...p }); if (keys.length) setServerFields(Object.fromEntries(Object.entries(serverFields).filter(([k]) => !keys.includes(k)))); };
   const endsAccess = record?.status === "Current" && form.status === "Past";
+  // Only for a new CURRENT owner/tenant of a residential unit, and only with the provisioning
+  // permission (Superadmin); the server checks all of this again.
+  const canProvision = !record && can("resident_users") && !["PARKING", "STORAGE"].includes((unit.type || "").toUpperCase()) && !(kind === "Tenant" && form.moveOut);
 
   async function submit() {
     setTouched(true); setServerError("");
     if (busy) return;
     if (Object.values(errors).some(Boolean)) { focusFirstInvalid(ref); return; }
     try {
-      const next = record ? await act(() => api.units.updatePerson(unit.id, kind, record.id, form)) : await act(() => api.units.addPerson(unit.id, kind, form));
-      onSaved(next, record ? `${form.name} updated` : `${kind} ${form.name} added`);
+      if (record) {
+        onSaved(await act(() => api.units.updatePerson(unit.id, kind, record.id, form)), `${form.name} updated`);
+      } else {
+        const next = await act(() => api.units.addPerson(unit.id, kind, form));
+        const provision = canProvision && createAccount && next.createdPersonId
+          ? { personType: kind, personId: next.createdPersonId, name: form.name.trim(), unitNo: unit.unitNo } : undefined;
+        onSaved(next, `${kind} ${form.name} added`, provision);
+      }
     } catch (e) {
       if (e instanceof ApiError && Object.keys(e.fields).length) { setServerFields(e.fields); focusFirstInvalid(ref); }
       else setServerError((e as Error).message);
@@ -462,6 +477,13 @@ function PersonDrawer({ unit, kind, record, onClose, onSaved }:
           {kind === "Tenant" && form.status === "Current" && <label className="flex items-center gap-2 text-[13px]"><input type="checkbox" className="size-4 accent-brand-600" checked={form.representative} onChange={(e) => set({ representative: e.target.checked })} />Representative tenant (the unit's main tenant)</label>}
         </div>
         <Field label="Notes" error={err("notes")}>{(id) => <textarea id={id} rows={2} maxLength={500} className="input h-auto py-2" value={form.notes} onChange={(e) => set({ notes: e.target.value }, ["notes"])} />}</Field>
+        {canProvision && (
+          <label className="flex items-start gap-2 rounded-lg border border-ink-200 p-3 text-[13px]">
+            <input type="checkbox" className="mt-0.5 size-4 accent-brand-600" checked={createAccount} onChange={(e) => setCreateAccount(e.target.checked)} />
+            <span><b className="text-ink-900">Create resident portal account</b>
+              <span className="block text-ink-500">After saving, the system generates a username and a one-time activation code to hand over. The {kind.toLowerCase()} is saved even if you skip this.</span></span>
+          </label>
+        )}
         <button type="submit" hidden />
       </form>
     </Drawer>
