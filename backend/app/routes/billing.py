@@ -222,9 +222,11 @@ def make_billing_blueprint(legacy):
 
     # ---------------------------------------------------------------- email
     def smtp_ready():
-        return bool(legacy.setting("smtp_host", "").strip() and legacy.setting("smtp_sender", "").strip())
+        return not legacy.outbound_email_disabled() and bool(legacy.setting("smtp_host", "").strip() and legacy.setting("smtp_sender", "").strip())
 
     def email_result(bills):
+        if legacy.outbound_email_disabled():
+            return json_error(409, "Email sending is disabled on this test installation.")
         if not smtp_ready():
             return json_error(409, "Set the SMTP host and sender email under Rates & Rules before sending SOAs.")
         sent, skipped, failed, errors = legacy.email_soas(bills)

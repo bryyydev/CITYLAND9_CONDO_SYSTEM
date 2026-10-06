@@ -77,7 +77,7 @@ def upgrade():
 
 
 def downgrade():
-    op.drop_index("ix_resident_unit_link_unit", table_name="resident_unit_link")
-    op.drop_index("ix_resident_unit_link_user", table_name="resident_unit_link")
+    # Dropping the table removes its indexes and foreign keys; MariaDB refuses to drop an index a
+    # foreign key still needs (error 1553), so the indexes are not dropped one by one first.
     op.drop_table("resident_unit_link")
     op.drop_column("user", "temp_password_expires_at")

@@ -2359,7 +2359,16 @@ def soa_email_contacts(unit):
     return contacts
 
 
+def outbound_email_disabled():
+    """Test installations never send email: OUTBOUND_EMAIL=disabled, or CL9_TEST_INSTALL=1
+    (docs: CITYLAND9_TEST_PC_MIGRATION.md). Checked before any SMTP connection is opened."""
+    return (os.getenv("OUTBOUND_EMAIL", "").strip().lower() in ("disabled", "off", "0", "false")
+            or os.getenv("CL9_TEST_INSTALL", "").strip() == "1")
+
+
 def send_soa_email_to_contact(bill, contact):
+    if outbound_email_disabled():
+        raise RuntimeError("Outbound email is disabled on this installation (test installation).")
     host=setting("smtp_host","").strip(); port=int(setting("smtp_port","587") or 587); sender=setting("smtp_sender","").strip()
     username=setting("smtp_username","").strip() or os.getenv("SMTP_USERNAME","").strip(); password=get_smtp_password() or os.getenv("SMTP_PASSWORD","")
     if not host or not sender: raise RuntimeError("Configure SMTP Host and Sender Email under Rates & Rules before sending email.")

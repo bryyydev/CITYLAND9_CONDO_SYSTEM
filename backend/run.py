@@ -23,6 +23,13 @@ try:
 except ImportError:
     pass
 
+# A test installation (CL9_TEST_INSTALL=1, CITYLAND9_TEST_PC_MIGRATION.md) must use its OWN local database,
+# never another PC's: refuse a remote MYSQL_HOST or an explicit DATABASE_URL. Its email is disabled.
+TEST_INSTALL = os.getenv("CL9_TEST_INSTALL", "").strip() == "1"
+if TEST_INSTALL and (os.getenv("DATABASE_URL") or os.getenv("MYSQL_HOST", "127.0.0.1").strip().lower() not in ("127.0.0.1", "localhost", "::1")):
+    sys.exit("CL9_TEST_INSTALL=1: a test installation must use its own database on this PC. "
+             "Remove DATABASE_URL and set MYSQL_HOST=127.0.0.1 in .env.")
+
 # With DB_ENGINE=mysql and CityLand's own local database server (MYSQL_DATA_DIR),
 # start that server first: legacy_app connects to the database while it loads.
 if os.getenv("DB_ENGINE", "").strip().lower() == "mysql" and os.getenv("MYSQL_DATA_DIR") and not os.getenv("DATABASE_URL"):
@@ -43,6 +50,8 @@ def main():
     log_file = ops.configure_logging(app, _ROOT)
     init_db()
     print(f"Log file: {log_file}")
+    if TEST_INSTALL:
+        print(f"TEST INSTALLATION: database `{os.getenv('MYSQL_DATABASE', '')}` on this PC; outbound email disabled.", flush=True)
     minimum = float(os.getenv("DISK_MIN_FREE_GB", "2"))
     for label, status in ops.disk_status({"this drive": _ROOT}, minimum).items():
         if not status["ok"]:

@@ -43,3 +43,6 @@ database/mysql-data/
 
 # Application, service and backup logs (may contain usernames and client addresses)
 logs/
+
+# Test-PC packages (database/test_pc.py): data, never in git
+database/test_packages/
