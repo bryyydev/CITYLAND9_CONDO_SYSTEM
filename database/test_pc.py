@@ -27,6 +27,15 @@ SOURCE PC (this installation's own database is never changed)
     no form tokens, no SMTP settings/password, no online payment link, no uploaded-document records.
 
 TARGET PC (its .env has CL9_TEST_INSTALL=1 and MYSQL_DATABASE=cityland9_test...)
+    SETUP_TEST_PC.bat runs the whole sequence below (make-env, then setup); every step can be re-run.
+    test_pc.py make-env
+        Creates .env from .env.example for a test installation (new SECRET_KEY, cityland9_test,
+        CL9_TEST_INSTALL=1, email disabled). An existing test .env is kept; the demo .env that
+        START_WINDOWS.bat makes on a fresh copy is set aside as .env.demo-backup.
+    test_pc.py setup [<package.sql.gz>]
+        This PC's MariaDB (local_mysql.py init) -> restore the package found in this folder, its parent
+        folder or database\\test_packages (unless already restored) -> create_admin.py when there is no
+        Superadmin -> create-testers when there are none -> check-target.
     test_pc.py check-target [--package FILE]
         The database is this PC's own CityLand MariaDB (127.0.0.1), the database name is a test
         name, email is disabled, the schema is current. With --package: not the PC that exported it.
@@ -653,7 +662,7 @@ def check_target(package=None):
     return 0 if all(results) else 1
 
 
-def restore_package(package, overwrite):
+def restore_package(package, overwrite, show_next=True):
     require_test_install()
     import restore as rs
     package = os.path.abspath(package)
@@ -728,7 +737,9 @@ def restore_package(package, overwrite):
         say(f"UNEXPECTED DATA (should not be in a test package): {leftovers}")
     if not ok:
         sys.exit("RESTORE NOT VERIFIED")
-    say("RESTORE VERIFIED. No accounts were copied. Next:")
+    say("RESTORE VERIFIED. No accounts were copied." + (" Next:" if show_next else ""))
+    if not show_next:
+        return
     say(r"  1. Developer Superadmin:  .venv\Scripts\python.exe database\create_admin.py")
     say(r"  2. Tester accounts:       .venv\Scripts\python.exe database\test_pc.py create-testers --residents 2")
     say(r"  3. Check, then start:     .venv\Scripts\python.exe database\test_pc.py check-target   then  START_WINDOWS.bat")
@@ -798,6 +809,87 @@ def create_testers(roles, residents):
     say("These are not saved anywhere readable. Lost? Superadmin: Users & Access (staff) or Resident Accounts > New activation code.")
 
 
+def make_env():
+    path, example = os.path.join(ROOT, ".env"), os.path.join(ROOT, ".env.example")
+    if os.path.exists(path):
+        text = open(path, encoding="utf-8-sig").read()
+        if re.search(r"^CL9_TEST_INSTALL=1\s*$", text, re.M):
+            say("Configuration (.env): already set up for this test PC - kept as it is.")
+            return
+        if "first_run_setup.py" in text:
+            backup = path + ".demo-backup"
+            os.replace(path, backup)
+            say(f"The demo configuration START_WINDOWS.bat made was set aside as {os.path.basename(backup)}.")
+        else:
+            sys.exit("This folder already has a .env that is not a test installation. Nothing was changed.\n"
+                     "If this is the office server, don't run the test setup here. Otherwise rename .env and run again.")
+    text = open(example, encoding="utf-8").read()
+    text = re.sub(r"^SECRET_KEY=.*$", "SECRET_KEY=" + secrets.token_hex(32), text, count=1, flags=re.M)
+    text = ("# Created by database/test_pc.py make-env for a TEST installation of CityLand 9 on this PC.\n"
+            "# Holds this PC's own secrets: never copy or share it.\n\n" + text.rstrip() +
+            "\n\n# --- Test installation (CITYLAND9_TEST_PC_MIGRATION.md) ---\n"
+            "MYSQL_DATABASE=cityland9_test\nCL9_TEST_INSTALL=1\nOUTBOUND_EMAIL=disabled\n")
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text)
+    say("Configuration (.env) created: new secret key, database cityland9_test, test installation, email disabled.")
+
+
+def find_package(explicit=None):
+    if explicit:
+        return os.path.abspath(explicit)
+    import glob
+    found = []
+    for folder in (ROOT, os.path.dirname(ROOT), os.path.join(ROOT, "database", "test_packages")):
+        found += glob.glob(os.path.join(folder, f"{PKG_PREFIX}*.sql.gz"))
+    return max(found, key=os.path.getmtime) if found else None
+
+
+def setup(package=None):
+    require_test_install()
+    say("\n[1/5] This PC's own database server")
+    lm.init()
+    con = lm.root_connect(lm.DATABASE)
+    try:
+        with con.cursor() as cur:
+            tables = scalar(cur, "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=%s", (lm.DATABASE,))
+            revision = revision_of(cur) if tables else None
+    finally:
+        con.close()
+    say("\n[2/5] Data")
+    if tables and not revision:
+        sys.exit(f"`{lm.DATABASE}` holds an incomplete earlier restore. Run:\n"
+                 f"    .venv\\Scripts\\python.exe database\\test_pc.py restore <package.sql.gz> --overwrite {lm.DATABASE}")
+    if tables:
+        say(f"Already restored ({tables} tables, schema {revision}) - left as it is.")
+    else:
+        found = find_package(package)
+        if not found:
+            sys.exit("No data file found. Put the two files you received (cityland9_testpkg_....sql.gz and its .manifest.json)\n"
+                     f"in this folder:\n    {ROOT}\nthen run SETUP_TEST_PC.bat again.")
+        restore_package(found, None, show_next=False)
+    con = lm.root_connect(lm.DATABASE)
+    try:
+        with con.cursor() as cur:
+            supers = scalar(cur, "SELECT COUNT(*) FROM `user` WHERE role='super_admin' AND active=1")
+            testers = scalar(cur, "SELECT COUNT(*) FROM `user` WHERE username LIKE 'tester.%'")
+    finally:
+        con.close()
+    say("\n[3/5] Superadmin")
+    if supers:
+        say(f"{supers} active Superadmin account(s) already exist - none added.")
+    else:
+        say("Create the Superadmin for this PC (choose a username and a password; the password is not shown while typing).")
+        if subprocess.run([sys.executable, os.path.join(ROOT, "database", "create_admin.py")], cwd=ROOT).returncode:
+            sys.exit("The Superadmin was not created. Run SETUP_TEST_PC.bat again.")
+    say("\n[4/5] Tester accounts")
+    if testers:
+        say("Tester accounts already exist - none added. (The Superadmin can reset their passwords.)")
+    elif subprocess.run([sys.executable, os.path.abspath(__file__), "create-testers", "--residents", "2"], cwd=ROOT).returncode:
+        sys.exit("Creating the tester accounts failed; see above.")
+    say("\n[5/5] Check")
+    return check_target()
+
+
 # ------------------------------------------------------------------ main
 def main():
     args = sys.argv[1:]
@@ -822,6 +914,10 @@ def main():
         if not rest or rest[0].startswith("-"):
             sys.exit("Usage: test_pc.py restore <package.sql.gz> [--overwrite <database>]")
         restore_package(rest[0], arg_value(rest, "--overwrite"))
+    elif command == "make-env":
+        make_env()
+    elif command == "setup":
+        sys.exit(setup(rest[0] if rest and not rest[0].startswith("-") else None))
     elif command == "create-testers":
         roles = [r.strip() for r in (arg_value(rest, "--roles", ",".join(TESTER_ROLES))).split(",") if r.strip()]
         create_testers(roles, int(arg_value(rest, "--residents", "0")))

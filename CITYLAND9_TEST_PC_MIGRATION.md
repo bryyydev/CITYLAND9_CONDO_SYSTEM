@@ -139,7 +139,32 @@ same name.
 
 ---
 
-## 5. Target PC: install and restore (exact commands)
+## 5. Target PC: one double-click setup (recommended)
+
+1. Install **Python** (tick "Add python.exe to PATH") and **XAMPP** into `C:\xampp` (section 4). You don't need to start XAMPP.
+2. Get the application: on GitHub, **Code → Download ZIP** (or the `cityland9_app_*.zip` from `package-app`).
+   Before extracting a downloaded ZIP: right-click it → **Properties** → tick **Unblock** → OK.
+   Extract it to a short path, e.g. `C:\CITYLAND9\`.
+3. Put the two data files you received (`cityland9_testpkg_<kind>_<date>.sql.gz` and its `.manifest.json`)
+   **in the extracted project folder** (next to `SETUP_TEST_PC.bat`), or in the folder above it.
+4. Double-click **`SETUP_TEST_PC.bat`**. Keep the internet on for the first run. It:
+   - creates the Python environment and installs the packages;
+   - creates `.env` for a test installation (new secret key, database `cityland9_test`, email disabled);
+   - creates this PC's own MariaDB database (port 3307, this PC only) with its own random passwords;
+   - finds the data file and restores it (checksum checked, no accounts in it);
+   - asks you to create **this PC's Superadmin** (username + password);
+   - creates the tester accounts and shows their temporary passwords **once**: write them down;
+   - checks the installation is independent and local, then offers to start CityLand 9.
+5. From then on: **`START_WINDOWS.bat`** to start, **`STOP_WINDOWS.bat`** to stop. Open `http://127.0.0.1:5000`.
+
+If something stops it (no internet, data file missing, XAMPP not found), fix that and double-click it
+again: steps already done are skipped.
+
+Don't double-click `START_WINDOWS.bat` **before** the setup. On a copy without `.env` it sets up a demo
+(SQLite file with demo accounts). If that happened anyway, just run `SETUP_TEST_PC.bat`: it sets the demo
+configuration aside as `.env.demo-backup` and continues.
+
+## 5b. Target PC: the same steps by hand
 
 Unzip `cityland9_app_<timestamp>.zip` to a **short path**, for example `C:\CityLand9Test\`, so the
 project folder is `C:\CityLand9Test\CITYLAND9_SYSTEM`. Copy the two package files to, for example,
@@ -377,7 +402,8 @@ the application package contents.
 ### Not tested
 
 - A **second physical Windows PC** (clean Windows, fresh Python and XAMPP installs, `pip install` from the internet, then offline use). The rehearsal used two app copies and two MariaDB instances on the same PC and the existing Python environment.
-- `START_WINDOWS.bat` / `STOP_WINDOWS.bat` on the test copy. The server was started with `backend\run.py --lan`, which is what `START_WINDOWS.bat` runs.
+- `STOP_WINDOWS.bat` on the test copy. It stops every CityLand server process on a PC, so on the development PC it would also have stopped the real server; it was not run there. Tested instead: `SETUP_TEST_PC.bat` on a fresh copy (.venv creation, package install from the internet, .env, database, restore, Superadmin, testers, check; then a second run that skipped every finished step), and `START_WINDOWS.bat` on the test copy (schema check, "TEST INSTALLATION" line, app answering).
+- Downloading the ZIP from GitHub itself. The rehearsal used `package-app`, which packs the same files.
 - Browser screens on the test copy. The checks used the same API the screens use.
 - `export-sanitized` on **real** data (it was rehearsed on invented data only, by design). Its leak check covers names, emails and phones stored in the person, vendor, employee, visitor, account and resident-profile records. Free text typed elsewhere (for example a name inside an SOA note or a remark) is cleared or replaced, but review the categories with the owner.
 - Restoring into a **different MariaDB/MySQL version** than 10.4.32 (dumps from 10.4 restore into the same or newer MariaDB; MySQL 8 was not tried).
@@ -389,7 +415,8 @@ the application package contents.
 
 | File | Change |
 |---|---|
-| `database/test_pc.py` | **New.** profile, export-synthetic, export-copy, export-sanitized, package-app, check-target, restore, create-testers |
+| `database/test_pc.py` | **New.** profile, export-synthetic, export-copy, export-sanitized, package-app, make-env, setup, check-target, restore, create-testers |
+| `SETUP_TEST_PC.bat` | **New.** One double-click setup of a test PC (section 5) |
 | `backend/legacy_app.py` | `outbound_email_disabled()`; SOA email refused before any SMTP connection on a test installation |
 | `backend/app/routes/billing.py` | Email endpoints report disabled / SMTP not configured on a test installation |
 | `backend/run.py` | `CL9_TEST_INSTALL=1`: refuses a remote `MYSQL_HOST` or `DATABASE_URL`; prints the test-installation line |
