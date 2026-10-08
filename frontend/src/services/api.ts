@@ -188,6 +188,8 @@ export interface DataService {
     system(): Promise<T.SystemOverview>;
     /** Import an Excel workbook (a database backup is taken first; nothing is imported if it fails). */
     importDatabase(file: File): Promise<T.ImportResult>;
+    /** Check only (dry run): validate a migration workbook; nothing is written. */
+    checkImport(file: File): Promise<T.ImportCheckReport>;
   };
 }
 

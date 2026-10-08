@@ -1,14 +1,16 @@
 // Settings (Superadmin): backup status, Excel export and Excel import. Live: /api/admin/system;
 // the export is the server's existing download (/database/export.xlsx). The import is the classic
-// importer: a database backup is taken first and nothing is imported if that fails.
+// importer: a database backup is taken first and nothing is imported if that fails. "Check only" is a
+// separate dry run for migration workbooks: it writes nothing (CITYLAND9_IMPORT_SAFEGUARDS.md).
 import { useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { ConfirmDialog, useToast } from "../../components/base/overlays";
 import { Badge, Button, Card, CardHeader, ErrorState, Icon, Notice, PageHeader, Skeleton, cx } from "../../components/base/ui";
+import { ImportCheckReport } from "../../components/feature/ImportCheckReport";
 import { legacyUrl } from "../../components/feature/ModuleRoute";
 import { useAction, useAsync } from "../../hooks/useAsync";
 import { IS_MOCK, api } from "../../services/api";
-import type { ImportResult } from "../../services/types";
+import type { ImportCheckReport as CheckReport, ImportResult } from "../../services/types";
 
 export default function SettingsPage() {
   const { data, error, reload } = useAsync(() => api.admin.system(), []);
@@ -17,6 +19,8 @@ export default function SettingsPage() {
   const [confirming, setConfirming] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
   const [importError, setImportError] = useState("");
+  const [check, setCheck] = useState<CheckReport | null>(null);
+  const [checkError, setCheckError] = useState("");
   const [params, setParams] = useSearchParams();
   const movedForm = params.get("moved") === "form";
   const input = useRef<HTMLInputElement>(null);
@@ -27,18 +31,29 @@ export default function SettingsPage() {
   if (!data) return <><PageHeader eyebrow="Administration" title="Settings" /><Card><Skeleton rows={6} /></Card></>;
 
   function choose(f: File | null) {
-    setResult(null); setImportError("");
+    setResult(null); setImportError(""); setCheck(null); setCheckError("");
     if (!f) { setFile(null); setFileError(""); return; }
     if (!/\.(xlsx|xlsm)$/i.test(f.name)) { setFile(null); setFileError("Choose an Excel workbook (.xlsx or .xlsm)."); return; }
     if (f.size > data!.import.maxUploadMb * 1024 * 1024) { setFile(null); setFileError(`That file is larger than ${data!.import.maxUploadMb} MB.`); return; }
     setFile(f); setFileError("");
   }
 
+  async function runCheck() {
+    if (!file || busy) return;
+    setCheck(null); setCheckError(""); setResult(null); setImportError("");
+    try {
+      setCheck(await act(() => api.admin.checkImport(file)));
+      setTimeout(() => document.getElementById("import-check-report")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+    } catch (err) {
+      setCheckError((err as Error).message);
+    }
+  }
+
   async function runImport() {
     if (!file || busy) return;
     try {
       const r = await act(() => api.admin.importDatabase(file));
-      setConfirming(false); setResult(r); setFile(null);
+      setConfirming(false); setResult(r); setFile(null); setCheck(null);
       if (input.current) input.current.value = "";
       toast({ tone: "success", title: "Import completed", message: "The changes are saved and recorded in the audit log." });
       reload();
@@ -84,7 +99,8 @@ export default function SettingsPage() {
 
         <Card><CardHeader title="Import from Excel" />
           <div className="space-y-4 p-5 text-[13.5px] text-ink-600">
-            <Notice tone="warn">Importing <b>updates and adds</b> records from the workbook. A database backup is taken first; if it can't be taken, nothing is imported.</Notice>
+            <Notice>Run <b>Check only</b> first: it validates the workbook and changes nothing.</Notice>
+            <Notice tone="warn"><b>Import workbook is locked</b> to CITYLAND9's own export of this database, edited and uploaded again. It is allowed only after Check only passes for the same file: no new records, no id pointing to another record, no blank cell that would wipe a value, and no change to a closed month or an issued or hand-corrected bill. Data from another system can only be checked here. A database backup is taken before every import.</Notice>
             {!data.import.allowed ? <p>Your role can't import data.</p> : (
               <>
                 <label className={cx("flex cursor-pointer flex-col items-center gap-1.5 rounded-xl border-2 border-dashed px-4 py-5 text-center transition focus-within:ring-2 focus-within:ring-brand-300",
@@ -96,9 +112,18 @@ export default function SettingsPage() {
                     onChange={(e) => choose(e.target.files?.[0] ?? null)} />
                 </label>
                 {fileError && <p className="text-[12px] text-red-600" role="alert">{fileError}</p>}
-                <Button icon="upload-2-line" disabled={!file} loading={busy} onClick={() => setConfirming(true)}>Import workbook</Button>
+                <div className="flex flex-wrap gap-2">
+                  <Button icon="search-eye-line" disabled={!file} loading={busy} onClick={runCheck}>Check only</Button>
+                  <Button variant="secondary" icon="upload-2-line" disabled={!file || busy || !check?.importGate.allowed}
+                    title={check?.importGate.allowed ? undefined : "Run Check only first; importing is allowed only when the check passes for this file."}
+                    onClick={() => setConfirming(true)}>Import workbook</Button>
+                </div>
+                {file && !check && <p className="text-[12px] text-ink-500">Import workbook unlocks after Check only passes for this file.</p>}
+                {check && !check.importGate.allowed && <p className="text-[12px] text-red-700">Import workbook is locked for this file: see the result below.</p>}
               </>
             )}
+            {checkError && <div role="alert"><Notice tone="warn" title="Couldn't check this file">{checkError}</Notice></div>}
+            {check && <p role="status" className="text-[12.5px] text-ink-600">Check finished: see the result below. Nothing was changed.</p>}
             {importError && <div role="alert"><Notice tone="warn" title="Import failed: nothing was changed">{importError}</Notice></div>}
             {result && (
               <div role="status" className="space-y-2">
@@ -116,11 +141,13 @@ export default function SettingsPage() {
           </div></Card>
       </div>
 
+      {check && <div id="import-check-report" className="mt-6 scroll-mt-4"><ImportCheckReport report={check} onClose={() => setCheck(null)} /></div>}
+
       <ConfirmDialog open={confirming} tone="danger" busy={busy} title="Import this workbook?" confirmLabel="Back up and import"
         onClose={() => { if (!busy) setConfirming(false); }} onConfirm={runImport}
         message={<div className="space-y-2">
-          <p>Records in <b>{file?.name}</b> will update or add units, owners, tenants, billing, payments, water readings, employees and expenses.</p>
-          <p className="text-[13px] text-ink-500">The server backs up the database first. If anything in the workbook is rejected, nothing is saved. This can take a minute for large files.</p>
+          <p>The changes edited in <b>{file?.name}</b> will be saved to the existing records. No record is added.</p>
+          <p className="text-[13px] text-ink-500">The server checks the file again and backs up the database first. If anything is rejected, nothing is saved. This can take a minute for large files.</p>
         </div>} />
     </>
   );

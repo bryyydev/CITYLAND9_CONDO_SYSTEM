@@ -1590,5 +1590,32 @@ export const mockApi: DataService = {
       audit(`Imported database from Excel (optimized): ${file.name}`);
       return wait({ message: "Prototype: nothing was imported (mock data).", counts: {} });
     },
+    checkImport: (file) => {
+      if (!/\.(xlsx|xlsm)$/i.test(file.name)) return fail(400, "Please select an Excel .xlsx file.");
+      const issue = (row: number, column: string, code: string, severity: T.ImportIssueSeverity, message: string) => ({ sheet: "Properties", row, column, code, severity, message });
+      return wait({
+        format: "properties", mode: "migration", dryRun: true, databaseWrites: 0, configLoaded: true,
+        importGate: { allowed: false, blockers: [{ code: "LAYOUT_NOT_IMPORTABLE", count: 1, message: "Only CITYLAND9's own export of this database can be imported here; other layouts are check-only." }] },
+        file: { name: file.name, sha256: "0".repeat(64), bytes: file.size },
+        configProblems: [],
+        sheets: { Properties: { rows: 3, valid: 1, blocked: 1, conflict: 0, unresolved: 1 } },
+        proposals: { unit: { insert: 1, update: 0, link: 0, unchanged: 0 } },
+        cellStates: {},
+        issueCounts: {
+          AREA_ZERO: { severity: "blocked", count: 1, message: "Size (sqm) is 0; a unit with no area would be billed nothing." },
+          GROUP_UNCONFIRMED: { severity: "unresolved", count: 1, message: "The group label's meaning is not approved yet." },
+        },
+        issues: [issue(3, "Size", "AREA_ZERO", "blocked", "Size (sqm) is 0; a unit with no area would be billed nothing."),
+                 issue(4, "Group", "GROUP_UNCONFIRMED", "unresolved", "The group label's meaning is not approved yet.")],
+        issuesTruncated: false,
+        readiness: {
+          properties: { ready: false, blockers: [{ code: "AREA_ZERO", message: "Size (sqm) is 0; a unit with no area would be billed nothing." }] },
+          financial: { ready: false, blockers: [{ code: "FINANCIAL_SOURCE_MISSING", message: "The workbook has no bills or payments, but historical bills are to be migrated." }] },
+          import: { ready: false, blockers: [{ code: "IMPORTER_NOT_ENABLED", message: "Importing client records is not enabled in this version (check only)." }] },
+        },
+        readyForImport: false,
+        notes: ["Prototype: sample report (mock data)."],
+      } as T.ImportCheckReport);
+    },
   },
 };

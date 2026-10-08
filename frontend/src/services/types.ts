@@ -1108,6 +1108,33 @@ export interface SystemOverview {
   import: { maxUploadMb: number; maxUnpackedMb: number; maxRowsPerSheet: number; allowed: boolean };
 }
 
+/** "Check only" dry run of a migration workbook (POST /api/admin/system/import/check). Nothing is
+ * written. Issues name a sheet, row, column and code only, never workbook values. */
+export type ImportIssueSeverity = "blocked" | "conflict" | "unresolved" | "warning";
+export interface ImportCheckIssue { sheet: string | null; row: number | null; column: string | null; code: string; severity: ImportIssueSeverity; message: string }
+export interface ImportCheckReport {
+  format: "properties" | "cityland_export" | "unknown";
+  /** cityland_roundtrip = CITYLAND9's own export of this database (ids are this database's ids);
+   *  migration = data from another system (check only). */
+  mode: "cityland_roundtrip" | "migration";
+  /** May "Import workbook" run on this exact file? Only a safe round trip of this database's own export. */
+  importGate: { allowed: boolean; blockers: { code: string; message: string; count: number }[] };
+  dryRun: true;
+  databaseWrites: 0;
+  configLoaded: boolean;
+  file: { name: string; sha256: string; bytes: number };
+  configProblems: { code: string; message: string }[];
+  sheets: Record<string, { rows: number; valid: number; blocked: number; conflict: number; unresolved: number }>;
+  proposals: Record<string, { insert: number; update: number; link: number; unchanged: number }>;
+  cellStates: Record<string, Record<string, { missing_column: number; blank: number; clear: number; zero: number; value: number }>>;
+  issueCounts: Record<string, { severity: ImportIssueSeverity; count: number; message: string }>;
+  issues: ImportCheckIssue[];
+  issuesTruncated: boolean;
+  readiness: Record<string, { ready: boolean; blockers: { code: string; message: string }[] }>;
+  readyForImport: boolean;
+  notes: string[];
+}
+
 export interface ImportResult {
   message: string;
   /** Per sheet found in the workbook: rows inserted / updated. */

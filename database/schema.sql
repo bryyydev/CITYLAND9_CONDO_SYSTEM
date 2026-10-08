@@ -6,7 +6,7 @@
 --   CREATE DATABASE cityland9 CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 --   mysql -u <user> -p cityland9 < database/schema.sql
 --
--- Tables: 32 (ordered so foreign-key targets are created first)
+-- Tables: 35 (ordered so foreign-key targets are created first)
 
 SET NAMES utf8mb4;
 
@@ -87,6 +87,18 @@ CREATE TABLE form_submission (
 	user_id INTEGER, 
 	created_at DATETIME(6), 
 	PRIMARY KEY (token)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+-- import_source
+CREATE TABLE import_source (
+	id INTEGER NOT NULL AUTO_INCREMENT, 
+	code VARCHAR(40) NOT NULL, 
+	name VARCHAR(120) NOT NULL, 
+	description VARCHAR(500), 
+	created_at DATETIME(6), 
+	created_by VARCHAR(80), 
+	PRIMARY KEY (id), 
+	CONSTRAINT uq_import_source_code UNIQUE (code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 -- receipt_counter
@@ -368,6 +380,22 @@ CREATE TABLE gate_pass (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 CREATE INDEX ix_gate_pass_unit_id ON gate_pass (unit_id);
 
+-- import_batch
+CREATE TABLE import_batch (
+	id INTEGER NOT NULL AUTO_INCREMENT, 
+	source_id INTEGER NOT NULL, 
+	file_name VARCHAR(255) NOT NULL, 
+	file_sha256 VARCHAR(64) NOT NULL, 
+	sheet_summary TEXT, 
+	status VARCHAR(20) NOT NULL DEFAULT 'started', 
+	started_at DATETIME(6), 
+	finished_at DATETIME(6), 
+	created_by VARCHAR(80), 
+	PRIMARY KEY (id), 
+	FOREIGN KEY(source_id) REFERENCES import_source (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE INDEX ix_import_batch_source ON import_batch (source_id);
+
 -- move_certificate
 CREATE TABLE move_certificate (
 	id INTEGER NOT NULL AUTO_INCREMENT, 
@@ -557,6 +585,28 @@ CREATE TABLE employee_payroll_statutory (
 	FOREIGN KEY(payroll_id) REFERENCES employee_payroll (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 CREATE UNIQUE INDEX ix_employee_payroll_statutory_payroll_id ON employee_payroll_statutory (payroll_id);
+
+-- import_crosswalk
+CREATE TABLE import_crosswalk (
+	id INTEGER NOT NULL AUTO_INCREMENT, 
+	source_id INTEGER NOT NULL, 
+	entity_type VARCHAR(30) NOT NULL, 
+	external_id VARCHAR(100) NOT NULL, 
+	target_id INTEGER NOT NULL, 
+	first_batch_id INTEGER, 
+	last_batch_id INTEGER, 
+	source_sheet VARCHAR(60), 
+	source_row INTEGER, 
+	created_at DATETIME(6), 
+	updated_at DATETIME(6), 
+	PRIMARY KEY (id), 
+	CONSTRAINT uq_import_crosswalk_external UNIQUE (source_id, entity_type, external_id), 
+	CONSTRAINT uq_import_crosswalk_target UNIQUE (source_id, entity_type, target_id), 
+	FOREIGN KEY(source_id) REFERENCES import_source (id), 
+	FOREIGN KEY(first_batch_id) REFERENCES import_batch (id), 
+	FOREIGN KEY(last_batch_id) REFERENCES import_batch (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE INDEX ix_import_crosswalk_target ON import_crosswalk (entity_type, target_id);
 
 -- maintenance_ticket
 CREATE TABLE maintenance_ticket (

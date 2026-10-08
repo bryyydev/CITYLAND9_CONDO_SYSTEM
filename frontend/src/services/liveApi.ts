@@ -248,5 +248,10 @@ export const liveApi: DataService = {
       form.append("file", file);
       return http("/admin/system/import", { method: "POST", body: form });
     },
+    checkImport: (file) => {
+      const form = new FormData();
+      form.append("file", file);
+      return http("/admin/system/import/check", { method: "POST", body: form });
+    },
   },
 };

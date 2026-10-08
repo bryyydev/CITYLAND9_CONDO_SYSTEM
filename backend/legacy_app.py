@@ -1682,6 +1682,53 @@ def link_key(person_type, person_id):
     return f"{person_type}:{person_id}" if person_id else None
 
 
+# ---- Data migration from another system (migration 0012, CITYLAND9_IMPORT_SAFEGUARDS.md) ----------
+# Record identity = (source system, entity type, external id). Files are only provenance (batches).
+# External ids are text and never become CITYLAND9 primary keys. No importer writes these yet; the
+# dry-run validator (app/services/import_check.py) reads them to detect conflicting mappings.
+class ImportSource(db.Model):
+    __tablename__ = "import_source"
+    __table_args__ = (db.UniqueConstraint("code", name="uq_import_source_code"),)
+    id = db.Column(db.Integer, primary_key=True)
+    code = db.Column(db.String(40), nullable=False)          # stable, chosen once per source SYSTEM
+    name = db.Column(db.String(120), nullable=False)
+    description = db.Column(db.String(500))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_by = db.Column(db.String(80))
+
+
+class ImportBatch(db.Model):
+    __tablename__ = "import_batch"
+    __table_args__ = (db.Index("ix_import_batch_source", "source_id"),)
+    id = db.Column(db.Integer, primary_key=True)
+    source_id = db.Column(db.Integer, db.ForeignKey("import_source.id"), nullable=False)
+    file_name = db.Column(db.String(255), nullable=False)    # provenance only
+    file_sha256 = db.Column(db.String(64), nullable=False)   # provenance only
+    sheet_summary = db.Column(db.Text)
+    status = db.Column(db.String(20), nullable=False, default="started", server_default="started")
+    started_at = db.Column(db.DateTime, default=datetime.utcnow)
+    finished_at = db.Column(db.DateTime)
+    created_by = db.Column(db.String(80))
+
+
+class ImportCrosswalk(db.Model):
+    __tablename__ = "import_crosswalk"
+    __table_args__ = (db.UniqueConstraint("source_id", "entity_type", "external_id", name="uq_import_crosswalk_external"),
+                      db.UniqueConstraint("source_id", "entity_type", "target_id", name="uq_import_crosswalk_target"),
+                      db.Index("ix_import_crosswalk_target", "entity_type", "target_id"))
+    id = db.Column(db.Integer, primary_key=True)
+    source_id = db.Column(db.Integer, db.ForeignKey("import_source.id"), nullable=False)
+    entity_type = db.Column(db.String(30), nullable=False)   # unit, owner, tenant, billing, payment, ...
+    external_id = db.Column(db.String(100), nullable=False)  # the source system's id, as text
+    target_id = db.Column(db.Integer, nullable=False)        # the CITYLAND9 record's own id
+    first_batch_id = db.Column(db.Integer, db.ForeignKey("import_batch.id"))
+    last_batch_id = db.Column(db.Integer, db.ForeignKey("import_batch.id"))
+    source_sheet = db.Column(db.String(60))
+    source_row = db.Column(db.Integer)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
 class Announcement(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     title = db.Column(db.String(200), nullable=False)

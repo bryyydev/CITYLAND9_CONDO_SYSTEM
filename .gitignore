@@ -46,3 +46,4 @@ logs/
 
 # Test-PC packages (database/test_pc.py): data, never in git
 database/test_packages/
+/migration_data/

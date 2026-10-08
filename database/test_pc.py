@@ -88,6 +88,9 @@ SCRUB = [
     ("SMTP settings and stored SMTP password", "DELETE FROM setting WHERE `key` LIKE 'smtp%'"),
     ("online payment link", "DELETE FROM setting WHERE `key` = 'online_payment_url'"),
     ("uploaded-document records (the files are not transferred)", "DELETE FROM document_record"),
+    ("data-migration crosswalk (source-system ids)", "DELETE FROM import_crosswalk"),
+    ("data-migration batches (file names and fingerprints)", "DELETE FROM import_batch"),
+    ("data-migration source systems", "DELETE FROM import_source"),
 ]
 # Each must count 0 in a package (checked before writing and again after restoring).
 SCRUB_CHECKS = {
