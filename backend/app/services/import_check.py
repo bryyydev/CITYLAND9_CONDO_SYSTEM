@@ -21,7 +21,7 @@ Two workbook formats are recognised:
 Modes: a CITYLAND9 export layout is checked by default as a ROUND TRIP (cityland_roundtrip): an edit of
 THIS database's own export, its ids being this database's ids. The report's "importGate" says whether the
 classic import (Settings > Import workbook, run_excel_import) may run on the file: only when every row
-updates an existing record whose id matches, nothing new is added, no blank cell would reset a value, and
+updates an existing record whose id matches, nothing new is added, blank cells keep the saved values, and
 no closed month or issued/hand-corrected bill would change. Every other layout is a MIGRATION (check only).
 
 Row results: valid (a confirmed matching rule gives an insert/update/link/unchanged proposal),
@@ -120,7 +120,6 @@ MESSAGES = {
     "PARENT_RECORD_NOT_VALID": "The unit or bill this row belongs to has its own problem; fix that row first.",
     "NEW_RECORD_NOT_ALLOWED": "The id is not a record of this database; adding records through this import is locked.",
     "ID_POINTS_TO_OTHER_RECORD": "The id belongs to a record of another unit or month here; the import would move it.",
-    "BLANK_WOULD_RESET": "The cell is blank, and the import would replace the saved value with a default.",
     "LAYOUT_NOT_IMPORTABLE": "Only CITYLAND9's own export of this database can be imported here; other layouts are check-only.",
     # financial protections
     "PERIOD_CLOSED": "The month is in a closed period (books closed); it can't be changed by an import.",
@@ -826,13 +825,6 @@ def check_export(sheets, config, db, report):
             report.add(sheet, n, "id", "NEW_RECORD_NOT_ALLOWED", "blocked")
         return record
 
-    def reset_check(sheet, n, idx, values, record, col, current, reset_value):
-        """The classic import replaces a blank/missing cell with a default: block if that changes the record."""
-        if record is not None and blank(idx, values, col) and current != reset_value:
-            report.add(sheet, n, col, "BLANK_WOULD_RESET", "blocked")
-            return True
-        return False
-
     def differs(present, current):
         return present is not None and present != current
 
@@ -901,11 +893,6 @@ def check_export(sheets, config, db, report):
         if cur is not None:
             refs = {col: external_id_text(get(idx, values, col)) for col in ("assigned_parking_unit_id", "assigned_storage_unit_id")}
             unit_changed = any([
-                reset_check("Units", n, idx, values, cur, "manual_monthly_dues", _dec(cur.manual_monthly_dues), _dec(0)),
-                reset_check("Units", n, idx, values, cur, "active", bool(cur.active), True),
-                # a blank assignment cell REMOVES the unit's parking/storage assignment in the classic import
-                reset_check("Units", n, idx, values, cur, "assigned_parking_unit_id", cur.assigned_parking_unit_id, None),
-                reset_check("Units", n, idx, values, cur, "assigned_storage_unit_id", cur.assigned_storage_unit_id, None),
                 differs(utype, cur.unit_type), differs(dues, cur.dues_mode), differs(status, cur.status),
                 differs(floor, cur.floor), differs(occupancy, cur.occupancy_type),
                 differs(area, _dec(cur.area_sqm)), differs(rate, _dec(cur.unit_rate_per_sqm)),
@@ -1020,11 +1007,6 @@ def check_export(sheets, config, db, report):
         changed = rec is None
         if rec is not None:
             changed = any([
-                reset_check("WaterReadings", n, idx, values, rec, "previous_reading", _dec(rec.previous_reading), _dec(0)),
-                reset_check("WaterReadings", n, idx, values, rec, "current_reading", _dec(rec.current_reading), _dec(0)),
-                reset_check("WaterReadings", n, idx, values, rec, "rate", _dec(rec.rate), _dec(db.water_rate)),
-                reset_check("WaterReadings", n, idx, values, rec, "reading_date", rec.reading_date, date.today()),
-                reset_check("WaterReadings", n, idx, values, rec, "paid", bool(rec.paid), False),
                 differs(prev, _dec(rec.previous_reading)), differs(cur, _dec(rec.current_reading)),
                 differs(rate, _dec(rec.rate)), differs(rdate, rec.reading_date), differs(pdate, rec.paid_date),
                 differs(paid, bool(rec.paid))])
@@ -1216,10 +1198,6 @@ def check_export(sheets, config, db, report):
         changed = rec is None
         if rec is not None:
             changed = any([
-                reset_check("Expenses", n, idx, values, rec, "expense_date", rec.expense_date, date.today()),
-                reset_check("Expenses", n, idx, values, rec, "category", rec.category, "OTHERS"),
-                reset_check("Expenses", n, idx, values, rec, "description", rec.description or "", ""),
-                reset_check("Expenses", n, idx, values, rec, "amount", _dec(rec.amount), _dec(0)),
                 differs(d, rec.expense_date), differs(category, rec.category),
                 differs(description, rec.description), differs(amount, _dec(rec.amount))])
         if d and closed(d.strftime("%Y-%m")) and changed:

@@ -402,7 +402,7 @@ def _unsafe_changes_are_refused(m, superadmin, manual_id):
     first_other[col["unit_no"]] = "RENAMED-BY-ID"                    # the id now names another unit number
     for row in units:
         if row[col["id"]] == manual_id:
-            row[col["manual_monthly_dues"]] = None                   # blank would reset the saved amount to 0
+            row[col["manual_monthly_dues"]] = None                   # blank: keeps the saved amount (not a refusal)
     sheets["Units"].append([999999, "NEW-UNIT-ROW"] + [None] * (len(h) - 2))   # a record this database doesn't have
     oh, owners = rows_of(sheets, "Owners")
     ocol = {c: i for i, c in enumerate(oh)}
@@ -412,7 +412,7 @@ def _unsafe_changes_are_refused(m, superadmin, manual_id):
     r = check(m, sheets)
     codes = {b["code"] for b in r["importGate"]["blockers"]}
     assert r["importGate"]["allowed"] is False
-    assert {"CROSSWALK_UNIT_NO_MISMATCH", "BLANK_WOULD_RESET", "NEW_RECORD_NOT_ALLOWED", "ID_POINTS_TO_OTHER_RECORD"} <= codes, codes
+    assert {"CROSSWALK_UNIT_NO_MISMATCH", "NEW_RECORD_NOT_ALLOWED", "ID_POINTS_TO_OTHER_RECORD"} <= codes, codes
     client = api(superadmin)
     before = snapshot(m)
     resp = client.post("/api/admin/system/import", data={"file": (xlsx(sheets), "export.xlsx")}, content_type="multipart/form-data")
@@ -468,12 +468,91 @@ def test_round_trip_reports_unchanged_rows_and_blocks_hidden_changes(app_module,
     assert r["proposals"]["owner"]["unchanged"] == len(sheets["Owners"]) - 1
     h, units = rows_of(sheets, "Units")
     col = {c: i for i, c in enumerate(h)}
-    with_parking = next(row for row in units if row[col["assigned_parking_unit_id"]])
-    with_parking[col["assigned_parking_unit_id"]] = None          # blank would remove the parking assignment
     no_owner = next(row for row in units if row[col["unit_type"]] == "PARKING")
     no_owner[col["owner_name"]] = "Synthetic New Owner"           # would create a new owner record
     r = check(app_module, sheets)
     issues = {(i["column"], i["code"]) for i in r["issues"]}
-    assert ("assigned_parking_unit_id", "BLANK_WOULD_RESET") in issues
     assert ("owner_name", "NEW_RECORD_NOT_ALLOWED") in issues
     assert r["importGate"]["allowed"] is False
+
+
+
+def test_blank_cells_keep_saved_values_in_a_real_import(app_module, superadmin):
+    """The classic import used to turn blanks into 0 / today / unpaid / active and to clear parking
+    assignments. Blank now means "keep what is saved"; checked through an actual import."""
+    m = app_module
+    with m.app.app_context():
+        unit = m.Unit.query.filter(m.Unit.assigned_parking_unit_id.isnot(None)).first()
+        reading = m.WaterReading.query.order_by(m.WaterReading.id).first()
+        old = {"dues": unit.manual_monthly_dues, "active": unit.active, "reading": (reading.reading_date, reading.paid, reading.rate)}
+        unit.manual_monthly_dues, unit.active = 777, False
+        reading.reading_date, reading.paid = date(2026, 2, 3), True
+        m.db.session.commit()
+        uid, parking, rid = unit.id, unit.assigned_parking_unit_id, reading.id
+        prev, cur = reading.previous_reading, reading.current_reading
+    try:
+        sheets = own_export(superadmin)
+        h, units = rows_of(sheets, "Units")
+        col = {c: i for i, c in enumerate(h)}
+        row = next(r for r in units if r[col["id"]] == uid)
+        for c in ("manual_monthly_dues", "active", "assigned_parking_unit_id", "floor", "area_sqm"):
+            row[col[c]] = None
+        wh, readings = rows_of(sheets, "WaterReadings")
+        wcol = {c: i for i, c in enumerate(wh)}
+        wrow = next(r for r in readings if r[wcol["id"]] == rid)
+        for c in ("previous_reading", "current_reading", "rate", "reading_date", "paid"):
+            wrow[wcol[c]] = None
+        r = check(m, sheets)
+        assert r["importGate"]["allowed"] is True, r["importGate"]
+        resp = api(superadmin).post("/api/admin/system/import", data={"file": (xlsx(sheets), "export.xlsx")}, content_type="multipart/form-data")
+        assert resp.status_code == 200, resp.get_data(as_text=True)
+        with m.app.app_context():
+            u = m.db.session.get(m.Unit, uid)
+            w = m.db.session.get(m.WaterReading, rid)
+            assert float(u.manual_monthly_dues) == 777 and u.active is False and u.assigned_parking_unit_id == parking
+            assert (w.reading_date, w.paid, w.previous_reading, w.current_reading) == (date(2026, 2, 3), True, prev, cur)
+    finally:
+        with m.app.app_context():
+            u = m.db.session.get(m.Unit, uid)
+            u.manual_monthly_dues, u.active = old["dues"], old["active"]
+            w = m.db.session.get(m.WaterReading, rid)
+            w.reading_date, w.paid, w.rate = old["reading"]
+            m.db.session.commit()
+
+
+def test_the_importer_itself_never_uses_a_file_id_as_a_primary_key_and_errors_are_plain(app_module):
+    """Defence in depth below the gate: run_excel_import directly (the API always gates first)."""
+    m = app_module
+    with m.app.app_context():
+        top = m.db.session.query(m.func.max(m.Unit.id)).scalar()
+    foreign_id = top + 5000
+    book = xlsx({"Units": [["id", "unit_no", "area_sqm", "unit_type"], [foreign_id, "SYN-PK-1", 30, "STUDIO TYPE"]]})
+    from werkzeug.datastructures import FileStorage
+    with m.app.test_request_context():
+        ok, _, _ = m.run_excel_import(FileStorage(stream=book, filename="pk.xlsx"))
+    with m.app.app_context():
+        created = m.Unit.query.filter_by(unit_no="SYN-PK-1").first()
+        try:
+            assert ok and created is not None and created.id != foreign_id
+        finally:
+            m.db.session.delete(created)
+            m.db.session.commit()
+    with m.app.app_context():
+        t502 = m.Unit.query.filter_by(unit_no="TEST-502").first()
+        bill = m.Billing.query.filter_by(unit_id=t502.id).first()
+        bid, month, uid = bill.id, bill.billing_month, t502.id
+        other = m.Unit.query.filter(m.Unit.id != uid, m.Unit.unit_type.notin_(["PARKING", "STORAGE"])).first().id
+    for sheets, expected in (
+        ({"Units": [["id", "unit_no"], [uid, "TEST-502"], [other, "OTHER"]],
+          "Billing": [["id", "unit_id", "billing_month", "assessment"], [bid, other, month, 1]]}, "belongs to another unit or month"),
+        ({"Units": [["id", "unit_no"], [uid, "TEST-502"]],
+          "Billing": [["id", "unit_id", "billing_month", "assessment"], [999999, uid, month, 1]]}, "already has a bill for"),
+        ({"Units": [["id", "unit_no"], [uid, "TEST-502"]],
+          "Billing": [["id", "unit_id", "billing_month", "assessment"], [None, uid, "2026-13", 1]]}, "could not be saved"),
+    ):
+        before = snapshot(m)
+        with m.app.test_request_context():
+            ok, message, _ = m.run_excel_import(FileStorage(stream=xlsx(sheets), filename="x.xlsx"))
+        assert not ok and expected in message and "Traceback" not in message and "sqlite3" not in message and "IntegrityError" not in message, message
+        tables_before_without_backups = before
+        assert snapshot(m) == tables_before_without_backups

@@ -100,7 +100,7 @@ export default function SettingsPage() {
         <Card><CardHeader title="Import from Excel" />
           <div className="space-y-4 p-5 text-[13.5px] text-ink-600">
             <Notice>Run <b>Check only</b> first: it validates the workbook and changes nothing.</Notice>
-            <Notice tone="warn"><b>Import workbook is locked</b> to CITYLAND9's own export of this database, edited and uploaded again. It is allowed only after Check only passes for the same file: no new records, no id pointing to another record, no blank cell that would wipe a value, and no change to a closed month or an issued or hand-corrected bill. Data from another system can only be checked here. A database backup is taken before every import.</Notice>
+            <Notice tone="warn"><b>Import workbook is locked</b> to CITYLAND9's own export of this database, edited and uploaded again. It is allowed only after Check only passes for the same file: no new records, no id pointing to another record, and no change to a closed month or an issued or hand-corrected bill. Blank cells keep the saved values. Data from another system can only be checked here. A database backup is taken before every import.</Notice>
             {!data.import.allowed ? <p>Your role can't import data.</p> : (
               <>
                 <label className={cx("flex cursor-pointer flex-col items-center gap-1.5 rounded-xl border-2 border-dashed px-4 py-5 text-center transition focus-within:ring-2 focus-within:ring-brand-300",

@@ -20,22 +20,40 @@ def run(args, **env_changes):
     return subprocess.run([PY, *args], cwd=ROOT, env=env, capture_output=True, text=True, timeout=120)
 
 
+@pytest.fixture
+def smtp_settings(app_module):
+    """Temporarily configure SMTP host/sender; restored afterwards (the test database is shared)."""
+    m = app_module
+    with m.app.app_context():
+        saved = {k: (m.Setting.query.filter_by(key=k).first().value if m.Setting.query.filter_by(key=k).first() else None)
+                 for k in ("smtp_host", "smtp_sender")}
+        for k, v in (("smtp_host", "smtp.example"), ("smtp_sender", "billing@example.com")):
+            row = m.Setting.query.filter_by(key=k).first() or m.Setting(key=k)
+            row.value = v
+            m.db.session.add(row)
+        m.db.session.commit()
+    yield
+    with m.app.app_context():
+        for k, v in saved.items():
+            row = m.Setting.query.filter_by(key=k).first()
+            if v is None:
+                m.db.session.delete(row)
+            else:
+                row.value = v
+        m.db.session.commit()
+
+
 TEST_TARGET = {"CL9_TEST_INSTALL": "1", "DB_ENGINE": "mysql", "MYSQL_HOST": "127.0.0.1", "MYSQL_DATABASE": "cityland9_test_unit"}
 
 
 @pytest.mark.parametrize("env", [{"CL9_TEST_INSTALL": "1"}, {"OUTBOUND_EMAIL": "disabled"}])
-def test_a_test_installation_never_opens_an_smtp_connection(app_module, monkeypatch, env):
+def test_a_test_installation_never_opens_an_smtp_connection(app_module, monkeypatch, env, smtp_settings):
     m = app_module
     opened = []
     monkeypatch.setattr(m.smtplib, "SMTP", lambda *a, **k: opened.append(a))
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     with m.app.test_request_context():
-        for k, v in (("smtp_host", "smtp.example"), ("smtp_sender", "billing@example.com")):
-            row = m.Setting.query.filter_by(key=k).first() or m.Setting(key=k)
-            row.value = v
-            m.db.session.add(row)
-        m.db.session.commit()
         bill = m.Billing.query.first()
         with pytest.raises(RuntimeError, match="disabled"):
             m.send_soa_email_to_contact(bill, {"name": "Test Owner", "email": "owner@example.com"})
@@ -107,3 +125,32 @@ def test_export_copy_needs_the_dummy_data_confirmation():
     r = subprocess.run([PY, "database/test_pc.py", "export-copy"], cwd=ROOT, input="yes\n", capture_output=True, text=True, timeout=120,
                        env={k: v for k, v in os.environ.items() if k != "DATABASE_URL"})
     assert r.returncode != 0 and "Not confirmed. Nothing was exported." in r.stderr
+
+
+
+@pytest.mark.parametrize("env", [{"CL9_TEST_INSTALL": "1"}, {"OUTBOUND_EMAIL": "disabled"}])
+def test_single_and_bulk_soa_email_never_connect_on_a_test_installation(app_module, superadmin, monkeypatch, env, smtp_settings):
+    m = app_module
+    opened = []
+    monkeypatch.setattr(m.smtplib, "SMTP", lambda *a, **k: opened.append(a))
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    with m.app.app_context():
+        owner = m.Owner.query.filter_by(status="Current").first()
+        saved = (owner.email, owner.receive_soa_email)
+        owner.email, owner.receive_soa_email = "opted.in@example.invalid", True
+        m.db.session.commit()
+        bill = m.Billing.query.filter_by(unit_id=owner.unit_id).first()
+        bid, month = bill.id, bill.billing_month
+    try:
+        client = api(superadmin)
+        one = client.post(f"/api/billing/{bid}/email", json={})
+        bulk = client.post("/api/billing/email/send", json={"month": month})
+        assert one.status_code == 409 and "disabled" in one.get_json()["error"]["message"]
+        assert bulk.status_code == 409 and "disabled" in bulk.get_json()["error"]["message"]
+        assert opened == []
+    finally:
+        with m.app.app_context():
+            o = m.db.session.get(m.Owner, owner.id)
+            o.email, o.receive_soa_email = saved
+            m.db.session.commit()

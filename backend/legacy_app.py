@@ -2940,6 +2940,10 @@ def database_import():
     return redirect(f"{SETTINGS_APP_URL}?moved=form", code=303)
 
 
+class ImportProblem(Exception):
+    """A workbook problem found while importing: shown to the user as is, nothing is saved."""
+
+
 def run_excel_import(f):
     """Fast, safer Excel importer. Returns (ok, message, counts); on failure nothing is committed.
 
@@ -3082,9 +3086,9 @@ def run_excel_import(f):
         unit_by_id, unit_by_no = load_maps(Unit, lambda x: str(x.unit_no or "").strip())
         owner_by_id, _ = load_maps(Owner)
         tenant_by_id, _ = load_maps(Tenant)
-        billing_by_id, _ = load_maps(Billing)
+        billing_by_id, billing_by_key = load_maps(Billing, lambda x: (x.unit_id, x.billing_month))
         payment_by_id, _ = load_maps(Payment)
-        water_by_id, _ = load_maps(WaterReading)
+        water_by_id, water_by_key = load_maps(WaterReading, lambda x: (x.unit_id, x.reading_month))
         employee_by_id, employee_by_no = load_maps(Employee, lambda x: str(x.employee_no or "").strip())
         expense_by_id, _ = load_maps(Expense)
 
@@ -3113,8 +3117,6 @@ def run_excel_import(f):
                 obj = unit_by_no.get(unit_no)
             if obj is None:
                 obj = Unit(unit_no=unit_no)
-                if old_id is not None and old_id not in unit_by_id:
-                    obj.id = old_id
                 db.session.add(obj)
                 counts["Units"]["inserted"] += 1
             else:
@@ -3125,7 +3127,7 @@ def run_excel_import(f):
             obj.area_sqm = float(val(r, "area_sqm", "AreaSQM", "Area", default=obj.area_sqm or 0) or 0)
             obj.unit_rate_per_sqm = float(val(r, "unit_rate_per_sqm", "RatePerSQM", default=obj.unit_rate_per_sqm or 0) or 0)
             obj.dues_mode = str(val(r, "dues_mode", "DuesMode", default=obj.dues_mode or "per_sqm"))
-            obj.manual_monthly_dues = money(val(r, "manual_monthly_dues", "ManualMonthlyDues", "MonthlyRate", default=0))
+            obj.manual_monthly_dues = money(val(r, "manual_monthly_dues", "ManualMonthlyDues", "MonthlyRate", default=obj.manual_monthly_dues or 0))
             obj.include_parking = as_bool(val(r, "include_parking", "WithParking"), getattr(obj, "include_parking", False))
             obj.include_storage = as_bool(val(r, "include_storage", "WithStorage"), getattr(obj, "include_storage", False))
             obj.occupancy_type = str(val(r, "occupancy_type", "OccupancyType", "ResponsibleParty", default=obj.occupancy_type or "Owner"))
@@ -3134,7 +3136,7 @@ def run_excel_import(f):
                 units_sheet_owners.append((obj, sheet_owner, val(r, "contact_no", "OwnerContact", "ContactNo", default=None),
                                            val(r, "email", "OwnerEmail", default=None)))
             obj.status = str(val(r, "status", "UnitStatus", default=obj.status or "Vacant"))
-            obj.active = as_bool(val(r, "active", "IsActive"), True)
+            obj.active = as_bool(val(r, "active", "IsActive"), True if obj.active is None else bool(obj.active))
             unit_id_map[old_id] = obj
             if old_id is not None:
                 unit_by_id[old_id] = obj
@@ -3152,12 +3154,15 @@ def run_excel_import(f):
                 obj = unit_by_no.get(unit_no)
             if obj is None:
                 continue
-            p_old = int_id(val(r, "assigned_parking_unit_id", "AssignedParkingUnitID"))
-            s_old = int_id(val(r, "assigned_storage_unit_id", "AssignedStorageUnitID"))
-            p_obj = unit_id_map.get(p_old) or unit_by_id.get(p_old)
-            s_obj = unit_id_map.get(s_old) or unit_by_id.get(s_old)
-            obj.assigned_parking_unit_id = p_obj.id if p_obj else None
-            obj.assigned_storage_unit_id = s_obj.id if s_obj else None
+            # A blank cell keeps the saved assignment; a reference must resolve (it used to clear it).
+            for field, ref in (("assigned_parking_unit_id", int_id(val(r, "assigned_parking_unit_id", "AssignedParkingUnitID"))),
+                               ("assigned_storage_unit_id", int_id(val(r, "assigned_storage_unit_id", "AssignedStorageUnitID")))):
+                if ref is None:
+                    continue
+                asset = unit_id_map.get(ref) or unit_by_id.get(ref)
+                if asset is None:
+                    raise ImportProblem(f"Units sheet, unit {obj.unit_no}: {field} refers to a unit that is in neither the workbook nor the database.")
+                setattr(obj, field, asset.id)
 
         # ---------------------------------------------------------
         # Owners / Tenants
@@ -3172,8 +3177,6 @@ def run_excel_import(f):
             name = str(val(r, "owner_name", "OwnerName", default="Owner"))
             if obj is None:
                 obj = Owner(unit_id=unit_obj.id, owner_name=name)
-                if old_id is not None and old_id not in owner_by_id:
-                    obj.id = old_id
                 db.session.add(obj)
                 if old_id is not None:
                     owner_by_id[old_id] = obj
@@ -3206,8 +3209,6 @@ def run_excel_import(f):
             name = str(val(r, "tenant_name", "TenantName", default="Tenant"))
             if obj is None:
                 obj = Tenant(unit_id=unit_obj.id, tenant_name=name)
-                if old_id is not None and old_id not in tenant_by_id:
-                    obj.id = old_id
                 db.session.add(obj)
                 if old_id is not None:
                     tenant_by_id[old_id] = obj
@@ -3235,10 +3236,15 @@ def run_excel_import(f):
             if unit_obj is None or month is None:
                 continue
             obj = water_by_id.get(old_id) if old_id is not None else None
+            same_period = water_by_key.get((unit_obj.id, month))
+            if obj is not None and (obj.unit_id, obj.reading_month) != (unit_obj.id, month):
+                raise ImportProblem(f"WaterReadings sheet: reading id {old_id} belongs to another unit or month; it would be moved.")
+            if obj is None and same_period is not None:
+                if old_id is not None:
+                    raise ImportProblem(f"WaterReadings sheet: unit {unit_obj.unit_no} already has a reading for {month} with another id.")
+                obj = same_period           # matched by its unique unit + month
             if obj is None:
                 obj = WaterReading(unit_id=unit_obj.id, reading_month=month)
-                if old_id is not None and old_id not in water_by_id:
-                    obj.id = old_id
                 db.session.add(obj)
                 if old_id is not None:
                     water_by_id[old_id] = obj
@@ -3247,11 +3253,11 @@ def run_excel_import(f):
                 counts["WaterReadings"]["updated"] += 1
             obj.unit_id = unit_obj.id
             obj.reading_month = month
-            obj.previous_reading = float(val(r, "previous_reading", "PreviousReading", default=0) or 0)
-            obj.current_reading = float(val(r, "current_reading", "CurrentReading", default=0) or 0)
-            obj.rate = float(val(r, "rate", "Rate", default=setting_float("water_rate", 50)) or 0)
-            obj.reading_date = parse_excel_date(val(r, "reading_date", "ReadingDate", default=date.today())) or date.today()
-            obj.paid = as_bool(val(r, "paid", "Paid", default=False), False)
+            obj.previous_reading = float(val(r, "previous_reading", "PreviousReading", default=obj.previous_reading) or 0)
+            obj.current_reading = float(val(r, "current_reading", "CurrentReading", default=obj.current_reading) or 0)
+            obj.rate = float(val(r, "rate", "Rate", default=obj.rate if obj.rate is not None else setting_float("water_rate", 50)) or 0)
+            obj.reading_date = parse_excel_date(val(r, "reading_date", "ReadingDate", default=obj.reading_date)) or obj.reading_date or date.today()
+            obj.paid = as_bool(val(r, "paid", "Paid"), bool(obj.paid))
             if hasattr(obj, "paid_amount"):
                 obj.paid_amount = money(val(r, "paid_amount", "PaidAmount", default=getattr(obj, "paid_amount", 0)))
             if hasattr(obj, "payment_method"):
@@ -3275,10 +3281,15 @@ def run_excel_import(f):
             if unit_obj is None or month is None:
                 continue
             obj = billing_by_id.get(old_id) if old_id is not None else None
+            same_period = billing_by_key.get((unit_obj.id, month))
+            if obj is not None and (obj.unit_id, obj.billing_month) != (unit_obj.id, month):
+                raise ImportProblem(f"Billing sheet: bill id {old_id} belongs to another unit or month; it would be moved.")
+            if obj is None and same_period is not None:
+                if old_id is not None:
+                    raise ImportProblem(f"Billing sheet: unit {unit_obj.unit_no} already has a bill for {month} with another id.")
+                obj = same_period           # matched by its unique unit + month
             if obj is None:
                 obj = Billing(unit_id=unit_obj.id, billing_month=month)
-                if old_id is not None and old_id not in billing_by_id:
-                    obj.id = old_id
                 db.session.add(obj)
                 if old_id is not None:
                     billing_by_id[old_id] = obj
@@ -3320,8 +3331,6 @@ def run_excel_import(f):
             obj = payment_by_id.get(old_id) if old_id is not None else None
             if obj is None:
                 obj = Payment(billing_id=billing_obj.id, amount=money(val(r, "amount", "Amount", default=0)))
-                if old_id is not None and old_id not in payment_by_id:
-                    obj.id = old_id
                 db.session.add(obj)
                 if old_id is not None:
                     payment_by_id[old_id] = obj
@@ -3330,7 +3339,7 @@ def run_excel_import(f):
                 counts["Payments"]["updated"] += 1
             obj.billing_id = billing_obj.id
             obj.amount = money(val(r, "amount", "Amount", default=obj.amount))
-            obj.payment_date = parse_excel_date(val(r, "payment_date", "PaymentDate", default=obj.payment_date)) or date.today()
+            obj.payment_date = parse_excel_date(val(r, "payment_date", "PaymentDate", default=obj.payment_date)) or obj.payment_date or date.today()
             if hasattr(obj, "payment_method"):
                 obj.payment_method = val(r, "payment_method", "PaymentMethod", default=getattr(obj, "payment_method", "CASH"))
             if hasattr(obj, "payment_type"):
@@ -3347,11 +3356,13 @@ def run_excel_import(f):
             name = str(val(r, "full_name", "FullName", "EmployeeName", default="")).strip()
             if not eno or not name:
                 continue
-            obj = employee_by_id.get(old_id) if old_id is not None else employee_by_no.get(eno)
+            by_id = employee_by_id.get(old_id) if old_id is not None else None
+            by_no = employee_by_no.get(eno)
+            if by_id is not None and by_no is not None and by_id is not by_no:
+                raise ImportProblem(f"Employees sheet: employee number {eno} belongs to another employee than id {old_id}.")
+            obj = by_id or by_no
             if obj is None:
                 obj = Employee(employee_no=eno, full_name=name)
-                if old_id is not None and old_id not in employee_by_id:
-                    obj.id = old_id
                 db.session.add(obj)
                 if old_id is not None:
                     employee_by_id[old_id] = obj
@@ -3375,18 +3386,16 @@ def run_excel_import(f):
             obj = expense_by_id.get(old_id) if old_id is not None else None
             if obj is None:
                 obj = Expense()
-                if old_id is not None and old_id not in expense_by_id:
-                    obj.id = old_id
                 db.session.add(obj)
                 if old_id is not None:
                     expense_by_id[old_id] = obj
                 counts["Expenses"]["inserted"] += 1
             else:
                 counts["Expenses"]["updated"] += 1
-            obj.expense_date = parse_excel_date(val(r, "expense_date", "ExpenseDate", "Date", default=date.today())) or date.today()
-            obj.category = str(val(r, "category", "Category", default="OTHERS"))
-            obj.description = str(val(r, "description", "Description", default=""))
-            obj.amount = money(val(r, "amount", "Amount", default=0))
+            obj.expense_date = parse_excel_date(val(r, "expense_date", "ExpenseDate", "Date", default=obj.expense_date)) or obj.expense_date or date.today()
+            obj.category = str(val(r, "category", "Category", default=obj.category or "OTHERS"))
+            obj.description = str(val(r, "description", "Description", default=obj.description or ""))
+            obj.amount = money(val(r, "amount", "Amount", default=obj.amount or 0))
 
         # One final transaction for the whole workbook.
         db.session.commit()
@@ -3400,10 +3409,18 @@ def run_excel_import(f):
         backup_note = f" Backup created: {os.path.basename(backup_file)}." if backup_file else ""
         found = {sheet: v for sheet, v in counts.items() if sheet in wb.sheetnames}
         return True, f"Excel import completed.{backup_note} {imported}".strip(), found
+    except ImportProblem as ex:
+        db.session.rollback()
+        return False, f"Excel import failed. Nothing was changed: {ex}", None
+    except InputError as ex:
+        db.session.rollback()
+        return False, f"Excel import failed. Nothing was changed: {ex.message}", None
     except Exception as ex:
         db.session.rollback()
-        app.logger.warning("Excel import failed: %s", ex)
-        return False, f"Excel import failed. No changes were committed: {ex}", None
+        app.logger.warning("Excel import failed: %s", ex, exc_info=True)
+        reason = str(ex) if isinstance(ex, RuntimeError) and "backup" in str(ex) else \
+            "a value in the workbook could not be saved (details are in the server log)"
+        return False, f"Excel import failed. Nothing was changed: {reason}. Run Check only to find the row.", None
     finally:
         if wb is not None:
             try:

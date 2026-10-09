@@ -265,3 +265,39 @@ The run used a **disposable MariaDB 10.4.32 instance** with synthetic sample dat
 4. **Properties-only import into staging** (units, then approved owners/tenants), writing crosswalk rows and a batch. Re-run the same file and confirm nothing changes; reconcile counts and area totals per group.
 5. **Historical bills: separate plan.** Approved source, cutoff, mode, control totals, and a decision on how opening balances and advances are represented, since CITYLAND9 recalculates carried balances. Then a reconciliation of unit balances against the source.
 6. **Client sign-off on the staging result.** Then a verified backup, the live run, post-checks and the documented restore path.
+
+---
+
+## 10. Update 2026-10-09: importer hardened below the gate
+
+**The classic importer itself (`run_excel_import`)**, independent of the lock:
+
+| Before | Now |
+|---|---|
+| Blank cells became 0 / today / unpaid / active, and a blank parking/storage cell removed the assignment | **Blank keeps the saved value**: manual dues, active, assignments, water readings/rate/date/paid, payment date, expense fields |
+| A file id was used as the primary key of a new record | **Never**: new records get their own id; file ids only link rows within the workbook |
+| Bills/readings matched by id only | Also matched by their **unit + month** key; an id that belongs to another unit/month, or a second id for an existing unit + month, is refused |
+| An unknown employee id with an existing employee number failed with a database error | Matched by **employee number**; an id/number contradiction is refused |
+| Raw Python / database error text | **Plain message**, "Nothing was changed", details only in the server log |
+
+The dry run no longer reports `BLANK_WOULD_RESET`, because the importer can't do that any more. Single and bulk SOA email both check the test-installation block **before** looking for recipients or opening SMTP.
+
+**Crosswalk reverse uniqueness, reviewed.** `UNIQUE (source, entity type, target)` is kept, because every relationship that will be imported is one-to-one per entity type:
+- **Unit:** one legacy property is one unit.
+- **Owner/tenant:** one legacy person on one unit is one owner/tenant record. People are never merged, so a person with several units gets one external id per unit (for example `person:unit`).
+- **Bill:** one per unit + month.
+
+A legacy receipt that pays several bills will need a **separate entity type per level**, for example `receipt` (1:1 with the official receipt) and `payment_allocation` (`receipt:bill`). Don't map one external id to many targets.
+
+**Tests added:**
+- `tests/test_import_check.py`: real-import blank preservation; the importer never uses a file id as a primary key; plain errors for a moved or duplicate bill and a bad month.
+- `tests/test_test_pc.py`: single and bulk SOA email never connect on a test installation (both switches).
+- `tests/test_mariadb_disposable.py` (**opt-in**, `CL9_MARIADB_TESTS=1`) starts its **own disposable MariaDB** from a packaged copy and checks:
+  - 0012 downgrade/upgrade with the schema matching and bill figures unchanged;
+  - crosswalk uniqueness enforced by MariaDB;
+  - a test package restores once, then is refused on a non-empty database, a production name and a damaged copy.
+
+**Run on 2026-10-09:**
+- `pytest`: **417 passed, 4 skipped** (the opt-in module).
+- Opt-in MariaDB module: **4 passed**.
+- `tsc --noEmit`: clean. Production build: ok; `frontend/dist` current (no frontend change in this round).

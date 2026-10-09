@@ -5,7 +5,7 @@
                                          CITYLAND9's own export of this database: the same file is
                                          checked first (cityland_roundtrip) and refused (409) unless every
                                          row safely updates an existing record (no new records, no id
-                                         pointing elsewhere, no blank resetting a value, no change in a
+                                         pointing elsewhere (blank cells keep saved values), no change in a
                                          closed month or to an issued/hand-corrected bill)
     POST /api/admin/system/import/check  multipart form, field "file": CHECK ONLY (dry run). Nothing is
                                          written: no records, backup, audit entry or file. The report
@@ -53,7 +53,7 @@ def make_system_settings_blueprint(legacy):
         if upload is None or not upload.filename:
             return json_error(400, "Choose an Excel .xlsx file to import.")
         # The lock: check this exact file first (no writes). The classic importer below overwrites by id,
-        # resets blank cells and ignores closed periods, so it only runs when the check proves none of
+        # ignores closed periods and issued bills, so it only runs when the check proves none of
         # that can happen (CITYLAND9_IMPORT_SAFEGUARDS.md).
         from ..services import import_check
         try:

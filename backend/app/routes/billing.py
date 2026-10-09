@@ -238,6 +238,8 @@ def make_billing_blueprint(legacy):
         b = get_bill(bid)
         if not b:
             return json_error(404, "Bill not found.")
+        if legacy.outbound_email_disabled():
+            return json_error(409, "Email sending is disabled on this test installation.")
         if not legacy.soa_email_contacts(b.unit):
             return json_error(409, "No owner or tenant of this unit has an email address opted in to receive SOAs. Turn it on under Units Directory.")
         return email_result([b])
