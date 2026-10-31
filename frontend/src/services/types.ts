@@ -52,13 +52,28 @@ export interface SoaCharges {
   storageIncluded: boolean;
   storageFrom: Month;
   water: Money;
+  waterReadingMonth: Month | null;
+  waterReadingFrom: IsoDate | null;
+  waterReadingTo: IsoDate | null;
   waterUsage: number | null;
   waterRate: Money | null;
   waterPaidSeparately: boolean;
+  waterAllocation: {
+    commercialType: "2F" | "UG" | "LG";
+    unitArea: string;
+    totalArea: string;
+    sharedAmount: Money;
+    unitAmount: Money;
+  } | null;
   /** Other charges (Edit SOA). */
   other?: Money;
+  otherItems?: { description: string; amount: Money; payerType: ChargePayer }[];
   /** Adjustment (Edit SOA); negative = credit / discount. */
   adjustment?: Money;
+  vat: Money;
+  vatBase: Money;
+  vatRate: string;
+  vatEligible: string[];
   penalty: Money;
   previousBalance: Money;
   advanceApplied: Money;
@@ -86,7 +101,7 @@ export interface ChargeBasis {
 }
 
 export interface SoaDetail extends SoaRow {
-  /** e.g. SOA-202609-00012 */
+  /** e.g. 202609-00012 */
   statementNo: string;
   issueDate: IsoDate | null;
   periodStart: IsoDate;
@@ -99,7 +114,7 @@ export interface SoaDetail extends SoaRow {
   bases: { condo: ChargeBasis | null; parking: ChargeBasis | null; storage: ChargeBasis | null; recorded: boolean };
   penaltyInfo: { amount: Money; rate: string; base: Money; eligible: string[]; overdue: boolean; recorded: boolean; explanation: string };
   /** Earlier months whose charges are still unpaid (they make up the previous balance). */
-  previousUnpaid: { id: number; month: Month; dueDate: IsoDate | null; balance: Money }[];
+  previousUnpaid: { id: number; statementNo: string; month: Month; dueDate: IsoDate | null; balance: Money }[];
   correctedByHand: boolean;
   payment: { instructions: string; onlinePaymentUrl: string | null; qrAvailable: boolean };
   note: string;
@@ -172,7 +187,7 @@ export interface WaterReadingRow {
   paidSeparately: boolean;
 }
 
-export type GatePassType = "Visitor" | "Delivery" | "Move-in" | "Move-out";
+export type GatePassType = "Visitor" | "Delivery" | "Move-in" | "Move-out" | "Pull Out";
 export type GatePassStatus = "Requested" | "Issued" | "Rejected" | "Cancelled";
 export interface ResidentGatePass {
   id: number;
@@ -199,7 +214,7 @@ export interface ResidentProfile {
 
 // ---------------------------------------------------------------- property & billing
 export type PaymentMethod = "CASH" | "CHECK" | "ONLINE";
-export type UnitType = "STUDIO TYPE" | "1 BEDROOM" | "2 BEDROOM" | "3 BEDROOM" | "PARKING" | "STORAGE";
+export type UnitType = "STUDIO TYPE" | "1 BEDROOM" | "2 BEDROOM" | "3 BEDROOM" | "COMMERCIAL" | "DRYING AREA" | "PARKING" | "STORAGE";
 
 export interface Unit {
   id: number;
@@ -222,7 +237,15 @@ export interface Unit {
 
 // ---- Units Directory (live: /api/units)
 export interface UnitRef { id: number; unitNo: string }
-export type UnitKind = "residential" | "PARKING" | "STORAGE";
+export type UnitKind = "residential" | "COMMERCIAL" | "DRYING AREA" | "PARKING" | "STORAGE";
+export type ChargePayer = "Owner" | "Tenant";
+export interface UnitChargePayers {
+  condo: ChargePayer;
+  water: ChargePayer;
+  parking: ChargePayer;
+  storage: ChargePayer;
+  other: ChargePayer;
+}
 
 export interface UnitRow {
   id: number;
@@ -238,6 +261,7 @@ export interface UnitRow {
   duesMode: "per_sqm" | "manual";
   manualMonthlyDues: Money;
   occupancy: "Owner" | "Tenant";
+  chargePayers: UnitChargePayers;
   status: "Occupied" | "Vacant";
   active: boolean;
   ownerName: string | null;
@@ -302,6 +326,7 @@ export interface UnitInput {
   duesMode: "per_sqm" | "manual";
   manualMonthlyDues: string;
   occupancy: "Owner" | "Tenant";
+  chargePayers: UnitChargePayers;
   status: "Occupied" | "Vacant";
   parkingUnitId: number | null;
   storageUnitId: number | null;
@@ -326,6 +351,43 @@ export interface UnitCreate extends UnitInput {
   tenant: PersonInput | null;
 }
 
+export interface BulkUnitPreviewRow {
+  row: number;
+  unitNo: string;
+  type: string;
+  areaSqm: string;
+  ownerName: string;
+  tenantName: string;
+  errors: string[];
+  skipped: boolean;
+}
+export interface BulkUnitPreview {
+  total: number;
+  valid: number;
+  invalid: number;
+  skipped: number;
+  rows: BulkUnitPreviewRow[];
+}
+
+export interface BulkWaterReadingPreviewRow {
+  sheet: "WaterReadings" | "CommercialWaterReadings";
+  row: number;
+  unitNo: string;
+  commercialType: string;
+  month: string;
+  previous: string;
+  current: string;
+  readingFrom: string;
+  readingTo: string;
+  errors: string[];
+}
+export interface BulkWaterReadingPreview {
+  total: number;
+  valid: number;
+  invalid: number;
+  rows: BulkWaterReadingPreviewRow[];
+}
+
 export interface BillRow extends SoaRow {
   unitId: number;
   unitNo: string;
@@ -333,6 +395,11 @@ export interface BillRow extends SoaRow {
   payerName: string;
   /** Corrected by hand (Edit SOA): never re-priced automatically. */
   manualOverride?: boolean;
+  /** True only for SOAs created by the current system's bill-generation workflow. */
+  generated?: boolean;
+  partyLedgerEnabled?: boolean;
+  /** Payments recorded now may need a payer even when this bill predates the cutover. */
+  payerRequired?: boolean;
 }
 
 /** The amounts a hand-corrected SOA's total is made of (Edit SOA). */
@@ -366,12 +433,17 @@ export interface BillDetail extends SoaDetail {
   corporation?: string;
   address?: string;
   paymentInstructions?: string;
+  partyLedgerEnabled?: boolean;
+  payerRequired?: boolean;
+  payerType?: ChargePayer;
+  otherPayerType?: ChargePayer;
 }
 
 export interface GenerateBillsResult {
   month: Month;
   created: number;
   skipped: number;
+  deferredAssets?: string[];
 }
 
 /** What "Generate bills" would do for a month. */
@@ -380,6 +452,10 @@ export interface GeneratePreview {
   residentialUnits: number;
   alreadyBilled: number;
   toCreate: number;
+  assetUnits: number;
+  assetsAlreadyBilled: number;
+  assetsToCreate: number;
+  assetsDeferred: string[];
   readings: number;
   missingReadings: string[];
   /** Units that would be billed ₱0 condo dues (no rate). */
@@ -396,6 +472,7 @@ export interface PaymentInput {
   reference: string;
   date: IsoDate;
   remarks: string;
+  payerType?: ChargePayer | "";
   /** One payment per form: a second submit with the same token is refused (409). */
   formToken: string;
 }
@@ -408,7 +485,18 @@ export interface RecordPaymentResult {
   status: BillStatus;
 }
 
+export interface PartyTransaction {
+  kind: "payment" | "advance" | "water";
+  id: number;
+  date: IsoDate;
+  month: Month;
+  amount: Money;
+  payerType: ChargePayer | null;
+  receiptNo: string | null;
+}
+
 export interface SoaCorrection extends SoaAmounts {
+  otherItems: { description: string; amount: Money; payerType: ChargePayer }[];
   dueDate: IsoDate | "";
   /** Required: shown on the SOA and kept in the audit log. */
   note: string;
@@ -439,6 +527,7 @@ export interface AdvancePayment {
   receiptNo: string;
   receiptId?: number | null;
   payerName?: string;
+  payerType?: ChargePayer | null;
   /** Last billing month covered. */
   endMonth?: Month;
   remarks?: string;
@@ -462,6 +551,7 @@ export interface AdvanceInput {
   reference: string;
   date: IsoDate;
   remarks: string;
+  payerType?: ChargePayer | "";
   /** One payment per form: a second submit with the same token is refused (409). */
   formToken: string;
 }
@@ -510,12 +600,16 @@ export interface WaterReadingAdmin {
   unitId: number;
   unitNo: string;
   month: Month;
+  chargePayer?: ChargePayer;
+  payerRequired?: boolean;
   previous: number;
   current: number;
   rate: Money;
   usage: number;
   amount: Money;
   readingDate: IsoDate;
+  readingFrom: IsoDate | null;
+  readingTo: IsoDate | null;
   paid?: boolean;
   payerName?: string;
   paidAmount?: Money;
@@ -535,14 +629,56 @@ export interface WaterReadingInput {
   current: string;
   /** Empty = the Rates & Rules water rate. */
   rate: string;
-  readingDate: IsoDate;
+  readingFrom: IsoDate;
+  readingTo: IsoDate;
+  /** Legacy clients may still provide the single meter date. */
+  readingDate?: IsoDate;
+}
+
+export interface CommercialWaterReadingAdmin {
+  id: number;
+  commercialType: "2F" | "UG" | "LG";
+  month: Month;
+  previous: number;
+  current: number;
+  rate: Money;
+  usage: number;
+  amount: Money;
+  readingDate: IsoDate | null;
+  readingFrom: IsoDate | null;
+  readingTo: IsoDate | null;
+  unitCount: number;
+  totalArea: number;
+}
+
+export interface CommercialWaterMissing {
+  commercialType: "2F" | "UG" | "LG";
+  previous: number;
+  previousMonth: Month | null;
+  unitCount: number;
+  totalArea: number;
+}
+
+export interface CommercialWaterInput {
+  commercialType: "2F" | "UG" | "LG";
+  month: Month;
+  previous: string;
+  current: string;
+  rate: string;
+  readingFrom: IsoDate;
+  readingTo: IsoDate;
+  /** Legacy clients may still provide the single meter date. */
+  readingDate?: IsoDate;
 }
 
 export interface WaterMonth {
   month: Month;
   readings: WaterReadingAdmin[];
-  /** Residential units without a reading this month, with the reading to start from. */
+  /** Metered non-commercial units without a reading this month, with the reading to start from. */
   missing: { unitId: number; unitNo: string; payerName: string; previous: number; previousMonth: Month | null }[];
+  commercialReadings: CommercialWaterReadingAdmin[];
+  commercialMissing: CommercialWaterMissing[];
+  commercialTypes: { commercialType: "2F" | "UG" | "LG"; unitCount: number; totalArea: number }[];
   /** Water still unpaid, any month. */
   unpaid: WaterReadingAdmin[];
   defaultRate: string;
@@ -557,6 +693,7 @@ export interface WaterPaymentInput {
   reference: string;
   date: IsoDate;
   formToken: string;
+  payerType?: ChargePayer | "";
 }
 
 // ---------------------------------------------------------------- operations & community
@@ -1071,13 +1208,15 @@ export interface AuditLogPage {
 export interface RatesAndRules {
   corporationName: string;
   address: string;
-  ratesPerSqm: Record<"studio" | "oneBed" | "twoBed" | "threeBed", Money>;
+  ratesPerSqm: Record<"residential" | "commercial" | "dryingArea", Money>;
   parkingRatePerSqm: Money;
   storageRatePerSqm: Money;
   waterRate: Money;
   waterAutoCompute: boolean;
   penaltyRate: string;
   penaltyIncludes: Record<"condo" | "parking" | "storage" | "water", boolean>;
+  vatRate: string;
+  vatIncludes: Record<"condo" | "parking" | "storage" | "water" | "other", boolean>;
   storageInTotalFrom: Month;
   /** Last closed billing month: payments, voids, bill generation and corrections dated in it or earlier are refused. "" = none closed. */
   booksClosedThrough: Month | "";
@@ -1102,10 +1241,10 @@ export interface RatesAndRulesUpdate extends Omit<RatesAndRules, "smtpPasswordSe
 
 /** Settings page: backup status and Excel export / import (GET /api/admin/system). */
 export interface SystemOverview {
-  backup: { ok: boolean; status: string | null; ageHours: number | null; detail: string | null; maxAgeHours: number };
+  backup: { ok: boolean; status: string | null; ageHours: number | null; detail: string | null; maxAgeHours: number; manualAllowed: boolean };
   database: { engine: string };
   export: { url: string };
-  import: { maxUploadMb: number; maxUnpackedMb: number; maxRowsPerSheet: number; allowed: boolean };
+  import: { templateUrl: string; maxUploadMb: number; maxUnpackedMb: number; maxRowsPerSheet: number; allowed: boolean };
 }
 
 /** "Check only" dry run of a migration workbook (POST /api/admin/system/import/check). Nothing is
@@ -1165,7 +1304,16 @@ export interface PropertyReport {
   label: string;
   from: IsoDate;
   to: IsoDate;
-  property: { residentialUnits: number; occupied: number; vacant: number; currentTenants: number; withParking: number };
+  property: {
+    residentialUnits: number;
+    occupied: number;
+    vacant: number;
+    currentTenants: number;
+    withParking: number;
+    commercialUnits: number;
+    commercialOccupied: number;
+    commercialVacant: number;
+  };
   /** Bills generated in the period: their own charges (previous balances are not counted again). */
   billing: { bills: number; charged: Money; advanceCredits: Money; charges: Record<"condo" | "parking" | "storage" | "water" | "other" | "adjustment" | "penalty", Money> };
   /** Money received: official receipts (voided ones excluded) plus payments recorded without a receipt. */

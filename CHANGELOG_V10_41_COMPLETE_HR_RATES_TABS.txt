@@ -1,0 +1,30 @@
+CITYLAND 9 CONDO SYSTEM 2026
+V10.41 - COMPLETE HR SYSTEM + RATES & RULES TABS
+
+NEW HR WORKFLOW
+Employee -> Attendance -> Leave -> Overtime -> Payroll -> Payslip -> Government Contributions -> 13th Month -> Payroll Reports
+
+HR FEATURES
+- Employee edit screen with Save Changes confirmation.
+- Attendance daily recording (existing V10.39).
+- Leave Management: Vacation, Sick, Service Incentive, Emergency, Maternity, Paternity, Other; pending/approved/rejected workflow.
+- Overtime Management with approval and automatic amount calculation.
+- Holiday-aware multiplier choices for OT: 1.25, 1.30, 2.60, 3.38.
+- Loans & Recurring Deductions for SSS, Pag-IBIG, Company and Other.
+- Payroll automatically includes approved overtime when OT amount is left blank.
+- Payroll automatically prepares Philippine statutory contribution/tax breakdown.
+- Payslip printing (existing module, now linked from payroll).
+- Government Contributions detail page per payroll.
+- 13th Month calculation based on actual basic salary in payroll records for the selected calendar year.
+- Annual Payroll Reports.
+
+RATES & RULES
+- Reorganized into one-row Billing/SOA-style tabs:
+  General | Condo Dues - Per sqm | Parking | Storage | Penalty Rule | Online Payment / QR | Water Auto Computation | Email Delivery
+- Clicking a tab displays only that tab's details.
+- Save/EDIT uses the existing confirmation dialog: Save Changes? Yes/No.
+- Manual inputs remain editable and require confirmation before submission.
+
+IMPORTANT
+- This HR/payroll module is an operational framework and should be reviewed by the condo accountant/payroll officer before statutory filing/remittance.
+- Philippine labor and tax rules can change; maintain configurable rates and validate current government schedules before final payroll processing.

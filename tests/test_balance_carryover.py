@@ -29,7 +29,7 @@ def unit(app_module):
     bill generation only bills this one. Everything it creates is removed afterwards."""
     m = app_module
     with m.app.app_context():
-        u = m.Unit(unit_no="CARRY-1", unit_type="1 BEDROOM", area_sqm=40, active=True)
+        u = m.Unit(unit_no="CARRY-1", unit_type="1 BEDROOM", area_sqm=40, unit_rate_per_sqm=75, active=True)
         m.db.session.add(u)
         m.db.session.commit()
         others = [x.id for x in m.Unit.query.filter(m.Unit.id != u.id, m.Unit.active.is_(True)).all()]

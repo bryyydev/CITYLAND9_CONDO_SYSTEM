@@ -27,7 +27,7 @@ from decimal import Decimal
 from io import BytesIO
 
 from flask import Blueprint, jsonify, request, send_file
-from sqlalchemy import exists
+from sqlalchemy import exists, true
 
 from ..services.receipts import allocation_label
 from ..services.soa import money as text_money
@@ -158,13 +158,19 @@ def make_reports_blueprint(legacy):
                 owed_by_unit[b.unit_id] = owed_by_unit.get(b.unit_id, ZERO) + part
         overdue_units = {b.unit_id for b in Billing.query.filter(Billing.due_date < date.today()).all() if legacy.bill_unpaid_part(b) > 0}
 
-        residential = Unit.query.filter(Unit.active.is_(True), Unit.unit_type.notin_(("PARKING", "STORAGE"))).all()
+        residential = Unit.query.filter(
+            Unit.active == true(), Unit.unit_type.notin_(("PARKING", "STORAGE", "COMMERCIAL"))
+        ).all()
+        commercial = Unit.query.filter_by(active=True, unit_type="COMMERCIAL").all()
         occupied = sum(1 for u in residential if (u.status or "").lower() == "occupied")
+        commercial_occupied = sum(1 for u in commercial if (u.status or "").lower() == "occupied")
         return {
             "from": start.isoformat(), "to": end.isoformat(),
             "property": {"residentialUnits": len(residential), "occupied": occupied, "vacant": len(residential) - occupied,
                          "currentTenants": Tenant.query.filter_by(status="Current").count(),
-                         "withParking": sum(1 for u in residential if u.assigned_parking_unit_id)},
+                         "withParking": sum(1 for u in residential if u.assigned_parking_unit_id),
+                         "commercialUnits": len(commercial), "commercialOccupied": commercial_occupied,
+                         "commercialVacant": len(commercial) - commercial_occupied},
             "billing": {"bills": len(bills), "charged": text_money(charged), "advanceCredits": text_money(advance_credits),
                         "charges": {k: text_money(v) for k, v in charges.items()}},
             "collections": {"total": text_money(collected), "bills": text_money(by_kind["bill"]), "water": text_money(by_kind["water"]),

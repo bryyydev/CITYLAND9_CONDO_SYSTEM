@@ -1,0 +1,11 @@
+CITYLAND 9 CONDO SYSTEM V10.51
+
+UI UPDATE: SIMPLE FUTURISTIC SYSTEM BACKGROUND + FONT VISIBILITY
+
+1. Replaced the login/background artwork with a clean text-free futuristic circuit-board image.
+2. After successful login, the same circuit artwork is displayed behind the authenticated system at approximately 70% image opacity.
+3. Added a soft light overlay and translucent glass surfaces so the background remains visible without reducing readability.
+4. Sidebar and top navigation remain visually stable with a subtle glass/frosted treatment.
+5. Added global authenticated-page typography contrast rules for headings, body text, labels, tables, links, inputs, dropdowns, buttons, status badges, and metrics.
+6. Kept the design intentionally simple: clean layout, restrained glow, no excessive animation, and strong visual hierarchy.
+7. Print layouts are protected from the system background.

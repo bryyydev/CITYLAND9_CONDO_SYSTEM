@@ -1,0 +1,84 @@
+CITYLAND 9 CONDO SYSTEM — DEPLOYMENT PACKAGE
+Package date: 2026-10-18
+
+WHAT IS INCLUDED
+- The application source and prebuilt web interface.
+- Windows start/stop scripts, database schema/migrations, and operating guides.
+- No database, resident/unit/billing records, passwords, .env secrets, or test database.
+
+The companion CityLand9_Installer.exe is a self-extracting package, not a compiled
+standalone version of the application. Run it and choose a short extraction folder,
+then use the installation steps below. The .rar contains the same application files.
+Extract either package; do not extract one inside the other.
+
+REQUIREMENTS
+- Windows 10 or 11, 64-bit recommended.
+- Python 3.11 or newer, with the Python launcher (py) and pip. Install from
+  https://www.python.org/downloads/ and enable "Add python.exe to PATH".
+- Internet access during the first Python package installation.
+- For a normal live deployment: MariaDB 10.4+ server programs. The documented
+  setup uses the MariaDB binaries included with XAMPP, normally
+  C:\xampp\mysql\bin. CityLand starts its own MariaDB instance on port 3307;
+  do not start XAMPP's database service for CityLand.
+- Node.js is not required for this package because the built frontend is included.
+
+INSTALL A NEW, EMPTY LIVE INSTANCE
+1. Extract to a short path such as C:\CITYLAND9 (not Program Files and not inside
+   the archive). Do not use this new-install procedure to upgrade or replace an
+   existing installation.
+2. In the extracted folder, create a file named .env (not .env.txt) containing:
+
+   APP_ENV=production
+   FLASK_HOST=127.0.0.1
+   FLASK_PORT=5000
+   FLASK_DEBUG=0
+   SECRET_KEY=<a newly generated random value>
+   DB_ENGINE=mysql
+   MYSQL_BIN_DIR=C:\xampp\mysql\bin
+
+   Generate the secret in PowerShell with:
+   py -c "import secrets; print(secrets.token_hex(32))"
+   Paste the generated value after SECRET_KEY=. Keep .env private; do not email
+   it, put it in the archive, or share it with staff.
+3. Open PowerShell in the extracted folder (File Explorer address bar: type
+   powershell and press Enter). Install the Python environment and dependencies:
+
+   py -3 -m venv .venv
+   .venv\Scripts\python.exe -m pip install --upgrade pip
+   .venv\Scripts\python.exe -m pip install -r requirements.txt
+   .venv\Scripts\python.exe database\local_mysql.py init
+   .venv\Scripts\python.exe database\db_migrate.py install
+   .venv\Scripts\python.exe database\create_admin.py
+
+   The database setup generates separate database credentials in .env. The admin
+   command prompts for a username and password; the password is not displayed.
+4. Configure HTTPS and the office LAN before allowing staff to connect. The safe
+   initial FLASK_HOST above only accepts local connections. Follow
+   docs\run-guide\06-SECURITY.md for the Caddy HTTPS proxy, trusted proxy and
+   firewall configuration. Do not expose an unencrypted HTTP port 5000 to the
+   internet or office network.
+5. Run START_WINDOWS.bat. Keep the server window open, or follow
+   docs\run-guide\07-OPERATIONS.md to configure the Windows service and daily
+   backups. Test a backup restore before relying on the system.
+
+LOCAL EVALUATION ONLY
+If you only want to evaluate the app on one PC, leave .env absent and run
+START_WINDOWS.bat. First-run setup creates an isolated SQLite database. This
+SQLite quick-start is for evaluation; use the MariaDB steps above for the
+documented live deployment. Do not copy real production data into a test instance.
+
+MOVING EXISTING DATA
+This package does not include or migrate any existing database. Do not point a
+fresh install at the live database and do not overwrite an existing app folder.
+For an existing installation, take and verify a separate backup, then follow the
+upgrade/migration instructions in docs\run-guide\07-OPERATIONS.md and
+docs\run-guide\02-DATABASE_SETUP.md. Validate records and totals before users
+resume work.
+
+DOCUMENTATION
+- docs\run-guide\README.md: system overview and operating procedures
+- docs\run-guide\01-PREREQUISITES_AND_ENV.md: prerequisites and configuration
+- docs\run-guide\02-DATABASE_SETUP.md: database installation and accounts
+- docs\run-guide\05-TROUBLESHOOTING.md: common startup/network issues
+- docs\run-guide\06-SECURITY.md: HTTPS, accounts, and firewall
+- docs\run-guide\07-OPERATIONS.md: backups, restore, monitoring, upgrades

@@ -1,0 +1,6 @@
+CITYLAND 9 SYSTEM V10.48
+
+Implemented:
+1. Eye-friendly default UI theme (Comfort Teal) with softer background, muted blue/teal accents, improved text/border contrast, and preserved Appearance/theme selection.
+2. Superadmin-only Delete User action with confirmation, self-delete protection, last-Superadmin protection, and audit logging.
+3. SOA manual editor hidden by default; authorized Superadmin/Admin users see an EDIT SOA button that opens the controls, with Close/Cancel to hide them. Normal users see only the SOA.

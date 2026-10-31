@@ -8,17 +8,19 @@ import { DataTable } from "../../components/base/DataTable";
 import { Drawer, useToast } from "../../components/base/overlays";
 import { Button, Card, CardHeader, Field, Icon, Notice, PageHeader, StatCard, StatusBadge, Tabs, cx } from "../../components/base/ui";
 import { focusFirstInvalid } from "../../components/feature/AccountFields";
+import { BulkWaterReadingUpload } from "../../components/feature/BulkWaterReadingUpload";
 import { useAction, useAsync } from "../../hooks/useAsync";
-import { currentMonth, monthLabel, todayIso } from "../../lib/format";
+import { addMonths, currentMonth, monthLabel, todayIso } from "../../lib/format";
 import { fromCents, isAmount, peso, toCents } from "../../lib/money";
 import { api } from "../../services/api";
 import { ApiError } from "../../services/http";
-import type { PaymentMethod, WaterMonth, WaterPaymentInput, WaterReadingAdmin } from "../../services/types";
+import type { CommercialWaterReadingAdmin, PaymentMethod, WaterMonth, WaterPaymentInput, WaterReadingAdmin } from "../../services/types";
 import { MonthPicker, newFormToken } from "./Billing";
 
 const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 const READING_RE = /^\d{1,8}(\.\d{1,3})?$/;
 const RATE_RE = /^\d{1,6}(\.\d{1,4})?$/;
+const defaultReadingPeriod = (month: string) => ({ readingFrom: `${addMonths(month, -1)}-16`, readingTo: `${month}-15` });
 
 export default function WaterPage() {
   const [params, setParams] = useSearchParams();
@@ -27,7 +29,9 @@ export default function WaterPage() {
   const [tab, setTab] = useState<"month" | "unpaid">("month");
   const view = useAsync(() => api.water.month(month), [month]);
   const [editing, setEditing] = useState<WaterReadingAdmin | null>(null);
+  const [editingCommercial, setEditingCommercial] = useState<CommercialWaterReadingAdmin | null>(null);
   const [paying, setPaying] = useState<WaterReadingAdmin | null>(null);
+  const [bulkOpen, setBulkOpen] = useState(false);
   const { can } = useAuth();
   const v = view.data;
   const movedForm = params.get("moved") === "form";
@@ -54,8 +58,11 @@ export default function WaterPage() {
   return (
     <>
       <PageHeader eyebrow="Property & Billing" title="Water Readings"
-        description="Enter each unit's meter reading. The previous reading is carried over from last month; saving updates that month's bill if it was already generated."
-        actions={<MonthPicker value={month} onChange={setMonth} />} />
+        description="Enter the dates covered by each meter reading. The reading period appears on the SOA. Shared commercial water charges are allocated to unit SOAs by area."
+        actions={<div className="flex flex-wrap items-center gap-2">
+          {can("water") && <Button variant="secondary" icon="upload-2-line" onClick={() => setBulkOpen(true)}>Bulk upload</Button>}
+          <MonthPicker value={month} onChange={setMonth} />
+        </div>} />
       {movedForm && (
         <div className="mb-4" role="status"><Notice tone="warn">
           <div className="flex flex-wrap items-center justify-between gap-2"><span>Water Readings moved to this screen. The form you sent from the old page was <b>not saved</b>; please enter it here.</span>
@@ -64,30 +71,53 @@ export default function WaterPage() {
       )}
       {v && !v.autoCompute && <div className="mb-4"><Notice tone="warn">Automatic water computation is turned off in Rates &amp; Rules, so new bills get no water charge from these readings.</Notice></div>}
       <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard tone="hero" icon="drop-line" label={`Read for ${monthLabel(month)}`} value={v ? `${v.totals.read} / ${v.totals.read + v.totals.toRead}` : "—"} hint={v ? `${v.totals.toRead} unit(s) still to read` : undefined} />
+        <StatCard tone="hero" icon="drop-line" label={`Read for ${monthLabel(month)}`} value={v ? `${v.totals.read} / ${v.totals.read + v.totals.toRead}` : "—"} hint={v ? `${v.missing.length} unit(s) · ${v.commercialMissing.length} shared type(s) still to read` : undefined} />
         <StatCard icon="water-flash-line" label="Usage this month" value={v ? `${v.totals.usage} m³` : "—"} />
         <StatCard icon="money-dollar-circle-line" label="Water charges this month" value={v ? peso(v.totals.amount) : "—"} />
-        <StatCard tone="copper" icon="hourglass-line" label="Unpaid water (all months)" value={v ? peso(v.totals.unpaid) : "—"} />
+        <StatCard tone="copper" icon="hourglass-line" label="Unpaid individual water (all months)" value={v ? peso(v.totals.unpaid) : "—"} />
       </div>
       <div className="grid gap-6 2xl:grid-cols-[360px_minmax(0,1fr)]">
         {can("water") && (
           <Card className="self-start 2xl:sticky 2xl:top-4">
-            <CardHeader title="Meter reading tool" subtitle={v ? `${v.totals.toRead} unit(s) still to read for ${monthLabel(month)}` : undefined} />
-            {v && <div className="px-5 pt-4"><div className="h-2 overflow-hidden rounded-full bg-ink-100"><div className="h-full rounded-full bg-chart-1 transition-all" style={{ width: `${v.totals.read + v.totals.toRead ? (v.totals.read / (v.totals.read + v.totals.toRead)) * 100 : 0}%` }} /></div></div>}
+            <CardHeader title="Meter reading tool" subtitle={v ? `${v.missing.length} unit(s) still to read for ${monthLabel(month)}` : undefined} />
+            {v && <div className="px-5 pt-4"><div className="h-2 overflow-hidden rounded-full bg-ink-100"><div className="h-full rounded-full bg-chart-1 transition-all" style={{ width: `${v.readings.length + v.missing.length ? (v.readings.length / (v.readings.length + v.missing.length)) * 100 : 0}%` }} /></div></div>}
             {v && <ReadingTool key={month} month={month} view={v} onSaved={view.reload} />}
           </Card>
         )}
         <Card>
-          <div className="border-b border-ink-100 p-4"><Tabs value={tab} onChange={setTab} tabs={[{ key: "month", label: monthLabel(month), count: v?.readings.length }, { key: "unpaid", label: "Unpaid water", count: v?.unpaid.length }]} /></div>
+          <div className="border-b border-ink-100 p-4"><Tabs value={tab} onChange={setTab} tabs={[{ key: "month", label: monthLabel(month), count: v?.readings.length }, { key: "unpaid", label: "Unpaid meter charges", count: v?.unpaid.length }]} /></div>
           {tab === "month"
             ? <DataTable rows={v ? v.readings : null} loading={view.loading} error={view.error} onRetry={view.reload} rowKey={(r) => r.id}
                 empty={{ icon: "drop-line", title: `No readings yet for ${monthLabel(month)}`, text: "Use the meter reading tool to enter them." }} columns={columns(false)} />
             : <DataTable rows={v ? v.unpaid : null} loading={view.loading} error={view.error} onRetry={view.reload} rowKey={(r) => r.id}
-                empty={{ icon: "checkbox-circle-line", title: "No unpaid water", text: "Every water charge is paid." }} columns={columns(true)} />}
+                empty={{ icon: "checkbox-circle-line", title: "No unpaid individual water readings", text: "Shared commercial charges are paid through each unit's SOA." }} columns={columns(true)} />}
         </Card>
       </div>
+      {v && v.commercialTypes.length > 0 && (
+        <Card className="mt-6">
+          <CardHeader title="Shared commercial water readings"
+            subtitle="One meter reading per commercial type and month; the shared charge is allocated to unit SOAs by area." />
+          <div className="px-5 pt-4"><Notice>Shared commercial water charges are included in unit SOAs; do not record a separate water payment here.</Notice></div>
+          {can("water") && <CommercialReadingTool key={month} month={month} view={v} onSaved={view.reload} />}
+          <DataTable rows={v.commercialReadings} loading={view.loading} error={view.error} onRetry={view.reload}
+            rowKey={(r) => r.id}
+            empty={{ icon: "drop-line", title: `No shared readings for ${monthLabel(month)}`, text: "Enter one reading for each commercial type above." }}
+            columns={[
+              { key: "type", header: "Commercial type", cell: (r) => <b className="text-ink-900">{r.commercialType}</b> },
+              { key: "p", header: "Previous", align: "right", cell: (r) => r.previous },
+              { key: "c", header: "Current", align: "right", cell: (r) => r.current },
+              { key: "u", header: "Shared usage", align: "right", cell: (r) => <b>{r.usage} m³</b> },
+              { key: "area", header: "Area allocated", align: "right", cell: (r) => <>{r.totalArea.toLocaleString()} m²<span className="block text-[12px] text-ink-500">{r.unitCount} units</span></> },
+              { key: "amount", header: "Shared charge", align: "right", cell: (r) => <>{peso(r.amount)}<span className="block text-[12px] text-ink-500">@ {peso(r.rate)}/m³</span></> },
+              { key: "act", header: "", cell: (r) => can("edit_water") ? <div className="flex justify-end"><Button size="sm" variant="secondary" icon="edit-line" onClick={() => setEditingCommercial(r)}>Correct</Button></div> : null },
+            ]} />
+        </Card>
+      )}
       {editing && <CorrectDrawer reading={editing} defaultRate={v?.defaultRate ?? ""} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); view.reload(); }} />}
+      {editingCommercial && <CorrectCommercialDrawer reading={editingCommercial} defaultRate={v?.defaultRate ?? ""}
+        onClose={() => setEditingCommercial(null)} onSaved={() => { setEditingCommercial(null); view.reload(); }} />}
       {paying && <WaterPaymentDrawer reading={paying} onClose={() => setPaying(null)} onDone={() => { setPaying(null); view.reload(); }} />}
+      <BulkWaterReadingUpload open={bulkOpen} onClose={() => setBulkOpen(false)} onCreated={view.reload} />
     </>
   );
 }
@@ -99,7 +129,7 @@ function ReadingTool({ month, view, onSaved }: { month: string; view: WaterMonth
   const [previous, setPrevious] = useState(first ? String(first.previous) : "");
   const [current, setCurrent] = useState("");
   const [rate, setRate] = useState(view.defaultRate);
-  const [date, setDate] = useState(todayIso());
+  const [period, setPeriod] = useState(() => defaultReadingPeriod(month));
   const [touched, setTouched] = useState(false);
   const [serverFields, setServerFields] = useState<Record<string, string>>({});
   const { busy, act } = useAction();
@@ -119,6 +149,8 @@ function ReadingTool({ month, view, onSaved }: { month: string; view: WaterMonth
     previous: previous !== "" && !READING_RE.test(previous) ? "Enter a reading, up to 3 decimals." : "",
     current: current === "" ? "Enter the current reading." : !READING_RE.test(current) ? "Enter a reading, up to 3 decimals." : cur < prev ? "Can't be lower than the previous reading." : "",
     rate: rate !== "" && !RATE_RE.test(rate) ? "Enter the rate per m³." : "",
+    readingFrom: !period.readingFrom ? "Choose the start date." : period.readingTo && period.readingFrom > period.readingTo ? "Start date must be on or before the end date." : "",
+    readingTo: !period.readingTo ? "Choose the end date." : "",
   };
   const err = (k: string) => (touched ? errors[k] : "") || serverFields[k] || "";
   const usage = !errors.current && !errors.previous && current !== "" ? Math.round((cur - prev) * 1000) / 1000 : null;
@@ -129,7 +161,7 @@ function ReadingTool({ month, view, onSaved }: { month: string; view: WaterMonth
     if (busy) return;
     if (Object.values(errors).some(Boolean)) { focusFirstInvalid(ref); return; }
     try {
-      const r = await act(() => api.water.save({ unitId, month, previous, current, rate, readingDate: date }));
+      const r = await act(() => api.water.save({ unitId, month, previous, current, rate, ...period }));
       toast({ tone: "success", title: `Saved ${r.reading.unitNo}: ${r.reading.usage} m³ · ${peso(r.reading.amount)}`, message: r.billUpdated ? `The ${monthLabel(month)} bill was updated.` : undefined });
       const next = view.missing.find((u) => u.unitId !== unitId);
       pick(next?.unitId ?? 0);
@@ -151,7 +183,8 @@ function ReadingTool({ month, view, onSaved }: { month: string; view: WaterMonth
       <Field label="Previous reading" error={err("previous")} hint="Carried over from last month">{(id) => <input id={id} inputMode="decimal" className="input tabular" value={previous} aria-invalid={Boolean(err("previous")) || undefined} onChange={(e) => setPrevious(e.target.value)} />}</Field>
       <Field label="Current reading" error={err("current")}>{(id) => <input id={id} inputMode="decimal" className="input tabular" data-autofocus value={current} aria-invalid={Boolean(err("current")) || undefined} onChange={(e) => { setCurrent(e.target.value); setServerFields({}); }} />}</Field>
       <Field label="Rate (₱ per m³)" error={err("rate")} hint={`Rates & Rules: ₱${view.defaultRate}`}>{(id) => <input id={id} inputMode="decimal" className="input tabular" value={rate} onChange={(e) => setRate(e.target.value)} />}</Field>
-      <Field label="Reading date">{(id) => <input id={id} type="date" className="input" value={date} onChange={(e) => setDate(e.target.value)} />}</Field>
+      <Field label="Reading period from" error={err("readingFrom")}>{(id) => <input id={id} type="date" className="input" value={period.readingFrom} onChange={(e) => setPeriod({ ...period, readingFrom: e.target.value })} />}</Field>
+      <Field label="Reading period to" error={err("readingTo")}>{(id) => <input id={id} type="date" className="input" value={period.readingTo} onChange={(e) => setPeriod({ ...period, readingTo: e.target.value })} />}</Field>
       <div className="flex items-center justify-between rounded-xl bg-brand-50 px-4 py-3 sm:col-span-2">
         <span className="text-brand-800">Usage {usage === null ? "—" : `${usage} m³`}</span>
         <b className="font-display text-[18px] text-brand-900 tabular">{amount}</b>
@@ -161,9 +194,140 @@ function ReadingTool({ month, view, onSaved }: { month: string; view: WaterMonth
   );
 }
 
+function CommercialReadingTool({ month, view, onSaved }: { month: string; view: WaterMonth; onSaved: () => void }) {
+  const first = view.commercialMissing[0];
+  const [commercialType, setCommercialType] = useState<"2F" | "UG" | "LG" | "">(first?.commercialType ?? "");
+  const [previous, setPrevious] = useState(first ? String(first.previous) : "");
+  const [current, setCurrent] = useState("");
+  const [rate, setRate] = useState(view.defaultRate);
+  const [period, setPeriod] = useState(() => defaultReadingPeriod(month));
+  const [touched, setTouched] = useState(false);
+  const [serverFields, setServerFields] = useState<Record<string, string>>({});
+  const { busy, act } = useAction();
+  const toast = useToast();
+  const ref = useRef<HTMLFormElement>(null);
+  const selected = view.commercialMissing.find((x) => x.commercialType === commercialType);
+  const errors: Record<string, string> = {
+    commercialType: !commercialType ? "Choose a commercial type." : "",
+    previous: previous !== "" && !READING_RE.test(previous) ? "Enter a reading, up to 3 decimals." : "",
+    current: current === "" ? "Enter the current reading." : !READING_RE.test(current) ? "Enter a reading, up to 3 decimals." : Number(current) < Number(previous || 0) ? "Can't be lower than the previous reading." : "",
+    rate: rate !== "" && !RATE_RE.test(rate) ? "Enter the rate per m³." : "",
+    readingFrom: !period.readingFrom ? "Choose the start date." : period.readingTo && period.readingFrom > period.readingTo ? "Start date must be on or before the end date." : "",
+    readingTo: !period.readingTo ? "Choose the end date." : "",
+  };
+  const err = (key: string) => (touched ? errors[key] : "") || serverFields[key] || "";
+  const usage = !errors.current && !errors.previous && current !== "" ? Math.round((Number(current) - Number(previous || 0)) * 1000) / 1000 : null;
+  const amount = usage !== null && RATE_RE.test(rate || view.defaultRate) ? peso(fromCents(Math.round(usage * toCents(rate || view.defaultRate)))) : "—";
+
+  async function save() {
+    setTouched(true);
+    if (busy) return;
+    if (Object.values(errors).some(Boolean)) { focusFirstInvalid(ref); return; }
+    if (!commercialType) { focusFirstInvalid(ref); return; }
+    try {
+      const result = await act(() => api.water.saveCommercial({
+        commercialType, month, previous, current, rate, ...period,
+      }));
+      toast({ tone: "success", title: `Saved ${commercialType}: ${result.reading.usage} m³ · ${peso(result.reading.amount)}`,
+        message: result.billUpdated ? "Matching commercial SOAs were updated." : "The shared charge will be allocated to matching commercial SOAs." });
+      const next = view.commercialMissing.find((group) => group.commercialType !== commercialType);
+      const nextType = next?.commercialType ?? "";
+      setCommercialType(nextType);
+      setPrevious(next ? String(next.previous) : "");
+      setCurrent("");
+      setTouched(false);
+      setServerFields({});
+      onSaved();
+    } catch (e) {
+      if (e instanceof ApiError && Object.keys(e.fields).length) { setServerFields(e.fields); focusFirstInvalid(ref); }
+      else toast({ tone: "error", title: "Shared reading not saved", message: (e as Error).message });
+    }
+  }
+
+  if (!view.commercialMissing.length) {
+    return <p className="px-5 py-4 text-sm text-ink-500">All active commercial types have a shared reading for {monthLabel(month)}.</p>;
+  }
+  return (
+    <form ref={ref} className="grid gap-4 border-b border-ink-100 p-5 sm:grid-cols-2 lg:grid-cols-6"
+      onSubmit={(e) => { e.preventDefault(); void save(); }} noValidate>
+      <Field label="Commercial type" className="lg:col-span-2" error={err("commercialType")}
+        hint={selected ? `${selected.unitCount} units · ${selected.totalArea.toLocaleString()} m² total area` : undefined}>{(id) => (
+          <select id={id} className="input" value={commercialType} onChange={(e) => {
+            const value = e.target.value as typeof commercialType;
+            const group = view.commercialMissing.find((x) => x.commercialType === value);
+            setCommercialType(value); setPrevious(group ? String(group.previous) : ""); setCurrent(""); setServerFields({});
+          }}>
+            <option value="">Choose a type…</option>
+            {view.commercialMissing.map((group) => <option key={group.commercialType} value={group.commercialType}>{group.commercialType}</option>)}
+          </select>)}</Field>
+      <Field label="Previous reading" error={err("previous")} hint="Carried over from the last shared reading">{(id) => <input id={id} inputMode="decimal" className="input tabular" value={previous} onChange={(e) => setPrevious(e.target.value)} />}</Field>
+      <Field label="Current reading" error={err("current")}>{(id) => <input id={id} inputMode="decimal" className="input tabular" data-autofocus value={current} onChange={(e) => { setCurrent(e.target.value); setServerFields({}); }} />}</Field>
+      <Field label="Rate (₱ per m³)" error={err("rate")} hint={`Rates & Rules: ₱${view.defaultRate}`}>{(id) => <input id={id} inputMode="decimal" className="input tabular" value={rate} onChange={(e) => setRate(e.target.value)} />}</Field>
+      <Field label="Reading period from" error={err("readingFrom")}>{(id) => <input id={id} type="date" className="input" value={period.readingFrom} onChange={(e) => setPeriod({ ...period, readingFrom: e.target.value })} />}</Field>
+      <Field label="Reading period to" error={err("readingTo")}>{(id) => <input id={id} type="date" className="input" value={period.readingTo} onChange={(e) => setPeriod({ ...period, readingTo: e.target.value })} />}</Field>
+      <div className="flex items-center justify-between rounded-xl bg-brand-50 px-4 py-3 sm:col-span-2 lg:col-span-4">
+        <span className="text-brand-800">Shared usage {usage === null ? "—" : `${usage} m³`}</span>
+        <b className="font-display text-[18px] text-brand-900 tabular">{amount}</b>
+      </div>
+      <div className="flex items-center justify-end sm:col-span-2 lg:col-span-2"><Button type="submit" icon="save-3-line" loading={busy}>Save shared reading</Button></div>
+    </form>
+  );
+}
+
+function CorrectCommercialDrawer({ reading, defaultRate, onClose, onSaved }: {
+  reading: CommercialWaterReadingAdmin; defaultRate: string; onClose: () => void; onSaved: () => void;
+}) {
+  const [form, setForm] = useState({ previous: String(reading.previous), current: String(reading.current), rate: String(reading.rate),
+    ...defaultReadingPeriod(reading.month), readingFrom: reading.readingFrom ?? defaultReadingPeriod(reading.month).readingFrom,
+    readingTo: reading.readingTo ?? reading.readingDate ?? defaultReadingPeriod(reading.month).readingTo });
+  const [serverError, setServerError] = useState("");
+  const [serverFields, setServerFields] = useState<Record<string, string>>({});
+  const { busy, act } = useAction();
+  const toast = useToast();
+  const errors: Record<string, string> = {
+    previous: !READING_RE.test(form.previous) ? "Enter a reading." : "",
+    current: !READING_RE.test(form.current) ? "Enter a reading." : Number(form.current) < Number(form.previous) ? "Can't be lower than the previous reading." : "",
+    rate: form.rate !== "" && !RATE_RE.test(form.rate) ? "Enter the rate per m³." : "",
+    readingFrom: !form.readingFrom ? "Choose the start date." : form.readingTo && form.readingFrom > form.readingTo ? "Start date must be on or before the end date." : "",
+    readingTo: !form.readingTo ? "Choose the end date." : "",
+  };
+  const err = (key: string) => errors[key] || serverFields[key] || "";
+  async function save() {
+    if (busy || Object.values(errors).some(Boolean)) return;
+    try {
+      const result = await act(() => api.water.correctCommercial(reading.id, form));
+      toast({ tone: "success", title: `${reading.commercialType} ${monthLabel(reading.month)} corrected`,
+        message: `${result.reading.usage} m³ · ${peso(result.reading.amount)}${result.billUpdated ? " · matching SOAs were updated" : ""}` });
+      onSaved();
+    } catch (e) {
+      if (e instanceof ApiError && Object.keys(e.fields).length) setServerFields(e.fields);
+      else setServerError((e as Error).message);
+    }
+  }
+  return (
+    <Drawer open onClose={() => { if (!busy) onClose(); }} width="max-w-md"
+      title={`Correct shared reading · ${reading.commercialType}`} subtitle={monthLabel(reading.month)}
+      footer={<><Button variant="secondary" onClick={onClose} disabled={busy}>Cancel</Button><Button icon="save-3-line" loading={busy} onClick={save}>Save correction</Button></>}>
+      <div className="space-y-4">
+        {serverError && <Notice tone="warn">{serverError}</Notice>}
+        <Notice>The shared charge is reallocated among the active units of this commercial type by area.</Notice>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Previous reading" error={err("previous")}>{(id) => <input id={id} inputMode="decimal" className="input tabular" value={form.previous} onChange={(e) => setForm({ ...form, previous: e.target.value })} />}</Field>
+          <Field label="Current reading" error={err("current")}>{(id) => <input id={id} inputMode="decimal" className="input tabular" value={form.current} onChange={(e) => setForm({ ...form, current: e.target.value })} />}</Field>
+          <Field label="Rate (₱ per m³)" error={err("rate")} hint={`Empty = Rates & Rules (₱${defaultRate})`}>{(id) => <input id={id} inputMode="decimal" className="input tabular" value={form.rate} onChange={(e) => setForm({ ...form, rate: e.target.value })} />}</Field>
+          <Field label="Reading period from" error={err("readingFrom")}>{(id) => <input id={id} type="date" className="input" value={form.readingFrom} onChange={(e) => setForm({ ...form, readingFrom: e.target.value })} />}</Field>
+          <Field label="Reading period to" error={err("readingTo")}>{(id) => <input id={id} type="date" className="input" value={form.readingTo} onChange={(e) => setForm({ ...form, readingTo: e.target.value })} />}</Field>
+        </div>
+      </div>
+    </Drawer>
+  );
+}
+
 // ------------------------------------------------------------------ correct a reading
 function CorrectDrawer({ reading, defaultRate, onClose, onSaved }: { reading: WaterReadingAdmin; defaultRate: string; onClose: () => void; onSaved: () => void }) {
-  const [form, setForm] = useState({ previous: String(reading.previous), current: String(reading.current), rate: String(reading.rate), readingDate: reading.readingDate ?? todayIso() });
+  const [form, setForm] = useState({ previous: String(reading.previous), current: String(reading.current), rate: String(reading.rate),
+    readingFrom: reading.readingFrom ?? defaultReadingPeriod(reading.month).readingFrom,
+    readingTo: reading.readingTo ?? reading.readingDate ?? defaultReadingPeriod(reading.month).readingTo });
   const [serverFields, setServerFields] = useState<Record<string, string>>({});
   const [serverError, setServerError] = useState("");
   const { busy, act } = useAction();
@@ -172,6 +336,8 @@ function CorrectDrawer({ reading, defaultRate, onClose, onSaved }: { reading: Wa
     previous: !READING_RE.test(form.previous) ? "Enter a reading." : "",
     current: !READING_RE.test(form.current) ? "Enter a reading." : Number(form.current) < Number(form.previous) ? "Can't be lower than the previous reading." : "",
     rate: form.rate !== "" && !RATE_RE.test(form.rate) ? "Enter the rate per m³." : "",
+    readingFrom: !form.readingFrom ? "Choose the start date." : form.readingTo && form.readingFrom > form.readingTo ? "Start date must be on or before the end date." : "",
+    readingTo: !form.readingTo ? "Choose the end date." : "",
   };
   const err = (k: string) => errors[k] || serverFields[k] || "";
   async function save() {
@@ -196,7 +362,8 @@ function CorrectDrawer({ reading, defaultRate, onClose, onSaved }: { reading: Wa
           <Field label="Previous reading" error={err("previous")}>{(id) => <input id={id} inputMode="decimal" className="input tabular" value={form.previous} onChange={(e) => setForm({ ...form, previous: e.target.value })} />}</Field>
           <Field label="Current reading" error={err("current")}>{(id) => <input id={id} inputMode="decimal" className="input tabular" value={form.current} onChange={(e) => setForm({ ...form, current: e.target.value })} />}</Field>
           <Field label="Rate (₱ per m³)" error={err("rate")} hint={`Empty = Rates & Rules (₱${defaultRate})`}>{(id) => <input id={id} inputMode="decimal" className="input tabular" value={form.rate} onChange={(e) => setForm({ ...form, rate: e.target.value })} />}</Field>
-          <Field label="Reading date">{(id) => <input id={id} type="date" className="input" value={form.readingDate} onChange={(e) => setForm({ ...form, readingDate: e.target.value })} />}</Field>
+          <Field label="Reading period from" error={err("readingFrom")}>{(id) => <input id={id} type="date" className="input" value={form.readingFrom} onChange={(e) => setForm({ ...form, readingFrom: e.target.value })} />}</Field>
+          <Field label="Reading period to" error={err("readingTo")}>{(id) => <input id={id} type="date" className="input" value={form.readingTo} onChange={(e) => setForm({ ...form, readingTo: e.target.value })} />}</Field>
         </div>
       </div>
     </Drawer>
@@ -206,7 +373,7 @@ function CorrectDrawer({ reading, defaultRate, onClose, onSaved }: { reading: Wa
 // ------------------------------------------------------------------ water payment
 function WaterPaymentDrawer({ reading, onClose, onDone }: { reading: WaterReadingAdmin; onClose: () => void; onDone: () => void }) {
   const balance = reading.balance ?? reading.amount;
-  const [form, setForm] = useState<WaterPaymentInput>(() => ({ amount: balance, method: "CASH", type: "FULL", reference: "", date: todayIso(), formToken: newFormToken() }));
+  const [form, setForm] = useState<WaterPaymentInput>(() => ({ amount: balance, method: "CASH", type: "FULL", reference: "", date: todayIso(), payerType: reading.payerRequired ? "" : reading.chargePayer, formToken: newFormToken() }));
   const [touched, setTouched] = useState(false);
   const [serverError, setServerError] = useState("");
   const [result, setResult] = useState<{ receiptNo: string; applied: string } | null>(null);
@@ -214,11 +381,12 @@ function WaterPaymentDrawer({ reading, onClose, onDone }: { reading: WaterReadin
   const errors = {
     amount: !isAmount(form.amount) ? "Enter the amount received." : "",
     reference: form.method !== "CASH" && !form.reference.trim() ? "Required for check and online payments." : "",
+    payerType: reading.payerRequired && !form.payerType ? "Choose Owner or Tenant." : "",
   };
   useEffect(() => setServerError(""), [form]);
   async function submit() {
     setTouched(true);
-    if (busy || errors.amount || errors.reference) return;
+    if (busy || errors.amount || errors.reference || errors.payerType) return;
     try {
       const r = await act(() => api.water.pay(reading.id, { ...form, type: toCents(form.amount) >= toCents(balance) ? "FULL" : "PARTIAL" }));
       setResult({ receiptNo: r.receiptNo, applied: r.applied });
@@ -239,6 +407,10 @@ function WaterPaymentDrawer({ reading, onClose, onDone }: { reading: WaterReadin
       ) : (
         <form className="grid gap-4 sm:grid-cols-2" onSubmit={(e) => { e.preventDefault(); void submit(); }} noValidate>
           {serverError && <div className="sm:col-span-2"><Notice tone="warn">{serverError}</Notice></div>}
+          {reading.payerRequired && <Field label="Payer ledger" className="sm:col-span-2" error={touched && errors.payerType}>{(id) => (
+            <select id={id} className="input" value={form.payerType ?? ""} onChange={(e) => setForm({ ...form, payerType: e.target.value as "Owner" | "Tenant" })}>
+              <option value="">Choose…</option><option value="Owner">Owner</option><option value="Tenant">Tenant</option>
+            </select>)}</Field>}
           <Field label="Amount received (₱)" error={touched && errors.amount} hint="At most the balance is applied.">{(id) => <input id={id} inputMode="decimal" className="input tabular" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />}</Field>
           <Field label="Payment date">{(id) => <input id={id} type="date" className="input" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />}</Field>
           <Field label="Method">{(id) => <select id={id} className="input" value={form.method} onChange={(e) => setForm({ ...form, method: e.target.value as PaymentMethod })}><option value="CASH">Cash</option><option value="CHECK">Check</option><option value="ONLINE">Online / bank transfer</option></select>}</Field>
@@ -249,4 +421,3 @@ function WaterPaymentDrawer({ reading, onClose, onDone }: { reading: WaterReadin
     </Drawer>
   );
 }
-

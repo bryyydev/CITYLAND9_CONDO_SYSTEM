@@ -7,6 +7,7 @@
 | **Windows** | 10 / 11 | The server PC (scripts are `.bat`) | — |
 | **Python** | **3.11 or newer** (tested on 3.14) | The backend | `py --version` |
 | **XAMPP** (for its **MariaDB** programs) | MariaDB 10.4+ | The database server | `C:\xampp\mysql\bin\mysqld.exe --version` |
+| **SQL Server Express** (alternative) | SQL Server 2022 or newer | Local database engine | SQL Server Configuration Manager / `sqlcmd` |
 | **Node.js** (LTS) | **20.19 or newer** (Vite 8 requires it) | Building the React app; development | `node --version` |
 | **Git** | any | Getting and updating the code | `git --version` |
 
@@ -19,6 +20,9 @@ Notes:
 - **MySQL 8.0+** instead of MariaDB: possible as an *existing* server (set the `MYSQL_*` values to
   it and leave `MYSQL_DATA_DIR` empty, so nothing is auto-started). The automatic setup in
   `database\local_mysql.py` needs MariaDB's `mysql_install_db`. The system is tested on MariaDB 10.4.
+- **SQL Server Express** is a local alternative. Configure `DATABASE_URL` as described in
+  [02 §8](02-DATABASE_SETUP.md#8-sql-server-express-alternative). `START_WINDOWS.bat` uses a
+  separate Python 3.14 environment with ODBC Driver 18, leaving `.venv` untouched.
 - **Node.js** is only needed on the server to **build** the React app (first install and after
   updates). The running system doesn't use Node.
 - **Internet** is needed only during installation (Python packages, npm packages). Afterwards the
@@ -46,7 +50,7 @@ Create `.env` in the project root with **only** these lines (Notepad → Save as
 ```ini
 SECRET_KEY=paste-a-generated-value-here
 DB_ENGINE=mysql
-FLASK_HOST=0.0.0.0
+FLASK_HOST=127.0.0.1
 FLASK_PORT=5000
 FLASK_DEBUG=0
 MYSQL_BIN_DIR=C:\xampp\mysql\bin
@@ -84,21 +88,22 @@ settings with strong random passwords: `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABA
 | `MYSQL_ROOT_PASSWORD` | yes | — | Used only by setup, backup and restore tools, never by the web application |
 | `MYSQL_BIN_DIR` | yes | `C:\xampp\mysql\bin` | Where `mysqld.exe` / `mysqldump.exe` are |
 | `MYSQL_DATA_DIR` | yes* | — | CityLand's own data folder. *When set, the server **auto-starts** MariaDB. |
-| `FLASK_HOST` / `FLASK_PORT` | no | `0.0.0.0` / `5000` | Where Waitress listens (`127.0.0.1` behind an HTTPS proxy) |
+| `FLASK_HOST` / `FLASK_PORT` | no | `127.0.0.1` / `5000` | Where Waitress listens. LAN use requires HTTPS via a reverse proxy; bind Waitress to `127.0.0.1`. |
+| `PUBLIC_URL` | no | — | Browser URL printed/opened by `START_WINDOWS.bat`; set to the HTTPS hostname when using Caddy |
 | `WAITRESS_THREADS` | no | `8` | Worker threads |
 | `FLASK_DEBUG` | no | `0` | Debugger, development only ([06 §1](06-SECURITY.md#1-required-configuration-the-server-refuses-to-start-otherwise)) |
 | `SESSION_IDLE_MINUTES` / `SESSION_MAX_HOURS` | no | `60` / `12` | Automatic sign-out |
-| `SESSION_COOKIE_SECURE` | no | `0` | `1` when served over HTTPS |
-| `TRUSTED_PROXY` | no | — | Address of the HTTPS reverse proxy on this PC, e.g. `127.0.0.1` ([06 §5](06-SECURITY.md#5-https-on-the-lan-recommended)) |
+| `SESSION_COOKIE_SECURE` | no | `0` | Set to `1` with HTTPS; required when `TRUSTED_PROXY` is set |
+| `TRUSTED_PROXY` | no | — | Address of the HTTPS reverse proxy on this PC, e.g. `127.0.0.1` ([06 §5](06-SECURITY.md#5-https-on-the-lan-required-for-lan-access)) |
 | `PASSWORD_MIN_LENGTH` | no | `10` | Password policy minimum (8–64) |
 | `LOGIN_MAX_FAILURES` / `LOGIN_LOCKOUT_MINUTES` | no | `5` / `15` | Sign-in throttling |
-| `MAX_UPLOAD_MB`, `IMPORT_MAX_ROWS`, `IMPORT_MAX_COLUMNS`, `IMPORT_MAX_UNCOMPRESSED_MB` | no | `20`, `50000`, `200`, `200` | Excel import limits |
+| `MAX_UPLOAD_MB`, `IMPORT_MAX_ROWS`, `IMPORT_MAX_COLUMNS`, `IMPORT_MAX_UNCOMPRESSED_MB` | no | `20`, `100000`, `200`, `200` | Excel import limits |
 | `LOG_MAX_MB` / `LOG_BACKUPS` | no | `10` / `10` | Rotation of `logs\cityland9.log` |
 | `DISK_MIN_FREE_GB` | no | `2` | `/readyz` reports *not ready* below this |
 | `BACKUP_RETENTION_DAYS` / `BACKUP_KEEP_MIN` | no | `30` / `7` | Automatic backup retention ([07 §2](07-OPERATIONS.md#2-backups)) |
 | `BACKUP_MIN_FREE_GB` / `BACKUP_MAX_AGE_HOURS` | no | `2` / `26` | Backup refuses below this free space / warning when the last good backup is older |
 | `BACKUP_COPY_DIR` | no (recommended) | — | Second copy of each backup on another disk or PC |
-| `DATABASE_URL` | no | — | Advanced override (disables the automatic database start) |
+| `DATABASE_URL` | no | — | Advanced override; SQL Server Express example: `mssql+pyodbc://@localhost\SQLEXPRESS/CityLand9?driver=ODBC+Driver+18+for+SQL+Server&trusted_connection=yes&TrustServerCertificate=yes` |
 | `SMTP_USERNAME` / `SMTP_PASSWORD` | no | — | Fallback email login; prefer entering it in the app (stored encrypted) |
 | `CL9_NO_BROWSER` | no | — | `1` = `START_WINDOWS.bat` doesn't open the browser |
 
@@ -110,9 +115,9 @@ settings with strong random passwords: `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABA
 The React app calls the API with **relative URLs** (`/api/...`) on the same server that serves
 it, so it needs **no `frontend\.env`** and no `VITE_API_BASE_URL`:
 
-- **Production:** the browser loads `http://SERVER-IP:5000/app/` and calls
-  `http://SERVER-IP:5000/api/...` — same origin, works from any PC on the LAN without
-  configuring an IP address anywhere.
+- **Production:** the browser loads the HTTPS reverse-proxy URL (for example,
+  `https://cityland9.local/app/`) and calls the API on that same origin. LAN access requires
+  the HTTPS setup in [06 §5](06-SECURITY.md#5-https-on-the-lan-required-for-lan-access).
 - **Development:** Vite (port 5173) forwards `/api` to `http://127.0.0.1:5000`
   (`frontend\vite.config.ts`, `server.proxy`).
 - **Prototype mode** is chosen by `npm run dev:mock` (`vite --mode mock`), not by an env file.

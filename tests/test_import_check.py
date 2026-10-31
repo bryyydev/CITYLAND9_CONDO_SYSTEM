@@ -5,12 +5,13 @@ import io
 from datetime import date, datetime
 
 import pytest
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from sqlalchemy import text
 
 from conftest import PASSWORD, api, login
 
 from app.services import import_check as ic
+from app.services.excel_schema import build_import_template, normalize_import_unit_type
 
 CONFIG = {
     "source_system": {"code": "synthetic-legacy", "name": "Synthetic legacy system"},
@@ -241,6 +242,61 @@ def test_export_format_validates_values_relationships_and_financial_risks(app_mo
     assert r["readyForImport"] is False
 
 
+def test_commercial_is_an_accepted_unit_type_in_export_format(app_module):
+    sheets, _ = export_book(app_module)
+    sheets["Units"] = [row.copy() for row in sheets["Units"]]
+    sheets["Units"][3][2] = "COMMERCIAL"
+
+    report = check(app_module, sheets, roundtrip=False)
+    invalid_types = {issue["code"] for issue in report["issues"]
+                     if issue["sheet"] == "Units" and issue["row"] == 4}
+    assert "UNIT_TYPE_INVALID" not in invalid_types
+
+
+def test_drying_area_is_an_accepted_unit_type_in_export_format(app_module):
+    sheets, _ = export_book(app_module)
+    sheets["Units"] = [row.copy() for row in sheets["Units"]]
+    sheets["Units"][3][2] = "DRYING AREA"
+
+    report = check(app_module, sheets, roundtrip=False)
+    type_issues = {issue["code"] for issue in report["issues"]
+                   if issue["sheet"] == "Units" and issue["row"] == 4 and issue["column"] == "unit_type"}
+    assert "UNIT_TYPE_INVALID" not in type_issues
+
+
+def test_import_template_uses_current_unit_categories():
+    workbook = load_workbook(build_import_template())
+    units = workbook["Units"]
+    validation = next(item for item in units.data_validations.dataValidation if str(item.sqref) == "D2:D1001")
+    assert validation.formula1 == '"RESIDENTIAL,COMMERCIAL,DRYING AREA,STORAGE,PARKING"'
+    assert "Choose RESIDENTIAL, COMMERCIAL, DRYING AREA, STORAGE, or PARKING" in units["D1"].comment.text
+    headers = [cell.value for cell in units[1]]
+    for field in ("condo_charge_payer", "water_charge_payer", "parking_charge_payer",
+                  "storage_charge_payer", "other_charge_payer"):
+        column = units.cell(row=1, column=headers.index(field) + 1).column_letter
+        payer_validation = next(item for item in units.data_validations.dataValidation
+                                if str(item.sqref) == f"{column}2:{column}1001")
+        assert payer_validation.formula1 == '"Owner,Tenant"'
+        assert units.cell(row=1, column=headers.index(field) + 1).comment is not None
+    workbook.close()
+
+
+def test_residential_import_category_preserves_existing_subtype_or_defaults_to_studio():
+    assert normalize_import_unit_type("RESIDENTIAL", "2 BEDROOM") == "2 BEDROOM"
+    assert normalize_import_unit_type("RESIDENTIAL", "COMMERCIAL") == "STUDIO TYPE"
+    assert normalize_import_unit_type("COMMERCIAL", "1 BEDROOM") == "COMMERCIAL"
+
+
+def test_residential_category_is_accepted_in_export_import_check(app_module):
+    sheets, _ = export_book(app_module)
+    sheets["Units"] = [row.copy() for row in sheets["Units"]]
+    sheets["Units"][2][2] = "RESIDENTIAL"
+    report = check(app_module, sheets, roundtrip=False)
+    unit_type_issues = {issue["code"] for issue in report["issues"]
+                        if issue["sheet"] == "Units" and issue["row"] == 3 and issue["column"] == "unit_type"}
+    assert "UNIT_TYPE_INVALID" not in unit_type_issues
+
+
 def test_closed_periods_issued_and_hand_corrected_bills_are_blocked(app_module):
     m = app_module
     with m.app.app_context():
@@ -369,13 +425,45 @@ def rows_of(sheets, sheet):
 
 def test_an_unchanged_export_of_this_database_passes_the_gate_and_imports(app_module, superadmin):
     sheets = own_export(superadmin)
+    from app.services.excel_schema import EXPORT_FIELDS
+    assert {name: tuple(sheets[name][0]) for name in EXPORT_FIELDS} == {
+        name: tuple(headers) for name, headers in EXPORT_FIELDS.items()
+    }
     r = check(app_module, sheets)
     assert r["mode"] == "cityland_roundtrip"
-    assert r["importGate"] == {"allowed": True, "blockers": []}, r["issueCounts"]
+    assert r["importGate"] == {"allowed": True, "blockers": []}, r["issues"]
     client = api(superadmin)
     resp = client.post("/api/admin/system/import", data={"file": (xlsx(sheets), "export.xlsx")}, content_type="multipart/form-data")
     assert resp.status_code == 200, resp.get_data(as_text=True)
     assert all(c["inserted"] == 0 for c in resp.get_json()["counts"].values())
+
+
+def test_commercial_water_reading_is_exported_and_roundtrips(app_module, superadmin):
+    m = app_module
+    with m.app.app_context():
+        reading = m.CommercialWaterReading(
+            commercial_type="UG",
+            reading_month="2026-06",
+            previous_reading=12,
+            current_reading=18,
+            rate=55,
+            reading_date=date(2026, 6, 30),
+        )
+        m.db.session.add(reading)
+        m.db.session.commit()
+        reading_id = reading.id
+    try:
+        sheets = own_export(superadmin)
+        headers, rows = rows_of(sheets, "CommercialWaterReadings")
+        assert headers == ["id", "commercial_type", "reading_month", "previous_reading",
+                           "current_reading", "rate", "reading_date", "reading_period_start", "reading_period_end"]
+        assert any(row[0] == reading_id and row[1] == "UG" and row[2] == "2026-06" for row in rows)
+        report = check(app_module, sheets)
+        assert report["importGate"] == {"allowed": True, "blockers": []}, report["issues"]
+    finally:
+        with m.app.app_context():
+            m.CommercialWaterReading.query.filter_by(id=reading_id).delete()
+            m.db.session.commit()
 
 
 def test_the_gate_refuses_every_unsafe_change_and_the_import_writes_nothing(app_module, superadmin):

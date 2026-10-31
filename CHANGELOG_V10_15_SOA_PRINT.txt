@@ -1,0 +1,10 @@
+CITYLAND 9 CONDO WEB SYSTEM V10.15
+SOA PRINT UPDATES
+
+- Billing Period, Statement No., and Unit Number are kept in one horizontal row.
+- Owner, Tenant Representative, and Contact / Email are kept in one horizontal row.
+- Charges Breakdown print font has been increased for readability.
+- TOTAL AMOUNT DUE is emphasized with a substantially larger amount font.
+- Water Reading History no longer displays the Status column on the printed SOA.
+- Removed horizontal scrolling/sliding behavior from the Water Reading History print area.
+- Existing no-print controls remain hidden during printing.

@@ -280,6 +280,8 @@ Legend for roles: **SA** super_admin · **A** admin · **M** manager · **S** st
 | Permissions | SA, A |
 | Relationships | Billing (water charge, paid water left out of the SOA total), Reports (water collections), Dashboard (pending readings) |
 
+The current Water Readings screen also supports a checked, atomic Excel bulk upload for individual-unit and shared commercial readings. It creates missing readings only; existing readings are not overwritten. The workbook template is available from **Water Readings → Bulk upload**. Each reading records its covered `reading_from` and `reading_to` dates (for example, September 16 to October 15); the same range is shown on the SOA and its PDF. Existing single-date imports remain supported.
+
 - [ ] `GET/POST /api/water`, `GET /api/water/previous`, `POST /api/water/<id>/payments`, `PATCH /api/water/<id>`
 - [ ] Syncing to the bill happens in the same transaction
 - [ ] One reading per unit per month: an upsert (`first()` then update), with **no database constraint** (see §5)

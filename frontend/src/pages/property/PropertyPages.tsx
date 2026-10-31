@@ -195,7 +195,8 @@ export function ReportsPage({ variant, children }: { variant: "property" | "fina
               <SummaryRows rows={[["Owed by units", data.receivables.total]]} />
               <dl className="divide-y divide-ink-100 border-t border-ink-100 text-[13.5px]">
                 {([["Units with a balance", data.receivables.units], ["…of which overdue", data.receivables.overdueUnits], ["Residential units", data.property.residentialUnits],
-                  ["Occupied / vacant", `${data.property.occupied} / ${data.property.vacant}`], ["Current tenants", data.property.currentTenants], ["Units with parking", data.property.withParking]] as [string, string | number][]).map(([k, v]) => (
+                  ["Occupied / vacant", `${data.property.occupied} / ${data.property.vacant}`], ["Current tenants", data.property.currentTenants], ["Units with parking", data.property.withParking],
+                  ["Commercial units", data.property.commercialUnits], ["Commercial occupied / vacant", `${data.property.commercialOccupied} / ${data.property.commercialVacant}`]] as [string, string | number][]).map(([k, v]) => (
                   <div key={k} className="flex justify-between gap-3 px-5 py-2"><dt className="text-ink-500">{k}</dt><dd className="font-semibold text-ink-900 tabular">{v}</dd></div>
                 ))}
               </dl>

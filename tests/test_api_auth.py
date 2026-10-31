@@ -21,6 +21,14 @@ def test_login_requires_csrf_token(app_module):
     assert "CSRF" in resp.get_json()["error"]["message"]
 
 
+def test_security_headers_restrict_cross_origin_resource_embedding(app_module):
+    response = app_module.app.test_client().get("/api/auth/csrf")
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
+    assert response.headers["X-Frame-Options"] == "SAMEORIGIN"
+    assert response.headers["Cross-Origin-Resource-Policy"] == "same-origin"
+    assert response.headers["X-Permitted-Cross-Domain-Policies"] == "none"
+
+
 def test_wrong_password_is_rejected(app_module):
     resp = api_login(app_module.app.test_client(), "superadmin", "wrong")
     assert resp.status_code == 401
@@ -92,6 +100,74 @@ def test_login_and_logout_are_audited_like_legacy(app_module):
     with app_module.app.app_context():
         rows = app_module.AuditLog.query.filter_by(username="test_accounting").order_by(app_module.AuditLog.id.desc()).limit(2).all()
         assert [r.action for r in rows] == ["Logout", "Login"]
+
+
+def test_resident_can_change_username_and_other_sessions_end(app_module):
+    first = app_module.app.test_client()
+    second = app_module.app.test_client()
+    assert api_login(first, "test_resident", PASSWORD).status_code == 200
+    assert api_login(second, "test_resident", PASSWORD).status_code == 200
+    token = csrf(first)
+
+    try:
+        response = first.post("/api/auth/username", json={
+            "currentPassword": PASSWORD, "newUsername": "resident.new",
+        }, headers={"X-CSRFToken": token})
+
+        assert response.status_code == 200
+        assert response.get_json()["user"]["username"] == "resident.new"
+        assert first.get("/api/auth/me").get_json()["user"]["username"] == "resident.new"
+        assert second.get("/api/auth/me").status_code == 401
+        with app_module.app.app_context():
+            user = app_module.User.query.filter_by(username="resident.new").one()
+            assert user.role == "resident"
+            row = app_module.AuditLog.query.filter_by(username="resident.new", action="Changed resident username").one()
+            assert '"before": "test_resident"' in row.details
+            assert '"after": "resident.new"' in row.details
+    finally:
+        with app_module.app.app_context():
+            user = app_module.User.query.filter_by(username="resident.new").first()
+            if user:
+                user.username = "test_resident"
+                app_module.db.session.commit()
+
+
+@pytest.mark.parametrize("new_username", ["ab", "bad name", "bad/name", "x" * 81])
+def test_resident_username_change_rejects_invalid_names(app_module, new_username):
+    client = app_module.app.test_client()
+    api_login(client, "test_resident", PASSWORD)
+    response = client.post("/api/auth/username", json={
+        "currentPassword": PASSWORD, "newUsername": new_username,
+    }, headers={"X-CSRFToken": csrf(client)})
+    assert response.status_code == 400
+    assert "3–80" in response.get_json()["error"]["message"]
+
+
+def test_resident_username_change_rejects_taken_name_and_wrong_password(app_module):
+    client = app_module.app.test_client()
+    api_login(client, "test_resident", PASSWORD)
+    headers = {"X-CSRFToken": csrf(client)}
+
+    wrong_password = client.post("/api/auth/username", json={
+        "currentPassword": "wrong", "newUsername": "resident.new",
+    }, headers=headers)
+    assert wrong_password.status_code == 400
+    assert "Current password" in wrong_password.get_json()["error"]["message"]
+
+    taken = client.post("/api/auth/username", json={
+        "currentPassword": PASSWORD, "newUsername": "test_staff",
+    }, headers=headers)
+    assert taken.status_code == 409
+    assert "already taken" in taken.get_json()["error"]["message"]
+
+
+def test_nonresident_cannot_use_resident_username_change(app_module):
+    client = app_module.app.test_client()
+    api_login(client, "test_staff", PASSWORD)
+    response = client.post("/api/auth/username", json={
+        "currentPassword": PASSWORD, "newUsername": "staff.new",
+    }, headers={"X-CSRFToken": csrf(client)})
+    assert response.status_code == 403
 
 
 def test_me_requires_login_and_unknown_api_is_json_404(app_module):

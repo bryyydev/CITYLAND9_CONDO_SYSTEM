@@ -1,0 +1,10 @@
+CITYLAND 9 CONDO SYSTEM 2026
+V10.61 – Reference UI Shell Update
+
+- Updated authenticated UI shell to closely match the supplied reference screenshot.
+- Light blue/gray left navigation with fixed sidebar.
+- White top header with corporation/address identity and rounded user/action controls.
+- Updated brand treatment, navigation typography, active states, spacing and cards.
+- Changed Employee section label to EMPLOYEE MANAGEMENT.
+- Removed the WORKSPACE label above Dashboard for closer reference alignment.
+- No database, billing, payroll, calculation, or route logic changes.

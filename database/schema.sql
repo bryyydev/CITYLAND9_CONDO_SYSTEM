@@ -6,7 +6,7 @@
 --   CREATE DATABASE cityland9 CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
 --   mysql -u <user> -p cityland9 < database/schema.sql
 --
--- Tables: 35 (ordered so foreign-key targets are created first)
+-- Tables: 38 (ordered so foreign-key targets are created first)
 
 SET NAMES utf8mb4;
 
@@ -36,6 +36,26 @@ CREATE TABLE audit_log (
 	PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 CREATE INDEX ix_audit_log_entity ON audit_log (entity_type, entity_id);
+
+-- commercial_water_reading
+CREATE TABLE commercial_water_reading (
+	id INTEGER NOT NULL AUTO_INCREMENT, 
+	commercial_type VARCHAR(8) NOT NULL, 
+	reading_month VARCHAR(7) NOT NULL, 
+	previous_reading DOUBLE, 
+	current_reading DOUBLE, 
+	rate DOUBLE, 
+	reading_date DATE, 
+	reading_period_start DATE, 
+	reading_period_end DATE, 
+	updated_at DATETIME(6), 
+	updated_by VARCHAR(80), 
+	PRIMARY KEY (id), 
+	CONSTRAINT uq_commercial_water_type_month UNIQUE (commercial_type, reading_month), 
+	CONSTRAINT ck_commercial_water_month_format CHECK (reading_month LIKE '____-__' AND SUBSTRING(reading_month, 1, 4) BETWEEN '1900' AND '2999' AND SUBSTRING(reading_month, 6, 2) BETWEEN '01' AND '12'), 
+	CONSTRAINT ck_commercial_water_type CHECK (commercial_type IN ('2F', 'UG', 'LG'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE INDEX ix_commercial_water_month ON commercial_water_reading (reading_month);
 
 -- employee
 CREATE TABLE employee (
@@ -135,6 +155,11 @@ CREATE TABLE unit (
 	dues_mode VARCHAR(20), 
 	manual_monthly_dues NUMERIC(12, 2), 
 	occupancy_type VARCHAR(20), 
+	condo_charge_payer VARCHAR(10) NOT NULL DEFAULT 'Owner', 
+	water_charge_payer VARCHAR(10) NOT NULL DEFAULT 'Owner', 
+	parking_charge_payer VARCHAR(10) NOT NULL DEFAULT 'Owner', 
+	storage_charge_payer VARCHAR(10) NOT NULL DEFAULT 'Owner', 
+	other_charge_payer VARCHAR(10) NOT NULL DEFAULT 'Owner', 
 	status VARCHAR(30), 
 	active BOOL, 
 	updated_at DATETIME(6), 
@@ -188,13 +213,14 @@ CREATE TABLE advance_payment (
 	coverage_months INTEGER, 
 	monthly_amount NUMERIC(12, 2), 
 	payment_method VARCHAR(20), 
+	payer_type VARCHAR(10), 
 	reference VARCHAR(100), 
 	remarks VARCHAR(300), 
 	reversed_at DATETIME(6), 
 	updated_at DATETIME(6), 
 	updated_by VARCHAR(80), 
 	PRIMARY KEY (id), 
-	CONSTRAINT ck_advance_payment_month_format CHECK (start_month LIKE '____-__' AND SUBSTR(start_month, 1, 4) BETWEEN '1900' AND '2999' AND SUBSTR(start_month, 6, 2) BETWEEN '01' AND '12'), 
+	CONSTRAINT ck_advance_payment_month_format CHECK (start_month LIKE '____-__' AND SUBSTRING(start_month, 1, 4) BETWEEN '1900' AND '2999' AND SUBSTRING(start_month, 6, 2) BETWEEN '01' AND '12'), 
 	CONSTRAINT ck_advance_payment_amount_nonneg CHECK (amount >= 0), 
 	CONSTRAINT ck_advance_payment_coverage_min CHECK (coverage_months >= 1), 
 	FOREIGN KEY(unit_id) REFERENCES unit (id)
@@ -209,6 +235,7 @@ CREATE TABLE billing (
 	parking_dues NUMERIC(12, 2), 
 	storage_dues NUMERIC(12, 2), 
 	water NUMERIC(12, 2), 
+	water_reading_month VARCHAR(7), 
 	other NUMERIC(12, 2), 
 	penalty NUMERIC(12, 2), 
 	adjustment NUMERIC(12, 2), 
@@ -219,6 +246,11 @@ CREATE TABLE billing (
 	paid_date DATE, 
 	soa_note VARCHAR(1000), 
 	soa_manual_override BOOL, 
+	condo_charge_payer VARCHAR(10), 
+	water_charge_payer VARCHAR(10), 
+	parking_charge_payer VARCHAR(10), 
+	storage_charge_payer VARCHAR(10), 
+	other_charge_payer VARCHAR(10), 
 	created_at DATETIME(6), 
 	issued_at DATETIME(6), 
 	issued_amount NUMERIC(12, 2), 
@@ -239,7 +271,7 @@ CREATE TABLE billing (
 	updated_by VARCHAR(80), 
 	PRIMARY KEY (id), 
 	CONSTRAINT uq_billing_unit_month UNIQUE (unit_id, billing_month), 
-	CONSTRAINT ck_billing_month_format CHECK (billing_month LIKE '____-__' AND SUBSTR(billing_month, 1, 4) BETWEEN '1900' AND '2999' AND SUBSTR(billing_month, 6, 2) BETWEEN '01' AND '12'), 
+	CONSTRAINT ck_billing_month_format CHECK (billing_month LIKE '____-__' AND SUBSTRING(billing_month, 1, 4) BETWEEN '1900' AND '2999' AND SUBSTRING(billing_month, 6, 2) BETWEEN '01' AND '12'), 
 	CONSTRAINT ck_billing_amount_paid_nonneg CHECK (amount_paid >= 0), 
 	CONSTRAINT ck_billing_previous_balance_nonneg CHECK (previous_balance >= 0), 
 	FOREIGN KEY(unit_id) REFERENCES unit (id)
@@ -434,6 +466,20 @@ CREATE TABLE owner (
 	FOREIGN KEY(unit_id) REFERENCES unit (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
+-- party_opening_balance
+CREATE TABLE party_opening_balance (
+	id INTEGER NOT NULL AUTO_INCREMENT, 
+	unit_id INTEGER NOT NULL, 
+	payer_type VARCHAR(10) NOT NULL, 
+	as_of_month VARCHAR(7) NOT NULL, 
+	amount NUMERIC(12, 2) NOT NULL, 
+	PRIMARY KEY (id), 
+	CONSTRAINT uq_party_opening_balance UNIQUE (unit_id, payer_type, as_of_month), 
+	CONSTRAINT ck_party_opening_balance_payer CHECK (payer_type IN ('Owner', 'Tenant')), 
+	FOREIGN KEY(unit_id) REFERENCES unit (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE INDEX ix_party_opening_balance_unit_id ON party_opening_balance (unit_id);
+
 -- receipt
 CREATE TABLE receipt (
 	id INTEGER NOT NULL AUTO_INCREMENT, 
@@ -530,6 +576,9 @@ CREATE TABLE water_reading (
 	current_reading DOUBLE, 
 	rate DOUBLE, 
 	reading_date DATE, 
+	reading_period_start DATE, 
+	reading_period_end DATE, 
+	charge_payer VARCHAR(10), 
 	paid BOOL, 
 	paid_amount NUMERIC(12, 2), 
 	payment_method VARCHAR(20), 
@@ -540,7 +589,7 @@ CREATE TABLE water_reading (
 	updated_by VARCHAR(80), 
 	PRIMARY KEY (id), 
 	CONSTRAINT uq_water_unit_month UNIQUE (unit_id, reading_month), 
-	CONSTRAINT ck_water_month_format CHECK (reading_month LIKE '____-__' AND SUBSTR(reading_month, 1, 4) BETWEEN '1900' AND '2999' AND SUBSTR(reading_month, 6, 2) BETWEEN '01' AND '12'), 
+	CONSTRAINT ck_water_month_format CHECK (reading_month LIKE '____-__' AND SUBSTRING(reading_month, 1, 4) BETWEEN '1900' AND '2999' AND SUBSTRING(reading_month, 6, 2) BETWEEN '01' AND '12'), 
 	FOREIGN KEY(unit_id) REFERENCES unit (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 CREATE INDEX ix_water_month ON water_reading (reading_month);
@@ -556,13 +605,29 @@ CREATE TABLE advance_application (
 	applied_date DATE, 
 	PRIMARY KEY (id), 
 	CONSTRAINT uq_advance_application_advance_billing UNIQUE (advance_payment_id, billing_id), 
-	CONSTRAINT ck_advance_application_month_format CHECK (billing_month LIKE '____-__' AND SUBSTR(billing_month, 1, 4) BETWEEN '1900' AND '2999' AND SUBSTR(billing_month, 6, 2) BETWEEN '01' AND '12'), 
+	CONSTRAINT ck_advance_application_month_format CHECK (billing_month LIKE '____-__' AND SUBSTRING(billing_month, 1, 4) BETWEEN '1900' AND '2999' AND SUBSTRING(billing_month, 6, 2) BETWEEN '01' AND '12'), 
 	CONSTRAINT ck_advance_application_amount_nonneg CHECK (amount >= 0), 
 	FOREIGN KEY(advance_payment_id) REFERENCES advance_payment (id), 
 	FOREIGN KEY(billing_id) REFERENCES billing (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 CREATE INDEX ix_advance_application_advance ON advance_application (advance_payment_id);
 CREATE INDEX ix_advance_application_billing ON advance_application (billing_id);
+
+-- billing_extra_charge
+CREATE TABLE billing_extra_charge (
+	id INTEGER NOT NULL AUTO_INCREMENT, 
+	billing_id INTEGER NOT NULL, 
+	description VARCHAR(100) NOT NULL, 
+	amount NUMERIC(12, 2) NOT NULL, 
+	payer_type VARCHAR(10) NOT NULL, 
+	updated_at DATETIME(6), 
+	updated_by VARCHAR(80), 
+	PRIMARY KEY (id), 
+	CONSTRAINT ck_billing_extra_charge_payer CHECK (payer_type IN ('Owner', 'Tenant')), 
+	CONSTRAINT ck_billing_extra_charge_amount_nonneg CHECK (amount >= 0), 
+	FOREIGN KEY(billing_id) REFERENCES billing (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+CREATE INDEX ix_billing_extra_charge_billing_id ON billing_extra_charge (billing_id);
 
 -- employee_payroll_statutory
 CREATE TABLE employee_payroll_statutory (
@@ -639,6 +704,7 @@ CREATE TABLE payment (
 	payment_date DATE, 
 	payment_method VARCHAR(20), 
 	payment_type VARCHAR(20), 
+	payer_type VARCHAR(10), 
 	reference VARCHAR(100), 
 	remarks VARCHAR(300), 
 	reversed_at DATETIME(6), 
@@ -655,6 +721,7 @@ CREATE TABLE receipt_allocation (
 	id INTEGER NOT NULL AUTO_INCREMENT, 
 	receipt_id INTEGER NOT NULL, 
 	kind VARCHAR(10) NOT NULL, 
+	payer_type VARCHAR(10), 
 	payment_id INTEGER, 
 	water_reading_id INTEGER, 
 	advance_payment_id INTEGER, 

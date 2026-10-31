@@ -224,7 +224,7 @@ APP_ENV=production
 # Generate:  .venv\Scripts\python.exe -c "import secrets; print(secrets.token_hex(32))"
 SECRET_KEY=<paste-a-new-64-character-random-value>
 
-# 127.0.0.1 = only this PC can open CityLand. Use 0.0.0.0 only if testers on other PCs must reach it.
+# Keep this bound to loopback. LAN access requires the HTTPS proxy; direct HTTP is refused.
 FLASK_HOST=127.0.0.1
 FLASK_PORT=5000
 
@@ -329,8 +329,9 @@ Close that program, or set `FLASK_PORT=5001` in `.env` and open `http://127.0.0.
 running `local_mysql.py init`. After init, the port is also written in `database\mysql-data\my.ini`;
 change both, then restart.
 
-**Other PCs can't connect** (only if `FLASK_HOST=0.0.0.0`): allow `python.exe` in Windows Defender
-Firewall for **Private** networks, and use `http://<test-PC-IP>:5000`.
+**Other PCs can't connect:** CityLand does not allow direct HTTP access from the LAN. Configure the
+HTTPS reverse proxy and firewall as described in [docs/run-guide/06-SECURITY.md](docs/run-guide/06-SECURITY.md)
+before allowing another PC to use the test installation.
 
 **Prove the test PC uses its own database:** `check-target` must show PASS for *database server is this
 computer*, *database files are this installation's* and *MariaDB listens on this PC only*; with

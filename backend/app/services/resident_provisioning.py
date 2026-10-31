@@ -15,11 +15,12 @@ The activation code IS the existing temporary-password mechanism (no second mech
     and ends the account's sessions
   * the chosen password replaces the code in one transaction (POST /api/auth/password)
 
-Identity: one account per person. Owner/tenant records belong to one unit each, so there is no
-stable cross-unit person id; the system never merges people by itself. When another account looks
-like the same person (same name, email or phone), provisioning stops and lists those accounts for
-the administrator, who either confirms the person is verified to be the same (the unit is ADDED to
-that account) or confirms a separate account.
+Identity: each account belongs to either an owner or a tenant, never both, so each login sees the
+matching party's SOA. Owner/tenant records belong to one unit each, so there is no stable
+cross-unit person id; the system never merges people by itself. When another account of the same
+party type looks like the same person (same name, email or phone), provisioning stops and lists
+those accounts for the administrator, who either confirms the person is verified to be the same
+(the unit is ADDED to that account) or confirms a separate account.
 
 Eligibility (unchanged rules): a CURRENT owner/tenant of an active residential unit (not a parking
 or storage unit); one active portal account per owner/tenant record (enforced by a UNIQUE key).
@@ -108,11 +109,15 @@ def possible_matches(legacy, person_type, person):
     name, email, phone = _norm_name(person_name(person)), (person.email or "").strip().lower(), _digits(person.contact_no)
     out = {}
     for link in legacy.ResidentUnitLink.query.filter_by(active=True).all():
+        if link.person_type != person_type:
+            continue
         if link.person_type == person_type and link.person_id == person.id:
             continue
         other = legacy.db.session.get(person_model(legacy, link.person_type), link.person_id) if link.person_id else None
         user = link.user
         if not other or not user or not user.active:
+            continue
+        if any(active.person_type != person_type for active in legacy.resident_links(user)):
             continue
         reasons = []
         if name and _norm_name(person_name(other)) == name:
@@ -154,6 +159,8 @@ def _eligible_person(legacy, person_type, person_id, lock=False):
         raise ProvisionError(409, "Parking and storage units don't get their own portal access; residents see them through their residential unit.", "personId")
     if person.status != "Current":
         raise ProvisionError(409, f"{person_name(person)} is not a current {person_type.lower()} of unit {unit.unit_no}.", "personId")
+    if person_type == "Tenant" and not person.representative:
+        raise ProvisionError(409, "Only the representative tenant can have a resident portal account.", "personId")
     return person, unit
 
 
@@ -215,6 +222,8 @@ def provision(legacy, *, person_type, person_id, mode, link_user_id, actor, form
                 raise ProvisionError(404, "Resident account not found.", "linkUserId")
             if not target.active or not target.resident_profile.active:
                 raise ProvisionError(409, "That account is disabled. Reactivate it first.", "linkUserId")
+            if any(link.person_type != person_type for link in legacy.resident_links(target)):
+                raise ProvisionError(409, "Owner and tenant records must use separate portal accounts.", "linkUserId")
             if any(l.unit_id == unit.id for l in legacy.resident_links(target)):
                 raise ProvisionError(409, f"{target.username} already has access to unit {unit.unit_no}.", "linkUserId")
             db.session.add(Link(user_id=target.id, unit_id=unit.id, person_type=person_type, person_id=person.id,

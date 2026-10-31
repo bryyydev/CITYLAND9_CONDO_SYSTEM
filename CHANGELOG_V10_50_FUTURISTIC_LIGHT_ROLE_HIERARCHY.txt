@@ -1,0 +1,14 @@
+CITYLAND 9 SYSTEM V10.50
+
+- Added enhanced Cityland 9 building photo as login background.
+- Added light futuristic eye-comfort theme with readable text and muted blue/teal accents.
+- Preserved existing Appearance/theme selector.
+- Updated role hierarchy and sidebar group visibility:
+  * Superadmin: all modules.
+  * Admin: all modules except Users & Access.
+  * Manager: Employees & Payroll only.
+  * Staff: Operations + limited Employees & Payroll + Administration.
+  * Accounting: Administration only.
+- Hidden inaccessible navigation groups/items.
+- Secured direct routes to match the same role policy.
+- Login redirects each role to its first permitted workspace instead of a hidden Dashboard.

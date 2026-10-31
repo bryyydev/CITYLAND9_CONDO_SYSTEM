@@ -21,6 +21,8 @@ export default function SettingsPage() {
   const [importError, setImportError] = useState("");
   const [check, setCheck] = useState<CheckReport | null>(null);
   const [checkError, setCheckError] = useState("");
+  const [backupError, setBackupError] = useState("");
+  const [backupMessage, setBackupMessage] = useState("");
   const [params, setParams] = useSearchParams();
   const movedForm = params.get("moved") === "form";
   const input = useRef<HTMLInputElement>(null);
@@ -46,6 +48,23 @@ export default function SettingsPage() {
       setTimeout(() => document.getElementById("import-check-report")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
     } catch (err) {
       setCheckError((err as Error).message);
+    }
+  }
+
+  async function runBackup() {
+    if (busy || !data?.backup.manualAllowed) return;
+    setBackupError(""); setBackupMessage("");
+    if (IS_MOCK) {
+      toast({ tone: "info", title: "Backup preview", message: "Prototype mode does not create a backup file." });
+      return;
+    }
+    try {
+      const backup = await act(() => api.admin.backupDatabase());
+      setBackupMessage(`${backup.message} Saved as ${backup.file}.`);
+      toast({ tone: "success", title: "Backup completed", message: backup.file });
+      reload();
+    } catch (err) {
+      setBackupError((err as Error).message);
     }
   }
 
@@ -78,29 +97,49 @@ export default function SettingsPage() {
         </div>
       )}
 
-      <div className="grid gap-6 lg:grid-cols-3">
-        <Card><CardHeader title="Backup" actions={<Badge tone={b.ok ? "ok" : "warn"}>{b.ok ? "Up to date" : "Needs attention"}</Badge>} />
-          <div className="space-y-3 p-5 text-[13.5px] text-ink-600">
-            <p>{b.ageHours !== null
-              ? <>Last scheduled backup: <b className="text-ink-900">{b.status === "ok" ? "succeeded" : b.status ?? "unknown"}</b>, {b.ageHours < 1 ? "less than an hour" : `${b.ageHours} hours`} ago.</>
-              : <>No scheduled backup has been recorded yet.</>}</p>
-            {!b.ok && <Notice tone="warn">{b.ageHours !== null && b.detail ? `${b.detail}. ` : ""}Backups should run at least every {b.maxAgeHours} hours. Set up the daily backup task: docs\run-guide\07-OPERATIONS.md.</Notice>}
-            <p>Backups are written to <code className="rounded bg-ink-100 px-1">database/backups/</code> on the server PC: by the daily scheduled task (if it is set up, see the operations guide) and automatically before every import and schema upgrade.</p>
-            <p>To make one now, run <code className="rounded bg-ink-100 px-1">.venv\Scripts\python.exe database\backup.py</code> on the server.</p>
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Card><CardHeader title="Backup" subtitle="Create a recoverable copy of the current database."
+          actions={<Badge tone={b.ok ? "ok" : "warn"}>{b.ok ? "Up to date" : "Needs attention"}</Badge>} />
+          <div className="space-y-4 p-5 text-[13.5px] text-ink-600">
+            <div className="flex items-start gap-3">
+              <Icon name="database-2-line" className="mt-0.5 text-xl text-brand-600" />
+              <p>{b.ageHours !== null
+                ? <>Last backup: <b className="text-ink-900">{b.status === "ok" ? "succeeded" : b.status ?? "unknown"}</b>, {b.ageHours < 1 ? "less than an hour" : `${b.ageHours} hours`} ago.</>
+                : <>No backup has been recorded yet.</>}</p>
+            </div>
+            {!b.ok && <Notice tone="warn">{b.ageHours !== null && b.detail ? `${b.detail}. ` : ""}Backups should run at least every {b.maxAgeHours} hours. Set up the daily backup task using docs\run-guide\07-OPERATIONS.md.</Notice>}
+            {backupError && <div role="alert"><Notice tone="warn" title="Backup failed">{backupError}</Notice></div>}
+            {backupMessage && <div role="status"><Notice title="Backup ready">{backupMessage}</Notice></div>}
+            <div className="flex flex-wrap items-center gap-3">
+              <Button icon="save-3-line" loading={busy} disabled={!b.manualAllowed} onClick={runBackup}>Back up now</Button>
+              {!b.manualAllowed && <span className="text-[12px] text-ink-500">A manual backup isn't available for this database configuration.</span>}
+            </div>
+            <p>Backup files are stored on the server in <code className="rounded bg-ink-100 px-1">database/backups/</code>. A separate backup is also attempted before every import and schema upgrade.</p>
           </div></Card>
 
-        <Card><CardHeader title="Export to Excel" />
+        <Card><CardHeader title="Export to Excel" subtitle="Download the current database data as a workbook." />
           <div className="space-y-4 p-5 text-[13.5px] text-ink-600">
-            <p>Download units, owners, tenants, billing, payments, water readings, employees and expenses as one Excel workbook, for safekeeping or reporting.</p>
+            <p>The workbook includes units, owners, tenants, billing, payments, water readings, employees and expenses.</p>
+            <Notice>For a safe edit-and-import round trip, export from this database, preserve the record IDs, make only the intended changes, and upload that workbook below. An Excel export is not a database backup.</Notice>
             {IS_MOCK
               ? <Button variant="secondary" icon="file-excel-2-line" onClick={() => toast({ tone: "info", title: "Excel export", message: "In the live system this downloads the workbook from the server." })}>Download workbook</Button>
               : <a href={legacyUrl(data.export.url)} download className="inline-flex h-10 items-center gap-2 rounded-lg border border-ink-200 bg-white px-4 font-semibold shadow-sm hover:bg-ink-50"><Icon name="file-excel-2-line" />Download workbook</a>}
           </div></Card>
 
-        <Card><CardHeader title="Import from Excel" />
+        <Card className="lg:col-span-2"><CardHeader title="Import from Excel" subtitle="Check the workbook first; the check never changes database records." />
           <div className="space-y-4 p-5 text-[13.5px] text-ink-600">
-            <Notice>Run <b>Check only</b> first: it validates the workbook and changes nothing.</Notice>
-            <Notice tone="warn"><b>Import workbook is locked</b> to CITYLAND9's own export of this database, edited and uploaded again. It is allowed only after Check only passes for the same file: no new records, no id pointing to another record, and no change to a closed month or an issued or hand-corrected bill. Blank cells keep the saved values. Data from another system can only be checked here. A database backup is taken before every import.</Notice>
+            <ol className="grid gap-3 sm:grid-cols-3">
+              <li className="rounded-lg border border-ink-200 bg-ink-50/60 p-3"><b className="block text-ink-900">1. Choose the workbook</b><span className="text-[12.5px]">Use an .xlsx or .xlsm file exported from this same database for an update.</span></li>
+              <li className="rounded-lg border border-ink-200 bg-ink-50/60 p-3"><b className="block text-ink-900">2. Check only</b><span className="text-[12.5px]">Review row-level issues and confirm the report is for the intended workbook.</span></li>
+              <li className="rounded-lg border border-ink-200 bg-ink-50/60 p-3"><b className="block text-ink-900">3. Import if allowed</b><span className="text-[12.5px]">Only a passing check unlocks import. The server backs up first and checks again.</span></li>
+            </ol>
+            <div className="flex flex-wrap items-center gap-3">
+              {IS_MOCK
+                ? <Button variant="secondary" icon="file-excel-2-line" onClick={() => toast({ tone: "info", title: "Import template", message: "The live system downloads the template with the supported CITYLAND9 sheets and columns." })}>Download import template</Button>
+                : <a href={legacyUrl(data.import.templateUrl)} download className="inline-flex h-10 items-center gap-2 rounded-lg border border-ink-200 bg-white px-4 font-semibold shadow-sm hover:bg-ink-50"><Icon name="file-excel-2-line" />Download import template</a>}
+              <span className="text-[12px] text-ink-500">The template has the system’s sheet and column layout, but contains no data. Use a fresh database export for updates.</span>
+            </div>
+            <Notice tone="warn"><b>Safety lock:</b> imports can update existing records only. New records, mismatched IDs, and changes to closed months or issued/hand-corrected bills remain blocked. Blank cells keep saved values. Workbooks from another system are check-only here; they are not imported.</Notice>
             {!data.import.allowed ? <p>Your role can't import data.</p> : (
               <>
                 <label className={cx("flex cursor-pointer flex-col items-center gap-1.5 rounded-xl border-2 border-dashed px-4 py-5 text-center transition focus-within:ring-2 focus-within:ring-brand-300",

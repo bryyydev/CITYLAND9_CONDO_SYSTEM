@@ -86,6 +86,18 @@ def test_water_never_increases_the_penalty_base(app_module, unit):
         assert "water" not in (bill(m, unit, "2025-06").penalty_basis or "")
 
 
+def test_new_bill_uses_latest_prior_water_reading_period(app_module, unit):
+    m = app_module
+    with m.app.test_request_context():
+        m.save_water_reading(unit_id=unit, month="2026-09", previous=D("100"), current=D("150"),
+                             rate=D("35"), reading_date=date(2026, 9, 30))
+        m.generate_bills("2026-10")
+        october = bill(m, unit, "2026-10")
+        assert m.money(october.water) == D("1750.00")
+        assert october.water_reading_month == "2026-09"
+        assert m._bill_calc(october)["reading"].reading_month == "2026-09"
+
+
 def test_settings_changes_do_not_alter_issued_statements(app_module, unit):
     m = app_module
     with m.app.test_request_context():

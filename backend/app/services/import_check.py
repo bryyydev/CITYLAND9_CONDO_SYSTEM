@@ -16,7 +16,7 @@ Two workbook formats are recognised:
   properties       the client's property list: one sheet (default "Properties") with an external id,
                    unit number, size (sqm), group, owner and tenant columns (import_config.json maps them)
   cityland_export  CITYLAND9's own Excel export (Units, Owners, Tenants, Billing, Payments,
-                   WaterReadings, Employees, Expenses)
+                   WaterReadings, CommercialWaterReadings, Employees, Expenses)
 
 Modes: a CITYLAND9 export layout is checked by default as a ROUND TRIP (cityland_roundtrip): an edit of
 THIS database's own export, its ids being this database's ids. The report's "importGate" says whether the
@@ -39,11 +39,12 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from ..core.numbers import InputError, parse_decimal
+from .excel_schema import normalize_import_unit_type
 
 CLEAR_MARKER = "#CLEAR"
 RANK = {"blocked": 3, "conflict": 2, "unresolved": 1, "warning": 0}
 MAX_ISSUES_LISTED = 1000
-UNIT_TYPES = ("STUDIO TYPE", "1 BEDROOM", "2 BEDROOM", "3 BEDROOM", "PARKING", "STORAGE")
+UNIT_TYPES = ("STUDIO TYPE", "1 BEDROOM", "2 BEDROOM", "3 BEDROOM", "COMMERCIAL", "DRYING AREA", "PARKING", "STORAGE")
 DUES_MODES = ("per_sqm", "manual")
 UNIT_STATUSES = ("Occupied", "Vacant")
 PERSON_STATUSES = ("Current", "Past")
@@ -426,7 +427,8 @@ class DbView:
         if roundtrip:
             # CITYLAND9's own export: its ids ARE this database's ids (identity mapping, nothing stored).
             for entity, model in (("owner", m.Owner), ("tenant", m.Tenant), ("billing", m.Billing), ("payment", m.Payment),
-                                  ("water_reading", m.WaterReading), ("employee", m.Employee), ("expense", m.Expense)):
+                                  ("water_reading", m.WaterReading), ("commercial_water_reading", m.CommercialWaterReading),
+                                  ("employee", m.Employee), ("expense", m.Expense)):
                 self.by_id[entity] = {r.id: r for r in model.query.all()}
             for entity, records in self.by_id.items():
                 for rid in records:
@@ -441,7 +443,8 @@ class DbView:
                     self.crosswalk[(x.entity_type, x.external_id)] = x.target_id
                     self.crosswalk_rev[(x.entity_type, x.target_id)] = x.external_id
                 for entity, model in (("owner", m.Owner), ("tenant", m.Tenant), ("billing", m.Billing), ("payment", m.Payment),
-                                      ("water_reading", m.WaterReading), ("employee", m.Employee), ("expense", m.Expense)):
+                                      ("water_reading", m.WaterReading), ("commercial_water_reading", m.CommercialWaterReading),
+                                      ("employee", m.Employee), ("expense", m.Expense)):
                     ids = {t for (e, _), t in self.crosswalk.items() if e == entity}
                     if ids:
                         self.by_id[entity] = {r.id: r for r in model.query.filter(model.id.in_(ids)).all()}
@@ -668,7 +671,8 @@ def check_properties(sheets, config, db, report):
 
 
 # ------------------------------------------------------------------ format: CITYLAND9 export
-EXPORT_SHEETS = ("Units", "Owners", "Tenants", "Billing", "Payments", "WaterReadings", "Employees", "Expenses")
+EXPORT_SHEETS = ("Units", "Owners", "Tenants", "Billing", "Payments", "WaterReadings",
+                 "CommercialWaterReadings", "Employees", "Expenses")
 BILL_CHARGES = ("assessment", "parking_dues", "storage_dues", "water", "other", "penalty", "adjustment")
 CENT = Decimal("0.01")
 
@@ -789,12 +793,13 @@ def check_export(sheets, config, db, report):
             report.add(sheet, n, col, "BOOLEAN_INVALID", "blocked")
         return value
 
-    def a_month(sheet, n, col, idx, values):
+    def a_month(sheet, n, col, idx, values, required=True):
         raw = get(idx, values, col)
         st = state_of(raw, has(idx, col))
         report.count_state(sheet, col, st)
         if st in ("missing_column", "blank", "clear"):
-            report.add(sheet, n, col, "REQUIRED_VALUE_MISSING", "blocked")
+            if required:
+                report.add(sheet, n, col, "REQUIRED_VALUE_MISSING", "blocked")
             return None
         month = parse_month(raw)
         if month is None:
@@ -882,14 +887,24 @@ def check_export(sheets, config, db, report):
                 if area is None or area <= 0:
                     report.add("Units", n, "area_sqm", "AREA_REQUIRED" if area is None else "AREA_ZERO", "blocked"); ok = False
         cur = target if action in ("update",) else None
-        utype = choice("Units", n, "unit_type", idx, values, UNIT_TYPES, "UNIT_TYPE_INVALID", current=getattr(cur, "unit_type", None))
+        utype = choice("Units", n, "unit_type", idx, values, UNIT_TYPES + ("RESIDENTIAL",),
+                       "UNIT_TYPE_INVALID", current=getattr(cur, "unit_type", None))
+        if utype is not None:
+            utype = normalize_import_unit_type(utype, getattr(cur, "unit_type", None))
         dues = choice("Units", n, "dues_mode", idx, values, DUES_MODES, "DUES_MODE_INVALID", current=getattr(cur, "dues_mode", None))
         status = choice("Units", n, "status", idx, values, UNIT_STATUSES, "STATUS_INVALID", current=getattr(cur, "status", None))
         floor = text_field("Units", n, "floor", idx, values, 20)
         occupancy = text_field("Units", n, "occupancy_type", idx, values, 20)
         rate = number("Units", n, "unit_rate_per_sqm", idx, values)
         mdues = number("Units", n, "manual_monthly_dues", idx, values)
-        flags = {col: a_bool("Units", n, col, idx, values) for col in ("include_parking", "include_storage", "active")}
+        flags = {col: a_bool("Units", n, col, idx, values) for col in
+                 ("auto_rate", "include_parking", "include_storage", "active")}
+        charge_payers = {
+            col: choice("Units", n, col, idx, values, ("Owner", "Tenant"), "CHARGE_PAYER_INVALID",
+                        current=getattr(cur, col, None))
+            for col in ("condo_charge_payer", "water_charge_payer", "parking_charge_payer",
+                        "storage_charge_payer", "other_charge_payer")
+        }
         if cur is not None:
             refs = {col: external_id_text(get(idx, values, col)) for col in ("assigned_parking_unit_id", "assigned_storage_unit_id")}
             unit_changed = any([
@@ -898,6 +913,7 @@ def check_export(sheets, config, db, report):
                 differs(area, _dec(cur.area_sqm)), differs(rate, _dec(cur.unit_rate_per_sqm)),
                 differs(mdues, _dec(cur.manual_monthly_dues))]
                 + [differs(v, bool(getattr(cur, col))) for col, v in flags.items()]
+                + [differs(v, getattr(cur, col)) for col, v in charge_payers.items()]
                 + [refs[col] is not None and refs[col] != str(getattr(cur, col) or "") for col in refs])
             if not unit_changed and action == "update":
                 action = "unchanged"
@@ -964,6 +980,8 @@ def check_export(sheets, config, db, report):
             a_date(sheet, n, "move_out", idx, values)
             pstatus = choice(sheet, n, "status", idx, values, PERSON_STATUSES, "STATUS_INVALID", current=getattr(rec, "status", None))
             representative = a_bool(sheet, n, "representative", idx, values) if kind == "tenant" else None
+            receive_soa_email = a_bool(sheet, n, "receive_soa_email", idx, values)
+            include_in_soa = a_bool(sheet, n, "include_in_soa", idx, values)
             person_changed = rec is None or any([
                 differs(name, getattr(rec, name_col)), differs(pstatus, rec.status),
                 differs(external_text(get(idx, values, "contact_no")), rec.contact_no),
@@ -971,7 +989,9 @@ def check_export(sheets, config, db, report):
                 differs(external_text(get(idx, values, "notes")), rec.notes),
                 differs(parse_date(get(idx, values, "move_in")) if state_of(get(idx, values, "move_in"), has(idx, "move_in")) == "value" else None, rec.move_in),
                 differs(parse_date(get(idx, values, "move_out")) if state_of(get(idx, values, "move_out"), has(idx, "move_out")) == "value" else None, rec.move_out),
-                differs(representative, bool(getattr(rec, "representative", False)) if kind == "tenant" else None)])
+                differs(representative, bool(getattr(rec, "representative", False)) if kind == "tenant" else None),
+                differs(receive_soa_email, bool(getattr(rec, "receive_soa_email", False))),
+                differs(include_in_soa, bool(getattr(rec, "include_in_soa", True)))])
             unchanged_name = rec is not None and name is not None and norm_name(name) == norm_name(getattr(rec, name_col) or "")
             if name and MULTI_PERSON.search(name) and not unchanged_name:
                 report.add(sheet, n, name_col, "PERSON_MULTIPLE_NAMES", "unresolved")
@@ -1002,14 +1022,27 @@ def check_export(sheets, config, db, report):
             report.add("WaterReadings", n, "current_reading", "READING_DECREASES", "blocked")
         rate = number("WaterReadings", n, "rate", idx, values)
         rdate = a_date("WaterReadings", n, "reading_date", idx, values)
+        period_start = a_date("WaterReadings", n, "reading_period_start", idx, values)
+        period_end = a_date("WaterReadings", n, "reading_period_end", idx, values)
         pdate = a_date("WaterReadings", n, "paid_date", idx, values)
         paid = a_bool("WaterReadings", n, "paid", idx, values)
+        paid_amount = number("WaterReadings", n, "paid_amount", idx, values)
+        payment_method = choice("WaterReadings", n, "payment_method", idx, values, PAYMENT_METHODS,
+                                "STATUS_INVALID", current=getattr(rec, "payment_method", None))
+        payment_type = choice("WaterReadings", n, "payment_type", idx, values, ("FULL", "PARTIAL"),
+                              "STATUS_INVALID", current=getattr(rec, "payment_type", None))
+        payment_reference = text_field("WaterReadings", n, "payment_reference", idx, values, 100)
         changed = rec is None
         if rec is not None:
             changed = any([
                 differs(prev, _dec(rec.previous_reading)), differs(cur, _dec(rec.current_reading)),
-                differs(rate, _dec(rec.rate)), differs(rdate, rec.reading_date), differs(pdate, rec.paid_date),
-                differs(paid, bool(rec.paid))])
+                differs(rate, _dec(rec.rate)), differs(rdate, rec.reading_date),
+                differs(period_start, rec.reading_period_start), differs(period_end, rec.reading_period_end),
+                differs(pdate, rec.paid_date),
+                differs(paid, bool(rec.paid)), differs(paid_amount, _dec(getattr(rec, "paid_amount", 0))),
+                differs(payment_method, getattr(rec, "payment_method", None)),
+                differs(payment_type, getattr(rec, "payment_type", None)),
+                differs(payment_reference, getattr(rec, "payment_reference", None))])
         if month and closed(month) and changed:
             report.add("WaterReadings", n, "reading_month", "PERIOD_CLOSED", "blocked")
         if ref and month:
@@ -1028,6 +1061,64 @@ def check_export(sheets, config, db, report):
     for n, _ in rows:
         if report.row_status("WaterReadings", n) == "valid" and source_ok and n in proposal:
             report.propose("water_reading", proposal[n])
+
+    # ---------- Shared commercial water readings
+    idx, rows = table("CommercialWaterReadings")
+    dup = check_ext_column(idx, rows)
+    seen = {}
+    for n, values in rows:
+        report.see("CommercialWaterReadings", n)
+        ext = ext_of(idx, values)
+        if ext is None:
+            report.add("CommercialWaterReadings", n, "id", "EXTERNAL_ID_MISSING", "blocked")
+        elif n in dup:
+            report.add("CommercialWaterReadings", n, "id", "EXTERNAL_ID_DUPLICATE", "blocked")
+        rec = existing("CommercialWaterReadings", n, "commercial_water_reading", ext)
+        commercial_type = choice("CommercialWaterReadings", n, "commercial_type", idx, values,
+                                 ("2F", "UG", "LG"), "COMMERCIAL_TYPE_INVALID",
+                                 current=getattr(rec, "commercial_type", None))
+        month = a_month("CommercialWaterReadings", n, "reading_month", idx, values)
+        previous = number("CommercialWaterReadings", n, "previous_reading", idx, values)
+        current = number("CommercialWaterReadings", n, "current_reading", idx, values)
+        rate = number("CommercialWaterReadings", n, "rate", idx, values)
+        reading_date = a_date("CommercialWaterReadings", n, "reading_date", idx, values)
+        period_start = a_date("CommercialWaterReadings", n, "reading_period_start", idx, values)
+        period_end = a_date("CommercialWaterReadings", n, "reading_period_end", idx, values)
+        if previous is not None and current is not None and current < previous:
+            report.add("CommercialWaterReadings", n, "current_reading", "READING_DECREASES", "blocked")
+        changed = rec is None or any([
+            differs(commercial_type, getattr(rec, "commercial_type", None)),
+            differs(month, getattr(rec, "reading_month", None)),
+            differs(previous, _dec(getattr(rec, "previous_reading", 0))),
+            differs(current, _dec(getattr(rec, "current_reading", 0))),
+            differs(rate, _dec(getattr(rec, "rate", 0))),
+            differs(reading_date, getattr(rec, "reading_date", None)),
+            differs(period_start, getattr(rec, "reading_period_start", None)),
+            differs(period_end, getattr(rec, "reading_period_end", None)),
+        ])
+        key = (commercial_type, month)
+        if key[0] and key[1]:
+            seen.setdefault(key, []).append(n)
+        if not rt and report.row_status("CommercialWaterReadings", n) == "valid":
+            report.add("CommercialWaterReadings", n, "id", "ROUNDTRIP_ONLY", "blocked")
+        if rec is not None and (rec.commercial_type, rec.reading_month) != key:
+            report.add("CommercialWaterReadings", n, "id", "RECORD_KEY_MISMATCH", "conflict")
+        if month and closed(month) and changed:
+            report.add("CommercialWaterReadings", n, "reading_month", "PERIOD_CLOSED", "blocked")
+        if changed and rec is not None:
+            for bill in db.bills.values():
+                unit = bill.unit
+                if (getattr(bill, "water_reading_month", None) == rec.reading_month
+                        and unit is not None and unit.unit_type == "COMMERCIAL"
+                        and unit.floor == rec.commercial_type and getattr(bill, "issued_at", None) is not None):
+                    report.add("CommercialWaterReadings", n, "reading_month", "BILL_ISSUED", "blocked")
+                    break
+        if report.row_status("CommercialWaterReadings", n) == "valid" and source_ok:
+            report.propose("commercial_water_reading", "update" if changed else "unchanged")
+    for ns in seen.values():
+        if len(ns) > 1:
+            for n in ns:
+                report.add("CommercialWaterReadings", n, "reading_month", "COMMERCIAL_TYPE_MONTH_DUPLICATE", "blocked")
 
     # ---------- Billing
     idx, rows = table("Billing")
@@ -1054,10 +1145,12 @@ def check_export(sheets, config, db, report):
         due = a_date("Billing", n, "due_date", idx, values)
         paid_date = a_date("Billing", n, "paid_date", idx, values)
         status = choice("Billing", n, "status", idx, values, BILL_STATUSES, "STATUS_INVALID", current=getattr(rec, "status", None))
+        water_month = a_month("Billing", n, "water_reading_month", idx, values, required=False)
         changed = rec is None or any(
             [differs(charges[c], _dec(getattr(rec, c))) for c in BILL_CHARGES]
             + [differs(prev_bal, _dec(rec.previous_balance)), differs(paid, _dec(rec.amount_paid)),
-               differs(status, rec.status), differs(due, rec.due_date), differs(paid_date, rec.paid_date)])
+               differs(status, rec.status), differs(due, rec.due_date), differs(paid_date, rec.paid_date),
+               differs(water_month, getattr(rec, "water_reading_month", None))])
         charge_sum = sum((v for v in charges.values() if v is not None), Decimal("0"))
         billing_total += charge_sum
         unit_key = get(idx, values, "unit_id")
@@ -1114,6 +1207,8 @@ def check_export(sheets, config, db, report):
         d = a_date("Payments", n, "payment_date", pidx, values, required=(rec is None))
         method = choice("Payments", n, "payment_method", pidx, values, PAYMENT_METHODS, "STATUS_INVALID",
                         current=getattr(rec, "payment_method", None))
+        payment_type = choice("Payments", n, "payment_type", pidx, values, ("FULL", "PARTIAL"),
+                              "STATUS_INVALID", current=getattr(rec, "payment_type", None))
         if ref is None or (ref not in bills and ("billing", ref) not in db.crosswalk):
             report.add("Payments", n, "billing_id", "UNRESOLVED_BILL_REFERENCE", "blocked")
         else:
@@ -1125,6 +1220,7 @@ def check_export(sheets, config, db, report):
             payment_total += amount
         changed = rec is None or any([differs(amount, _dec(rec.amount)), differs(d, rec.payment_date),
                                       differs(method, rec.payment_method),
+                                      differs(payment_type, getattr(rec, "payment_type", None)),
                                       differs(text_field("Payments", n, "reference", pidx, values, 100), rec.reference),
                                       differs(text_field("Payments", n, "remarks", pidx, values, 300), rec.remarks)])
         if changed:

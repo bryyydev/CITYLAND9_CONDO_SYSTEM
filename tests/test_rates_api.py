@@ -52,33 +52,48 @@ def test_get_never_returns_the_smtp_password(app_module, sa):
     rates = sa.get(BASE).get_json()["rates"]
     assert rates["smtpPasswordSet"] is True and "smtpPassword" not in rates
     assert "S3cret-Mail-Pass" not in str(rates)
-    assert rates["dueDay"] == 8 and set(rates["ratesPerSqm"]) == {"studio", "oneBed", "twoBed", "threeBed"}
+    assert rates["dueDay"] == 8 and set(rates["ratesPerSqm"]) == {"residential", "commercial", "dryingArea"}
 
 
 def test_validation_saves_nothing(app_module, sa):
     before = sa.get(BASE).get_json()["rates"]
-    resp = sa.put(BASE, json={"waterRate": "abc", "penaltyRate": "150", "ratesPerSqm": {"studio": "-1"},
+    resp = sa.put(BASE, json={"waterRate": "abc", "penaltyRate": "150", "ratesPerSqm": {"residential": "-1"},
                               "smtpPort": "99999", "smtpSender": "nope", "onlinePaymentUrl": "ftp://x",
                               "storageInTotalFrom": "2026-13", "booksClosedThrough": "soon",
                               "onlinePaymentInstructions": "x" * 300, "corporationName": " ",
-                              "penaltyIncludes": {"water": "yes"}, "address": "New address"})
+                              "penaltyIncludes": {"water": "yes"}, "vatRate": "101",
+                              "vatIncludes": {"condo": "yes"}, "address": "New address"})
     assert resp.status_code == 400
     fields = resp.get_json()["error"]["fields"]
-    assert {"waterRate", "penaltyRate", "ratesPerSqm.studio", "smtpPort", "smtpSender", "onlinePaymentUrl",
+    assert {"waterRate", "penaltyRate", "ratesPerSqm.residential", "smtpPort", "smtpSender", "onlinePaymentUrl",
             "storageInTotalFrom", "booksClosedThrough", "onlinePaymentInstructions", "corporationName",
-            "penaltyIncludes.water"} <= set(fields)
+            "penaltyIncludes.water", "vatRate", "vatIncludes.condo"} <= set(fields)
     assert sa.get(BASE).get_json()["rates"] == before          # "address" was valid but nothing was saved
 
 
 def test_save_persists_and_is_audited(app_module, sa):
-    resp = sa.put(BASE, json={"waterRate": "55.25", "ratesPerSqm": {"studio": "60"}, "penaltyIncludes": {"parking": True},
+    resp = sa.put(BASE, json={"waterRate": "55.25", "ratesPerSqm": {"residential": "60", "commercial": "140.50", "dryingArea": "22.75"}, "penaltyIncludes": {"parking": True},
+                              "vatRate": "12", "vatIncludes": {"condo": True, "storage": True},
                               "booksClosedThrough": "2026-08", "smtpPort": "465", "onlinePaymentUrl": "https://pay.example/cl9"})
     assert resp.status_code == 200, resp.get_json()
     body = resp.get_json()
-    assert body["rates"]["waterRate"] == "55.25" and body["rates"]["ratesPerSqm"]["studio"] == "60"
+    assert body["rates"]["waterRate"] == "55.25" and body["rates"]["ratesPerSqm"]["residential"] == "60"
+    assert body["rates"]["ratesPerSqm"]["commercial"] == "140.5"
+    assert body["rates"]["ratesPerSqm"]["dryingArea"] == "22.75"
     assert body["rates"]["penaltyIncludes"]["parking"] is True and body["rates"]["booksClosedThrough"] == "2026-08"
+    assert body["rates"]["vatRate"] == "12" and body["rates"]["vatIncludes"]["condo"] is True
+    assert body["rates"]["vatIncludes"]["storage"] is True and body["rates"]["vatIncludes"]["water"] is False
     with app_module.app.app_context():
         assert app_module.setting("water_rate") == "55.25"
+        assert app_module.setting("studio_rate_per_sqm") == "60"
+        assert app_module.rate_for_type("STUDIO TYPE") == 60
+        assert app_module.rate_for_type("1 BEDROOM") == 60
+        assert app_module.rate_for_type("2 BEDROOM") == 60
+        assert app_module.rate_for_type("3 BEDROOM") == 60
+        assert app_module.setting("commercial_rate_per_sqm") == "140.5"
+        assert app_module.rate_for_type("COMMERCIAL") == 140.5
+        assert app_module.setting("drying_area_rate_per_sqm") == "22.75"
+        assert app_module.rate_for_type("DRYING AREA") == 22.75
         assert app_module.books_closed_through() == "2026-08"
         actions = [a.action for a in app_module.AuditLog.query.order_by(app_module.AuditLog.id.desc()).limit(2).all()]
     assert actions[0].startswith("Updated Rates & Rules") and "water_rate" in actions[0]
@@ -90,6 +105,34 @@ def test_save_persists_and_is_audited(app_module, sa):
     with app_module.app.app_context():
         assert app_module.AuditLog.query.count() == count
     assert sa.put(BASE, json={"penaltyIncludes": {"parking": False}}).status_code == 200   # back to the default
+
+
+def test_vat_is_added_to_soa_without_changing_the_stored_bill(app_module, sa):
+    from decimal import Decimal
+    from app.services.soa import soa_detail
+
+    m = app_module
+    with m.app.app_context():
+        bill = m.Billing.query.filter(m.Billing.assessment > 0).first()
+        assert bill is not None
+        bill_id = bill.id
+        calc = m._bill_calc(bill)
+        before = (m.money(bill.assessment), m.money(bill.water), m.money(bill.amount_paid),
+                  m.money(calc["total"]), m.money(calc["current"]))
+
+    resp = sa.put(BASE, json={"vatRate": "12", "vatIncludes": {"condo": True}})
+    assert resp.status_code == 200
+    with m.app.app_context():
+        bill = m.db.session.get(m.Billing, bill_id)
+        statement = soa_detail(m, bill)
+        vat = (Decimal(before[0]) * Decimal("0.12")).quantize(Decimal("0.01"))
+        assert Decimal(statement["charges"]["vat"]) == vat
+        assert Decimal(statement["total"]) == Decimal(before[3]) + vat
+        assert Decimal(statement["balance"]) == Decimal(str(m._bill_calc(bill)["balance"])) + vat
+        assert Decimal(statement["charges"]["currentCharges"]) == Decimal(before[4]) + Decimal(statement["charges"]["vat"])
+        assert statement["charges"]["vatEligible"] == ["Condo dues"]
+        assert (m.money(bill.assessment), m.money(bill.water), m.money(bill.amount_paid),
+                m.money(m._bill_calc(bill)["total"]), m.money(m._bill_calc(bill)["current"])) == before
 
 
 def test_water_can_never_be_penalty_eligible(app_module, sa):
@@ -122,7 +165,7 @@ def test_rate_change_does_not_touch_issued_bills(app_module, sa):
         before = {b.id: tuple(getattr(b, c) for c in cols) for b in m.Billing.query.all()}
         payments = m.Payment.query.count()
     assert before, "the seed data should contain issued bills"
-    assert sa.put(BASE, json={"ratesPerSqm": {"studio": "99", "oneBed": "99"}, "waterRate": "99", "penaltyRate": "20"}).status_code == 200
+    assert sa.put(BASE, json={"ratesPerSqm": {"studio": "99", "oneBed": "99", "commercial": "99"}, "waterRate": "99", "penaltyRate": "20"}).status_code == 200
     with m.app.app_context():
         assert {b.id: tuple(getattr(b, c) for c in cols) for b in m.Billing.query.all()} == before
         assert m.Payment.query.count() == payments

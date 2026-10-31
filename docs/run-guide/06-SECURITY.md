@@ -19,7 +19,7 @@ Everything stays on the office LAN; nothing here needs a cloud service or intern
 | **Repeated submissions** | Payment forms carry a one-time token: a double click or a re-sent form records the payment once. |
 | **Sessions** | Signed out after `SESSION_IDLE_MINUTES` (60) without activity and after `SESSION_MAX_HOURS` (12) in any case. Deactivating an account, resetting its password, or the person changing their own password **ends their other sessions immediately**. |
 | **Sign-in throttling** | After `LOGIN_MAX_FAILURES` (5) wrong passwords for one account from one PC, that PC waits `LOGIN_LOCKOUT_MINUTES` (15) for that account; 30 failures from one PC block that PC. Messages never reveal whether a username exists. Failures are logged with the PC's address. |
-| **Responses** | `X-Content-Type-Options`, `X-Frame-Options: SAMEORIGIN`, `Referrer-Policy`, `Permissions-Policy`, `Cross-Origin-Opener-Policy`; signed-in pages are never cached; HSTS when served over HTTPS. |
+| **Responses** | `X-Content-Type-Options`, `X-Frame-Options: SAMEORIGIN`, `Cross-Origin-Resource-Policy: same-origin`, `X-Permitted-Cross-Domain-Policies: none`, `Referrer-Policy`, `Permissions-Policy`, `Cross-Origin-Opener-Policy`; signed-in pages are never cached; HSTS when served over HTTPS. |
 | **Uploads** | Excel imports are limited in size (`MAX_UPLOAD_MB`), rows, columns and uncompressed size; non-workbooks are rejected. |
 | **Errors** | Users see a plain message with a reference number; details go only to `logs\cityland9.log`. |
 | **Database rights** | The web application's database account can only read and write data, not change tables ([02](02-DATABASE_SETUP.md)). The database listens on 127.0.0.1 only. |
@@ -43,57 +43,68 @@ Everything stays on the office LAN; nothing here needs a cloud service or intern
 Entered in *Rates & Rules → Email Delivery*. It is stored **encrypted** (key derived from
 `SECRET_KEY`), never shown again or sent to the browser; the page only says whether one is saved.
 Leave the field empty to keep it, tick *Clear* to remove it. Prefer an app-specific password or a
-LAN mail relay over a personal mailbox password.
+LAN mail relay over a personal mailbox password. SMTP STARTTLS verifies the mail server's TLS
+certificate and hostname; use a certificate trusted by the server PC rather than disabling
+verification.
 
-## 5. HTTPS on the LAN (recommended)
+## 5. HTTPS on the LAN (required for LAN access)
 
-Plain `http://` on the LAN means passwords and data cross the office network unencrypted. To use
+Plain `http://` on the LAN means passwords and data cross the office network unencrypted. Treat
+HTTPS is required for LAN access. The production server refuses to bind to a non-loopback address
+without a trusted HTTPS proxy, and the development server cannot be exposed on the LAN. To use
 HTTPS **without internet**, put a small reverse proxy on the server PC with its own local
-certificate authority. Example with **Caddy** (one `caddy.exe`, no installer):
+certificate authority. A starter Caddy configuration is provided at
+[`deploy/Caddyfile.example`](../../deploy/Caddyfile.example).
 
 1. Download `caddy.exe` (Windows amd64) once from caddyserver.com on any PC and copy it to
    `C:\caddy\`.
-2. `C:\caddy\Caddyfile` (replace the name/IP with the server's):
+2. Copy `deploy\Caddyfile.example` to `C:\caddy\Caddyfile` and replace `cityland9.local` with
+   the hostname that resolves to the server PC from every office PC. Keep `reverse_proxy` pointed
+   at `127.0.0.1:5000`.
 
-   ```
-   https://cityland9.local, https://192.168.100.63 {
-       tls internal
-       reverse_proxy 127.0.0.1:5000
-   }
-   ```
-
-3. In `.env`:
+3. In the server's `.env`, set:
 
    ```
    FLASK_HOST=127.0.0.1          # only the proxy can reach Waitress now
    TRUSTED_PROXY=127.0.0.1       # trust the proxy's X-Forwarded-Proto / X-Forwarded-For only
    SESSION_COOKIE_SECURE=1       # session cookie is sent over HTTPS only
+   PUBLIC_URL=https://cityland9.local
    ```
 
-4. Start Caddy (`C:\caddy\caddy.exe run --config C:\caddy\Caddyfile`; register it in Task
-   Scheduler *At startup* like the server). Caddy's local CA root certificate is at
-   `%AppData%\Caddy\pki\authorities\local\root.crt`: install it on each office PC
-   (*Trusted Root Certification Authorities*) so browsers trust the site.
-5. Firewall: open **443** instead of 5000 (below).
+4. Start Caddy (`C:\caddy\caddy.exe run --config C:\caddy\Caddyfile`) and register it in Task
+   Scheduler *At startup*. Start Caddy before users open CityLand. Caddy's local CA root
+   certificate is at `%AppData%\Caddy\pki\authorities\local\root.crt`: install it on each office
+   PC (*Trusted Root Certification Authorities*) so browsers trust the site.
+5. Restart CityLand after changing `.env`. `START_WINDOWS.bat` will show and open `PUBLIC_URL`.
+6. Firewall: allow **443** from the office subnet and do not allow LAN access to port **5000**
+   (below).
 
 An existing company CA or IIS/ARR with a company certificate works the same way: the proxy
-terminates HTTPS and forwards to `127.0.0.1:5000`; set the three `.env` values above.
+terminates HTTPS and forwards to `127.0.0.1:5000`; set the four `.env` values above.
 
 > Status: the Waitress proxy settings were verified (forwarded headers are ignored unless they
 > come from `TRUSTED_PROXY`). A full Caddy deployment has **not** been tested on the client's
 > network.
+
+> Until the proxy is installed, trusted by office browsers, running, and the `.env` settings above
+> are active, the application is available only on the server PC via loopback HTTP. The code
+> changes alone do not encrypt traffic.
 
 ## 6. Windows Firewall
 
 Allow only the office network to reach the system (PowerShell **as Administrator**):
 
 ```powershell
-# HTTP (no proxy):
-New-NetFirewallRule -DisplayName "CityLand 9" -Direction Inbound -Protocol TCP -LocalPort 5000 `
+# HTTPS reverse proxy:
+New-NetFirewallRule -DisplayName "CityLand 9 HTTPS" -Direction Inbound -Protocol TCP -LocalPort 443 `
   -Profile Private,Domain -RemoteAddress LocalSubnet -Action Allow
-# HTTPS proxy instead: use -LocalPort 443 (and do not open 5000)
 ```
 
+- Do not add an inbound rule for port **5000** when using the HTTPS proxy. Waitress is bound to
+  `127.0.0.1` and Caddy is the only process that should reach it.
+- Remove any old CityLand firewall allow rule for port 5000 after the proxy is working; otherwise
+  direct HTTP may remain reachable even though Waitress now listens only on loopback.
+- Direct HTTP on port 5000 is not supported for LAN access. Do not add a firewall rule for it.
 - The network must be set to **Private** (Settings → Network → the connection → *Private*), not
   Public. Never forward ports on the router: the system is not meant to be reachable from the
   internet.
@@ -111,7 +122,9 @@ New-NetFirewallRule -DisplayName "CityLand 9" -Direction Inbound -Protocol TCP -
 ## 8. Checklist
 
 - [ ] `SECRET_KEY` generated; `APP_ENV=production`; `FLASK_DEBUG=0`
+- [ ] LAN access is through HTTPS; Waitress is loopback-only and port 5000 is blocked from the LAN
 - [ ] First Superadmin created with `create_admin.py`; no shared accounts
 - [ ] Firewall rule limited to the local subnet; network profile is *Private*
-- [ ] HTTPS proxy with `SESSION_COOKIE_SECURE=1` and `TRUSTED_PROXY` (recommended)
+- [ ] HTTPS proxy is running; office browsers trust its certificate; `FLASK_HOST=127.0.0.1`,
+      `TRUSTED_PROXY=127.0.0.1`, `SESSION_COOKIE_SECURE=1` and `PUBLIC_URL=https://...`
 - [ ] SMTP password entered in the app (encrypted), not left in `.env`

@@ -1,9 +1,12 @@
 """/api/units — Units Directory: units, owners, tenants, parking and storage.
 
-    GET  /api/units?q=&kind=&floor=&status=&past=&page=&perPage=   list (kind: residential | PARKING | STORAGE;
+    GET  /api/units?q=&kind=&floor=&status=&past=&page=&perPage=   list (kind: residential | COMMERCIAL | DRYING AREA | PARKING | STORAGE;
                                                              past=1: the search also finds past owners/tenants)
     GET  /api/units/options                                  parking/storage units for assignment, unit types, floors
     POST /api/units                                          create a unit (optionally with a first owner and tenant)
+    GET  /api/units/bulk-template                            empty workbook for bulk creation of new units
+    POST /api/units/bulk-import/check                       validate all rows without writing
+    POST /api/units/bulk-import                              revalidate and create all rows atomically
     GET  /api/units/<id>                                     one unit: dues, owners, tenants, recent bills
     PUT  /api/units/<id>                                     edit a unit (the unit number can't change)
     POST /api/units/<id>/owners            PUT /api/units/<id>/owners/<oid>
@@ -21,17 +24,17 @@ Marking an owner/tenant Past ends their resident portal access at their next req
 (legacy.resident_access_problem). Every change is saved together with its audit entry.
 """
 import re
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from flask import Blueprint, jsonify, request
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, true
 from sqlalchemy.orm import selectinload
 
 from ..core.numbers import InputError, parse_decimal
 from ..utils.auth import json_error, permission_required, protect_api_blueprint
 
-UNIT_TYPES = ("STUDIO TYPE", "1 BEDROOM", "2 BEDROOM", "3 BEDROOM", "PARKING", "STORAGE")  # the classic form's list
+UNIT_TYPES = ("STUDIO TYPE", "1 BEDROOM", "2 BEDROOM", "3 BEDROOM", "COMMERCIAL", "DRYING AREA", "PARKING", "STORAGE")
 ASSETS = ("PARKING", "STORAGE")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -82,6 +85,13 @@ def make_units_blueprint(legacy):
             "effectiveRatePerSqm": rate_text(effective_rate(u)), "autoRate": bool(u.auto_rate),
             "duesMode": u.dues_mode or "per_sqm", "manualMonthlyDues": money(u.manual_monthly_dues),
             "occupancy": u.occupancy_type or "Owner", "status": u.status or "Vacant", "active": bool(u.active),
+            "chargePayers": {
+                "condo": u.condo_charge_payer or "Owner",
+                "water": u.water_charge_payer or "Owner",
+                "parking": u.parking_charge_payer or "Owner",
+                "storage": u.storage_charge_payer or "Owner",
+                "other": u.other_charge_payer or "Owner",
+            },
             "ownerName": u.owner_name, "tenantName": u.tenant_name, "contactNo": u.contact_no, "email": u.email,
             "parkingUnit": brief(parking), "storageUnit": brief(storage), "assignedTo": brief(assigned_to),
             "dues": dues,
@@ -111,18 +121,24 @@ def make_units_blueprint(legacy):
             per_page = min(max(int(request.args.get("perPage", 20)), 1), PER_PAGE_MAX)
         except ValueError:
             return json_error(400, "page and perPage must be numbers.")
-        if kind not in ("residential",) + ASSETS:
-            return json_error(400, "kind must be residential, PARKING or STORAGE.")
-        base = Unit.query.filter(Unit.active.is_(True))
+        if kind not in ("residential", "COMMERCIAL", "DRYING AREA") + ASSETS:
+            return json_error(400, "kind must be residential, COMMERCIAL, DRYING AREA, PARKING or STORAGE.")
+        base = Unit.query.filter(Unit.active == true())
         counts = {
-            "residential": base.filter(or_(Unit.unit_type.is_(None), Unit.unit_type.notin_(ASSETS))).count(),
+            "residential": base.filter(or_(Unit.unit_type.is_(None),
+                                           Unit.unit_type.notin_(ASSETS + ("COMMERCIAL", "DRYING AREA")))).count(),
+            "COMMERCIAL": base.filter(Unit.unit_type == "COMMERCIAL").count(),
+            "DRYING AREA": base.filter(Unit.unit_type == "DRYING AREA").count(),
             "PARKING": base.filter(Unit.unit_type == "PARKING").count(),
             "STORAGE": base.filter(Unit.unit_type == "STORAGE").count(),
         }
         query = base.options(selectinload(Unit.owners), selectinload(Unit.tenants),
                              selectinload(Unit.assigned_parking_unit), selectinload(Unit.assigned_storage_unit))
-        query = query.filter(Unit.unit_type == kind) if kind in ASSETS else \
-            query.filter(or_(Unit.unit_type.is_(None), Unit.unit_type.notin_(ASSETS)))
+        if kind == "COMMERCIAL" or kind == "DRYING AREA" or kind in ASSETS:
+            query = query.filter(Unit.unit_type == kind)
+        else:
+            query = query.filter(or_(Unit.unit_type.is_(None),
+                                    Unit.unit_type.notin_(ASSETS + ("COMMERCIAL", "DRYING AREA"))))
         if q:
             like = f"%{q}%"
             if request.args.get("past") in ("1", "true"):
@@ -196,6 +212,25 @@ def make_units_blueprint(legacy):
             return json_error(404, "Unit not found.")
         return jsonify({"unit": detail(u)})
 
+    @bp.delete("/<int:uid>")
+    @permission_required("delete_unit")
+    def delete_unit(uid):
+        u = get_unit(uid)
+        if not u:
+            return json_error(404, "Unit not found.")
+        if not u.active:
+            return json_error(409, "This unit is already removed from the active directory.")
+        for other in Unit.query.filter_by(assigned_parking_unit_id=u.id).all():
+            other.assigned_parking_unit_id = None
+            other.include_parking = False
+        for other in Unit.query.filter_by(assigned_storage_unit_id=u.id).all():
+            other.assigned_storage_unit_id = None
+            other.include_storage = False
+        u.active = False
+        legacy.audit(f"Removed unit {u.unit_no} from the active directory", entity_type="unit", entity_id=u.id, commit=False)
+        db.session.commit()
+        return "", 204
+
     # ---------------------------------------------------------------- validation helpers
     def text(data, key, label, errors, max_len, required=False):
         value = str(data.get(key) or "").strip()
@@ -243,15 +278,17 @@ def make_units_blueprint(legacy):
             return None
         field = Unit.assigned_parking_unit_id if kind == "PARKING" else Unit.assigned_storage_unit_id
         flag = Unit.include_parking if kind == "PARKING" else Unit.include_storage
-        other = Unit.query.filter(field == asset.id, flag.is_(True), Unit.id != (unit_id or 0)).first()
+        other = Unit.query.filter(field == asset.id, flag == true(), Unit.id != (unit_id or 0)).first()
         if other:
             errors[key] = f"{asset.unit_no} is already assigned to unit {other.unit_no}."
             return None
         return asset
 
-    def unit_fields(data, errors, existing=None):
+    def unit_fields(data, errors, existing=None, default_residential_type=False):
         """Validated unit values (the classic form's fields)."""
         utype = str(data.get("type") or "").strip()
+        if not utype and default_residential_type:
+            utype = "STUDIO TYPE"
         if utype not in UNIT_TYPES and not (existing is not None and utype == (existing.unit_type or "")):
             errors["type"] = "Choose a unit type."
         values = {
@@ -270,6 +307,20 @@ def make_units_blueprint(legacy):
             errors["occupancy"] = "Choose Owner or Tenant."
         if values["status"] not in ("Occupied", "Vacant"):
             errors["status"] = "Choose Occupied or Vacant."
+        payer_defaults = {
+            "condo": existing.condo_charge_payer if existing is not None else values["occupancy_type"],
+            "water": existing.water_charge_payer if existing is not None else values["occupancy_type"],
+            "parking": existing.parking_charge_payer if existing is not None else values["occupancy_type"],
+            "storage": existing.storage_charge_payer if existing is not None else values["occupancy_type"],
+            "other": existing.other_charge_payer if existing is not None else values["occupancy_type"],
+        }
+        values["charge_payers"] = {}
+        for key, default in payer_defaults.items():
+            payer = str((data.get("chargePayers") or {}).get(key, default) or "").strip()
+            if payer not in ("Owner", "Tenant"):
+                errors[f"chargePayers.{key}"] = "Choose Owner or Tenant."
+                payer = default
+            values["charge_payers"][key] = payer
         try:
             values["manual"] = legacy.round_money(parse_decimal(data.get("manualMonthlyDues"), label="Manual monthly dues", places=2,
                                                                 minimum=Decimal("0"), maximum=Decimal("10000000"),
@@ -287,6 +338,11 @@ def make_units_blueprint(legacy):
         # Same as the classic form: an empty rate means "the rate for this type".
         u.unit_rate_per_sqm = float(v["rate"] or legacy.rate_for_type(v["unit_type"]))
         u.occupancy_type, u.status = v["occupancy_type"], v["status"]
+        u.condo_charge_payer = v["charge_payers"]["condo"]
+        u.water_charge_payer = v["charge_payers"]["water"]
+        u.parking_charge_payer = v["charge_payers"]["parking"]
+        u.storage_charge_payer = v["charge_payers"]["storage"]
+        u.other_charge_payer = v["charge_payers"]["other"]
         u.include_parking, u.include_storage = v["parking"] is not None, v["storage"] is not None
         u.assigned_parking_unit_id = v["parking"].id if v["parking"] else None
         u.assigned_storage_unit_id = v["storage"].id if v["storage"] else None
@@ -298,7 +354,10 @@ def make_units_blueprint(legacy):
         return {"floor": u.floor, "type": u.unit_type, "areaSqm": float(u.area_sqm or 0), "ratePerSqm": float(u.unit_rate_per_sqm or 0),
                 "autoRate": bool(u.auto_rate), "duesMode": u.dues_mode, "manualMonthlyDues": money(u.manual_monthly_dues),
                 "occupancy": u.occupancy_type, "status": u.status, "parkingUnitId": u.assigned_parking_unit_id if u.include_parking else None,
-                "storageUnitId": u.assigned_storage_unit_id if u.include_storage else None}
+                "storageUnitId": u.assigned_storage_unit_id if u.include_storage else None,
+                "chargePayers": {"condo": u.condo_charge_payer, "water": u.water_charge_payer,
+                                 "parking": u.parking_charge_payer, "storage": u.storage_charge_payer,
+                                 "other": u.other_charge_payer}}
 
     def person_fields(data, errors, kind, existing=None):
         name_max, contact_max, email_max = (200, 100, 200) if kind == "Owner" else (200, 80, 160)
@@ -324,6 +383,253 @@ def make_units_blueprint(legacy):
             errors["moveOut"] = "Move-out can't be before move-in."
         return v
 
+    # ---------------------------------------------------------------- guarded bulk creation
+    def bulk_cell_text(value):
+        if value is None:
+            return ""
+        if isinstance(value, (date, datetime)):
+            return value.isoformat()[:10]
+        return str(value).strip()
+
+    def bulk_yes_no(value, default, row_errors, field):
+        if value in (None, ""):
+            return default
+        if isinstance(value, bool):
+            return value
+        text_value = str(value).strip().lower()
+        if text_value in ("yes", "true", "1"):
+            return True
+        if text_value in ("no", "false", "0"):
+            return False
+        row_errors.append(f"{field} must be Yes or No.")
+        return default
+
+    def inspect_bulk_upload():
+        upload = request.files.get("file")
+        if upload is None or not upload.filename:
+            return None, (json_error(400, "Choose a CITYLAND9 bulk unit workbook."), 400)
+        if not upload.filename.lower().endswith(".xlsx"):
+            return None, (json_error(400, "Choose an Excel .xlsx file created from the bulk unit template."), 400)
+        try:
+            from ..services.unit_bulk import UNIT_BULK_MAX_ROWS, read_units_rows
+            rows = read_units_rows(upload.stream, max_rows=UNIT_BULK_MAX_ROWS)
+        except (ValueError, OSError, ImportError) as exc:
+            return None, (json_error(400, str(exc)), 400)
+        except Exception:
+            legacy.app.logger.exception("Bulk unit workbook could not be read")
+            return None, (json_error(400, "The workbook is not a valid Excel .xlsx file."), 400)
+
+        existing_unit_numbers = {
+            str(unit_no).strip().casefold()
+            for (unit_no,) in Unit.query.with_entities(Unit.unit_no).all()
+            if unit_no
+        }
+        seen, prepared = set(), []
+        for row_number, row in rows:
+            row_errors = []
+            unit_no = bulk_cell_text(row.get("unit_no"))
+            category = bulk_cell_text(row.get("category")).upper()
+            residential_type = bulk_cell_text(row.get("residential_type")).upper()
+            commercial_type = bulk_cell_text(row.get("commercial_type")).upper()
+            if category == "RESIDENTIAL":
+                unit_type = residential_type or "STUDIO TYPE"
+                floor = bulk_cell_text(row.get("floor"))
+            elif category == "COMMERCIAL":
+                unit_type = "COMMERCIAL"
+                floor = commercial_type
+                if commercial_type and commercial_type not in ("2F", "UG", "LG"):
+                    row_errors.append("Commercial type must be 2F, UG, or LG.")
+            elif category in ("DRYING AREA", "STORAGE", "PARKING"):
+                unit_type = category
+                floor = bulk_cell_text(row.get("floor"))
+            else:
+                unit_type = ""
+                floor = bulk_cell_text(row.get("floor"))
+            key = unit_no.casefold()
+            if not unit_no:
+                row_errors.append("Enter a unit number.")
+            elif key in seen or key in existing_unit_numbers:
+                prepared.append({
+                    "row": row_number,
+                    "unitNo": unit_no,
+                    "type": unit_type,
+                    "areaSqm": bulk_cell_text(row.get("area_sqm")),
+                    "ownerName": bulk_cell_text(row.get("owner_name")),
+                    "tenantName": bulk_cell_text(row.get("tenant_name")),
+                    "errors": [],
+                    "skipped": True,
+                })
+                seen.add(key)
+                continue
+            elif len(unit_no) > 40:
+                row_errors.append("Unit number can't exceed 40 characters.")
+            if not category:
+                row_errors.append("Choose a unit category.")
+            elif category not in ("RESIDENTIAL", "COMMERCIAL", "DRYING AREA", "STORAGE", "PARKING"):
+                row_errors.append("Choose a supported unit category.")
+            if key:
+                seen.add(key)
+            if category == "RESIDENTIAL" and unit_type not in UNIT_TYPES:
+                row_errors.append("Choose a supported Residential type.")
+            if category in ("COMMERCIAL", "DRYING AREA", "STORAGE", "PARKING") and unit_type not in UNIT_TYPES:
+                row_errors.append("Choose a supported unit category.")
+
+            area_raw = row.get("area_sqm")
+            if area_raw in (None, ""):
+                row_errors.append("Area (sqm) is required.")
+            auto_rate = bulk_yes_no(row.get("auto_rate"), True, row_errors, "auto_rate")
+            parking_no = bulk_cell_text(row.get("parking_unit_no"))
+            storage_no = bulk_cell_text(row.get("storage_unit_no"))
+            parking = Unit.query.filter(func.lower(Unit.unit_no) == parking_no.lower(), Unit.unit_type == "PARKING", Unit.active == true()).first() if parking_no else None
+            storage = Unit.query.filter(func.lower(Unit.unit_no) == storage_no.lower(), Unit.unit_type == "STORAGE", Unit.active == true()).first() if storage_no else None
+            if unit_type in ASSETS and (parking_no or storage_no):
+                row_errors.append("Parking/storage assignments can only be entered on a residential or commercial unit.")
+            if parking_no and parking is None:
+                row_errors.append("Parking reference must match an existing active PARKING unit.")
+            if storage_no and storage is None:
+                row_errors.append("Storage reference must match an existing active STORAGE unit.")
+
+            values = {
+                "floor": floor,
+                "type": unit_type,
+                "areaSqm": "" if area_raw is None else str(area_raw),
+                "ratePerSqm": "" if row.get("rate_per_sqm") in (None, "") else str(row.get("rate_per_sqm")),
+                "autoRate": auto_rate,
+                "duesMode": bulk_cell_text(row.get("dues_mode")) or "per_sqm",
+                "manualMonthlyDues": "" if row.get("manual_monthly_dues") is None else str(row.get("manual_monthly_dues")),
+                "occupancy": bulk_cell_text(row.get("occupancy")) or "Owner",
+                "status": bulk_cell_text(row.get("status")) or "Vacant",
+                "chargePayers": {
+                    key: bulk_cell_text(row.get(f"{key}_payer")) or bulk_cell_text(row.get("occupancy")) or "Owner"
+                    for key in ("condo", "water", "parking", "storage", "other")
+                },
+                "parkingUnitId": parking.id if parking else None,
+                "storageUnitId": storage.id if storage else None,
+            }
+            unit_errors = {}
+            validated_unit = unit_fields(values, unit_errors)
+            row_errors.extend(unit_errors.values())
+            try:
+                if validated_unit["area_sqm"] is None or validated_unit["area_sqm"] <= 0:
+                    row_errors.append("Area (sqm) must be greater than zero.")
+            except (TypeError, KeyError):
+                pass
+
+            owner_data = None
+            tenant_data = None
+            for kind, prefix, name_field in (("Owner", "owner", "owner_name"), ("Tenant", "tenant", "tenant_name")):
+                name = bulk_cell_text(row.get(name_field))
+                fields = ("contact_no", "email", "move_in")
+                extras = [bulk_cell_text(row.get(f"{prefix}_{field}")) for field in fields]
+                if not name and any(extras):
+                    row_errors.append(f"{kind} details require a {kind.lower()} name.")
+                if name:
+                    person_input = {
+                        "name": name,
+                        "contactNo": extras[0],
+                        "email": extras[1],
+                        "moveIn": extras[2],
+                        "moveOut": "",
+                        "notes": "",
+                        "receiveSoaEmail": False,
+                        "includeInSoa": True,
+                        "representative": kind == "Tenant",
+                        "status": "Current",
+                    }
+                    person_errors = {}
+                    validated_person = person_fields(person_input, person_errors, kind)
+                    row_errors.extend(f"{kind}: {message}" for message in person_errors.values())
+                    if kind == "Owner":
+                        owner_data = validated_person
+                    else:
+                        tenant_data = validated_person
+
+            prepared.append({
+                "row": row_number,
+                "unitNo": unit_no,
+                "type": unit_type,
+                "areaSqm": bulk_cell_text(area_raw),
+                "ownerName": bulk_cell_text(row.get("owner_name")),
+                "tenantName": bulk_cell_text(row.get("tenant_name")),
+                "errors": row_errors,
+                "skipped": False,
+                "unitValues": validated_unit,
+                "ownerValues": owner_data,
+                "tenantValues": tenant_data,
+            })
+        return prepared, None
+
+    def bulk_preview(prepared):
+        return {
+            "total": len(prepared),
+            "valid": sum(not item["errors"] and not item["skipped"] for item in prepared),
+            "invalid": sum(bool(item["errors"]) for item in prepared),
+            "skipped": sum(item["skipped"] for item in prepared),
+            "rows": [{key: item[key] for key in ("row", "unitNo", "type", "areaSqm", "ownerName", "tenantName", "errors", "skipped")}
+                     for item in prepared],
+        }
+
+    @bp.get("/bulk-template")
+    @permission_required("units")
+    def bulk_unit_template():
+        from flask import send_file
+        from ..services.unit_bulk import build_units_template
+        workbook = build_units_template()
+        return send_file(workbook, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                         as_attachment=True, download_name="CITYLAND9_Bulk_Units_Template.xlsx")
+
+    @bp.post("/bulk-import/check")
+    @permission_required("units")
+    def check_bulk_units():
+        prepared, error = inspect_bulk_upload()
+        if error:
+            return error
+        return jsonify(bulk_preview(prepared))
+
+    @bp.post("/bulk-import")
+    @permission_required("units")
+    def create_bulk_units():
+        prepared, error = inspect_bulk_upload()
+        if error:
+            return error
+        preview = bulk_preview(prepared)
+        if preview["invalid"]:
+            return jsonify({"error": {"message": "Fix all row issues before creating any units.", "preview": preview}}), 409
+
+        created = []
+        try:
+            for item in prepared:
+                if item["skipped"]:
+                    continue
+                unit = Unit(unit_no=item["unitNo"], active=True)
+                apply_unit(unit, item["unitValues"], creating=True)
+                db.session.add(unit)
+                db.session.flush()
+                owner = item["ownerValues"]
+                tenant = item["tenantValues"]
+                if owner:
+                    db.session.add(Owner(
+                        unit_id=unit.id, owner_name=owner["name"], contact_no=owner["contact_no"], email=owner["email"],
+                        move_in=owner["move_in"], status="Current", receive_soa_email=owner["receive_soa_email"],
+                        include_in_soa=owner["include_in_soa"], notes=owner["notes"],
+                    ))
+                if tenant:
+                    db.session.add(Tenant(
+                        unit_id=unit.id, tenant_name=tenant["name"], contact_no=tenant["contact_no"], email=tenant["email"],
+                        move_in=tenant["move_in"], status="Current", receive_soa_email=tenant["receive_soa_email"],
+                        include_in_soa=tenant["include_in_soa"], representative=True, notes=tenant["notes"],
+                    ))
+                legacy.audit(f"Created unit {item['unitNo']} by bulk upload", entity_type="unit", entity_id=unit.id,
+                             commit=False, details={"source": "bulk_unit_upload", "owner": owner["name"] if owner else None,
+                                                    "tenant": tenant["name"] if tenant else None})
+                created.append(item["unitNo"])
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            legacy.app.logger.exception("Bulk unit creation failed; transaction rolled back")
+            return json_error(500, "The bulk unit upload failed; no units were created. Check the server log.")
+        return jsonify({"created": len(created), "skipped": preview["skipped"], "unitNumbers": created}), 201
+
     # ---------------------------------------------------------------- units: create / edit
     @bp.post("")
     @permission_required("units")
@@ -333,7 +639,7 @@ def make_units_blueprint(legacy):
         unit_no = text(data, "unitNo", "Unit number", errors, 40, required=True)
         if unit_no and Unit.query.filter(func.lower(Unit.unit_no) == unit_no.lower()).first():
             errors["unitNo"] = "That unit number already exists."
-        v = unit_fields(data, errors)
+        v = unit_fields(data, errors, default_residential_type=True)
         owner_data, tenant_data = data.get("owner") or None, data.get("tenant") or None
         ov = tv = None
         if isinstance(owner_data, dict) and str(owner_data.get("name") or "").strip():
@@ -438,7 +744,7 @@ def make_units_blueprint(legacy):
         return jsonify({"unit": detail(u)})
 
     def clear_representative(uid, keep_id=None):
-        q = Tenant.query.filter(Tenant.unit_id == uid, Tenant.representative.is_(True))
+        q = Tenant.query.filter(Tenant.unit_id == uid, Tenant.representative == true())
         if keep_id:
             q = q.filter(Tenant.id != keep_id)
         q.update({"representative": False}, synchronize_session=False)

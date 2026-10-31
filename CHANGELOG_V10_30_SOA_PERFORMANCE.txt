@@ -1,0 +1,7 @@
+V10.30 — Reference SOA + 800-unit performance improvements
+- Redesigned SOA to closely match the supplied reference: branded header, billing/statement/due-date cards, owner/tenant/contact section, charges breakdown, previous unpaid history, penalty + total cards, payment instructions, payment history and footer.
+- Condo Dues shown from Unit Details using the unit's configured area/rate or manual monthly dues.
+- Units directory now uses server-side pagination (20 rows per page).
+- Units directory eager-loads tenants and assigned parking/storage to reduce per-row database queries.
+- Latest SOA data is loaded only for the visible Units page.
+- Added Waitress as the recommended Windows LAN application server and updated START_WINDOWS.bat to use it when available.

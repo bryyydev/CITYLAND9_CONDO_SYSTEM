@@ -188,7 +188,7 @@ function PaymentFinder({ onDone }: { onDone: () => void }) {
 // ------------------------------------------------------------------ advance payments
 // Live: /api/advances. Prepaid condo dues: split evenly per month and applied automatically to the
 // unit's bills from the start month. Recording one issues an official receipt (server-numbered).
-const EMPTY_ADV = (): AdvanceInput => ({ unitId: 0, amount: "", startMonth: currentMonth(), months: 3, method: "CASH", reference: "", date: todayIso(), remarks: "", formToken: newFormToken() });
+const EMPTY_ADV = (): AdvanceInput => ({ unitId: 0, amount: "", startMonth: currentMonth(), months: 3, method: "CASH", reference: "", date: todayIso(), remarks: "", payerType: "", formToken: newFormToken() });
 type AdvStatus = "" | "open" | "used" | "reversed";
 
 export function AdvancesWorkspace({ embedded = false }: { embedded?: boolean }) {
@@ -266,6 +266,7 @@ function AdvanceForm({ presetUnit, onDone }: { presetUnit?: number; onDone: () =
     startMonth: !/^\d{4}-(0[1-9]|1[0-2])$/.test(form.startMonth) ? "Choose the first month." : serverFields.startMonth ?? "",
     reference: form.method !== "CASH" && !form.reference.trim() ? "Required for check and online payments." : serverFields.reference ?? "",
     date: serverFields.date ?? serverFields.period ?? "",
+    payerType: !form.payerType ? "Choose Owner or Tenant." : serverFields.payerType ?? "",
   };
   const show = (k: string) => (touched || serverFields[k] ? errors[k] : "");
   const monthly = isAmount(form.amount) && form.months > 0 ? fromCents(Math.round(toCents(form.amount) / form.months)) : null;
@@ -307,6 +308,10 @@ function AdvanceForm({ presetUnit, onDone }: { presetUnit?: number; onDone: () =
       <Field label="Months covered" error={show("months")}>{(id) => <input id={id} type="number" min={1} max={120} className="input" value={form.months} onChange={(e) => set({ months: Number(e.target.value) })} />}</Field>
       <Field label="First billing month" error={show("startMonth")}>{(id) => <input id={id} type="month" className="input" value={form.startMonth} onChange={(e) => set({ startMonth: e.target.value })} />}</Field>
       <Field label="Payment date" error={show("date")}>{(id) => <input id={id} type="date" className="input" value={form.date} onChange={(e) => set({ date: e.target.value })} />}</Field>
+      <Field label="Payer ledger" error={show("payerType")}>{(id) => (
+        <select id={id} className="input" value={form.payerType ?? ""} onChange={(e) => set({ payerType: e.target.value as "Owner" | "Tenant" })}>
+          <option value="">Choose…</option><option value="Owner">Owner</option><option value="Tenant">Tenant</option>
+        </select>)}</Field>
       <Field label="Method">{(id) => <select id={id} className="input" value={form.method} onChange={(e) => set({ method: e.target.value as PaymentMethod })}><option value="CASH">Cash</option><option value="CHECK">Check</option><option value="ONLINE">Online / bank transfer</option></select>}</Field>
       <Field label={form.method === "CASH" ? "Reference no. (optional)" : "Reference no. (required)"} error={show("reference")}>{(id) => <input id={id} className="input" maxLength={100} value={form.reference} onChange={(e) => set({ reference: e.target.value })} />}</Field>
       <Field label="Remarks" className="sm:col-span-2">{(id) => <input id={id} className="input" maxLength={300} value={form.remarks} onChange={(e) => set({ remarks: e.target.value })} />}</Field>

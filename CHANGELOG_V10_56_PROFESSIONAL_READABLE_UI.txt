@@ -1,0 +1,13 @@
+CITYLAND 9 CONDO SYSTEM 2026
+V10.56 – PROFESSIONAL / READABLE / LIGHT UI
+
+- Increased overall font size and text contrast.
+- Lightened dark backgrounds and navigation.
+- Added a soft blue-gray/teal professional office palette.
+- Lightened cards, tables, forms, menus and modals.
+- Improved table header readability.
+- Improved form focus visibility.
+- Increased touch target sizes.
+- Retained responsive behavior for Android/iOS browsers.
+- Kept print output high contrast.
+- No database schema or billing-calculation changes.

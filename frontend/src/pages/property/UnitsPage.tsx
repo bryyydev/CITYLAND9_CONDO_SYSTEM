@@ -4,9 +4,10 @@
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useAuth } from "../../auth/AuthContext";
-import { Drawer, useToast } from "../../components/base/overlays";
+import { ConfirmDialog, Drawer, useToast } from "../../components/base/overlays";
 import { Badge, Button, Card, EmptyState, ErrorState, Field, Icon, IconButton, Notice, PageHeader, Skeleton, StatusBadge, Tabs, cx } from "../../components/base/ui";
 import { focusFirstInvalid, useDebounced } from "../../components/feature/AccountFields";
+import { BulkUnitUpload } from "../../components/feature/BulkUnitUpload";
 import { ProvisionDrawer, type ProvisionTarget } from "../../components/feature/ResidentProvisioning";
 import { legacyUrl } from "../../components/feature/ModuleRoute";
 import { useAction, useAsync } from "../../hooks/useAsync";
@@ -17,12 +18,25 @@ import { ApiError } from "../../services/http";
 import type { PersonInput, UnitDetail, UnitInput, UnitKind, UnitOptions, UnitPersonRecord, UnitRow } from "../../services/types";
 
 const PER_PAGE = 20;
-const KIND_LABEL: Record<UnitKind, string> = { residential: "Residential", PARKING: "Parking", STORAGE: "Storage" };
+const KIND_LABEL: Record<UnitKind, string> = { residential: "Residential", COMMERCIAL: "Commercial", "DRYING AREA": "Drying Area", PARKING: "Parking", STORAGE: "Storage" };
 const isAsset = (type: string) => type === "PARKING" || type === "STORAGE";
+const RESIDENTIAL_TYPES = [
+  { value: "STUDIO TYPE", label: "STUDIO" },
+  { value: "1 BEDROOM", label: "1 BEDROOM" },
+  { value: "2 BEDROOM", label: "2 BEDROOM" },
+  { value: "3 BEDROOM", label: "3 BEDROOM" },
+] as const;
+const COMMERCIAL_FLOORS = ["2F", "UG", "LG"] as const;
+type UnitCategory = "" | "COMMERCIAL" | "DRYING AREA" | "RESIDENTIAL" | "STORAGE" | "PARKING";
+const categoryForType = (type: string): UnitCategory => {
+  if (RESIDENTIAL_TYPES.some((option) => option.value === type)) return "RESIDENTIAL";
+  if (type === "COMMERCIAL" || type === "DRYING AREA" || type === "STORAGE" || type === "PARKING") return type;
+  return "";
+};
 
 export default function UnitsPage() {
   const [params, setParams] = useSearchParams();
-  const initialKind = (["PARKING", "STORAGE"].includes(params.get("kind") ?? "") ? params.get("kind") : "residential") as UnitKind;
+  const initialKind = (["COMMERCIAL", "DRYING AREA", "PARKING", "STORAGE"].includes(params.get("kind") ?? "") ? params.get("kind") : "residential") as UnitKind;
   const [kind, setKind] = useState<UnitKind>(initialKind);
   const [filters, setFilters] = useState({ q: params.get("q") ?? "", floor: "", status: "" as "" | "Occupied" | "Vacant", past: params.get("past") === "1" });
   const [page, setPage] = useState(1);
@@ -30,6 +44,7 @@ export default function UnitsPage() {
   const list = useAsync(() => api.units.page({ q, kind, floor: filters.floor, status: filters.status, past: filters.past, page, perPage: PER_PAGE }), [q, kind, filters.floor, filters.status, filters.past, page]);
   const options = useAsync(() => api.units.options(), []);
   const [creating, setCreating] = useState(false);
+  const [bulkOpen, setBulkOpen] = useState(false);
   const openId = Number(params.get("unit")) || null;
   const movedForm = params.get("moved") === "form";
   const toast = useToast();
@@ -60,7 +75,10 @@ export default function UnitsPage() {
     <>
       <PageHeader eyebrow="Property & Billing" title="Units Directory"
         description="Units with their current owner and tenant. Parking and storage are units too, assigned to a residential unit. Monthly amounts are what billing charges."
-        actions={can("units") && <Button icon="add-line" onClick={() => setCreating(true)}>Add unit</Button>} />
+        actions={can("units") && <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" icon="file-upload-line" onClick={() => setBulkOpen(true)}>Bulk upload</Button>
+          <Button icon="add-line" onClick={() => setCreating(true)}>Add unit</Button>
+        </div>} />
 
       {movedForm && (
         <div className="mb-4" role="status">
@@ -76,7 +94,7 @@ export default function UnitsPage() {
       <Card>
         <div className="flex flex-wrap items-end gap-3 border-b border-ink-100 p-4">
           <div className="max-w-full"><Tabs value={kind} onChange={(k) => { setKind(k); setParam("kind", k === "residential" ? null : k); }}
-            tabs={(["residential", "PARKING", "STORAGE"] as UnitKind[]).map((k) => ({ key: k, label: KIND_LABEL[k], count: data?.counts[k] }))} /></div>
+            tabs={(["residential", "COMMERCIAL", "DRYING AREA", "PARKING", "STORAGE"] as UnitKind[]).map((k) => ({ key: k, label: KIND_LABEL[k], count: data?.counts[k] }))} /></div>
           <Field label="Search" className="min-w-[180px] flex-1 sm:max-w-xs">{(id) => (
             <div className="relative" role="search">
               <Icon name="search-line" className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-500" />
@@ -90,7 +108,7 @@ export default function UnitsPage() {
             <select id={id} className="input" value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value as typeof filters.status })}>
               <option value="">All</option><option>Occupied</option><option>Vacant</option>
             </select>)}</Field>
-          {kind === "residential" && (
+          {!isAsset(kind) && (
             <label className="flex h-10 items-center gap-2 self-end text-[13px] text-ink-700" title="Also find units by a past owner/tenant, or by a contact number or email">
               <input type="checkbox" className="size-4 accent-brand-600" checked={filters.past} onChange={(e) => setFilters({ ...filters, past: e.target.checked })} />
               Include past owners &amp; tenants
@@ -113,8 +131,8 @@ export default function UnitsPage() {
                   <thead><tr>
                     <th scope="col" className="th">Unit</th>
                     <th scope="col" className="th text-right">Area</th>
-                    {kind === "residential" && <th scope="col" className="th">Owner / tenant</th>}
-                    <th scope="col" className="th">{kind === "residential" ? "Parking · storage" : "Assigned to"}</th>
+                    {!isAsset(kind) && <th scope="col" className="th">Owner / tenant</th>}
+                    <th scope="col" className="th">{isAsset(kind) ? "Assigned to" : "Parking · storage"}</th>
                     <th scope="col" className="th">Status</th>
                     <th scope="col" className="th text-right">Monthly</th>
                     <th scope="col" className="th hidden xl:table-cell">Latest bill</th>
@@ -127,7 +145,7 @@ export default function UnitsPage() {
                           <span className="block text-[12px] text-ink-500">{u.type || "—"}{u.floor ? ` · Floor ${u.floor}` : ""}</span>
                         </td>
                         <td className="border-b border-ink-100 px-4 py-2.5 text-right tabular">{u.areaSqm} m²</td>
-                        {kind === "residential" && <td className="border-b border-ink-100 px-4 py-2.5">{u.ownerName ?? <span className="text-ink-400">No owner</span>}{u.tenantName && <span className="block text-[12px] text-ink-500">Tenant: {u.tenantName}</span>}</td>}
+                        {!isAsset(kind) && <td className="border-b border-ink-100 px-4 py-2.5">{u.ownerName ?? <span className="text-ink-400">No owner</span>}{u.tenantName && <span className="block text-[12px] text-ink-500">Tenant: {u.tenantName}</span>}</td>}
                         <td className="border-b border-ink-100 px-4 py-2.5">{linkCell(u)}</td>
                         <td className="border-b border-ink-100 px-4 py-2.5"><StatusBadge status={u.status} /></td>
                         <td className="border-b border-ink-100 px-4 py-2.5 text-right" title={u.zeroDues ? "Condo dues come out as ₱0: this unit type has no rate. Open the unit for details." : undefined}>{duesCell(u)}</td>
@@ -169,6 +187,7 @@ export default function UnitsPage() {
           setCreating(false); list.reload(); options.reload(); openUnit(u.id);
           toast({ tone: "success", title: `Unit ${u.unitNo} created`, message: u.zeroDues ? "Note: its condo dues come out as ₱0. Set a rate per m²." : undefined });
         }} />
+      <BulkUnitUpload open={bulkOpen} onClose={() => setBulkOpen(false)} onCreated={() => { list.reload(); options.reload(); }} />
     </>
   );
 }
@@ -182,10 +201,23 @@ function UnitDetailDrawer({ unitId, options, onClose, onChanged }:
   const [provisionFor, setProvisionFor] = useState<ProvisionTarget | null>(null);
   const { can } = useAuth();
   const toast = useToast();
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const { busy, act } = useAction();
   const u = detail.data;
   if (!unitId) return null;
 
   const updated = (next: UnitDetail, message: string) => { detail.setData(next); onChanged(); toast({ tone: "success", title: message }); };
+  const remove = async () => {
+    if (!u) return;
+    try {
+      await act(() => api.units.delete(u.id));
+      onClose();
+      onChanged();
+      toast({ tone: "success", title: `Unit ${u.unitNo} removed`, message: "The unit was hidden from the active directory without deleting its history." });
+    } catch (e) {
+      toast({ tone: "error", title: "Couldn't remove this unit", message: (e as Error).message });
+    }
+  };
   const peopleList = (kind: "Owner" | "Tenant", rows: UnitPersonRecord[]) => (
     <section>
       <div className="mb-2 flex items-center justify-between gap-2">
@@ -216,7 +248,10 @@ function UnitDetailDrawer({ unitId, options, onClose, onChanged }:
     <>
       <Drawer open onClose={onClose} width="max-w-2xl" title={u ? `Unit ${u.unitNo}` : "Unit"}
         subtitle={u ? `${u.type || "No type"}${u.floor ? ` · Floor ${u.floor}` : ""} · ${u.areaSqm} m²` : ""}
-        footer={u && can("edit_unit") ? <><Button variant="secondary" onClick={onClose}>Close</Button><Button icon="edit-line" onClick={() => setEditing(true)}>Edit unit</Button></> : undefined}>
+        footer={u && can("edit_unit") ? <><Button variant="secondary" onClick={onClose}>Close</Button>
+          <Button icon="edit-line" onClick={() => setEditing(true)}>Edit unit</Button>
+          {can("delete_unit") && u.active && <Button variant="danger" onClick={() => setConfirmDelete(true)}>Remove unit</Button>}
+        </> : undefined}>
         {detail.error ? <ErrorState title="Couldn't load the unit" message={detail.error.message} onRetry={detail.reload} />
           : !u ? <Skeleton rows={8} />
           : (
@@ -261,6 +296,8 @@ function UnitDetailDrawer({ unitId, options, onClose, onChanged }:
       {u && <UnitFormDrawer open={editing} unit={u} options={options} onClose={() => setEditing(false)} onSaved={(next) => { setEditing(false); updated(next, `Unit ${next.unitNo} updated`); }} />}
       {u && person && <PersonDrawer unit={u} kind={person.kind} record={person.record} onClose={() => setPerson(null)}
         onSaved={(next, msg, provision) => { setPerson(null); updated(next, msg); if (provision) setProvisionFor(provision); }} />}
+      <ConfirmDialog open={confirmDelete} title="Remove this unit?" confirmLabel="Remove unit" cancelLabel="Keep it" tone="danger" busy={busy}
+        message={<><p>This will hide the unit from the active directory while keeping its historical records intact.</p><p className="mt-2 text-[13px] text-ink-500">Any parking/storage links assigned to this unit will be cleared.</p></>} onClose={() => setConfirmDelete(false)} onConfirm={async () => { setConfirmDelete(false); await remove(); }} />
       {/* The owner/tenant record is saved first (usable for billing even without a portal account). */}
       <ProvisionDrawer target={provisionFor} onClose={() => setProvisionFor(null)} onDone={() => undefined} />
     </>
@@ -276,9 +313,12 @@ function UnitFormDrawer({ open, unit, options, onClose, onSaved }:
   const initial = (): UnitInput & { unitNo: string } => unit
     ? { unitNo: unit.unitNo, floor: unit.floor, type: unit.type, areaSqm: String(unit.areaSqm), ratePerSqm: unit.autoRate ? "" : unit.ratePerSqm, autoRate: unit.autoRate,
         duesMode: unit.duesMode, manualMonthlyDues: unit.manualMonthlyDues, occupancy: unit.occupancy, status: unit.status,
+        chargePayers: unit.chargePayers,
         parkingUnitId: unit.parkingUnit?.id ?? null, storageUnitId: unit.storageUnit?.id ?? null }
-    : { unitNo: "", floor: "", type: "", areaSqm: "", ratePerSqm: "", autoRate: true, duesMode: "per_sqm", manualMonthlyDues: "0", occupancy: "Owner", status: "Vacant", parkingUnitId: null, storageUnitId: null };
+    : { unitNo: "", floor: "", type: "", areaSqm: "", ratePerSqm: "", autoRate: true, duesMode: "per_sqm", manualMonthlyDues: "0", occupancy: "Owner", status: "Vacant",
+        chargePayers: { condo: "Owner", water: "Owner", parking: "Owner", storage: "Owner", other: "Owner" }, parkingUnitId: null, storageUnitId: null };
   const [form, setForm] = useState(initial);
+  const [category, setCategory] = useState<UnitCategory>(() => categoryForType(initial().type));
   const [owner, setOwner] = useState<PersonInput>(blankPerson);
   const [tenant, setTenant] = useState<PersonInput>(blankPerson);
   const [touched, setTouched] = useState(false);
@@ -287,7 +327,7 @@ function UnitFormDrawer({ open, unit, options, onClose, onSaved }:
   const { busy, act } = useAction();
   const ref = useRef<HTMLFormElement>(null);
 
-  useEffect(() => { if (open) { setForm(initial()); setOwner(blankPerson()); setTenant(blankPerson()); setTouched(false); setServerFields({}); setServerError(""); } },
+  useEffect(() => { if (open) { const next = initial(); setForm(next); setCategory(categoryForType(next.type)); setOwner(blankPerson()); setTenant(blankPerson()); setTouched(false); setServerFields({}); setServerError(""); } },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [open]);
   if (!open) return null;
@@ -296,7 +336,9 @@ function UnitFormDrawer({ open, unit, options, onClose, onSaved }:
   const rateMissing = !isAsset(form.type) && form.type !== "" && (form.autoRate || !form.ratePerSqm) && Number(typeRate ?? 0) === 0;
   const errors: Record<string, string> = {
     unitNo: isNew && !form.unitNo.trim() ? "Enter the unit number." : "",
-    type: !form.type ? "Choose a unit type." : "",
+    type: isNew
+      ? (!category ? "Choose a unit category." : category !== "RESIDENTIAL" && !form.type ? "Choose a unit type." : "")
+      : (!form.type ? "Choose a unit type." : ""),
     areaSqm: form.areaSqm !== "" && !/^\d{1,6}(\.\d{1,2})?$/.test(form.areaSqm) ? "Enter the area in m², up to 2 decimals." : "",
     ratePerSqm: !form.autoRate && form.ratePerSqm !== "" && !/^\d{1,6}(\.\d{1,4})?$/.test(form.ratePerSqm) ? "Enter a rate, up to 4 decimals." : "",
     manualMonthlyDues: form.duesMode === "manual" && !/^\d{1,8}(\.\d{1,2})?$/.test(form.manualMonthlyDues) ? "Enter an amount." : "",
@@ -322,8 +364,9 @@ function UnitFormDrawer({ open, unit, options, onClose, onSaved }:
     setTouched(true); setServerError("");
     if (busy) return;
     if (Object.values(errors).some(Boolean)) { focusFirstInvalid(ref); return; }
-    const body: UnitInput = { floor: form.floor.trim(), type: form.type, areaSqm: form.areaSqm || "0", ratePerSqm: form.autoRate ? "" : form.ratePerSqm, autoRate: form.autoRate,
+    const body: UnitInput = { floor: form.floor.trim(), type: form.type || "STUDIO TYPE", areaSqm: form.areaSqm || "0", ratePerSqm: form.autoRate ? "" : form.ratePerSqm, autoRate: form.autoRate,
       duesMode: form.duesMode, manualMonthlyDues: form.manualMonthlyDues || "0", occupancy: form.occupancy, status: form.status,
+      chargePayers: form.chargePayers,
       parkingUnitId: isAsset(form.type) ? null : form.parkingUnitId, storageUnitId: isAsset(form.type) ? null : form.storageUnitId };
     try {
       const saved = isNew
@@ -346,23 +389,58 @@ function UnitFormDrawer({ open, unit, options, onClose, onSaved }:
         {withMoveIn && <Field label="Move-in date" error={serverFields[`${prefix}.moveIn`]}>{(id) => <input id={id} type="date" className="input" value={p.moveIn} onChange={(e) => setP({ ...p, moveIn: e.target.value })} />}</Field>}
       </div>
       <label className="flex items-center gap-2 text-[13px]"><input type="checkbox" className="size-4 accent-brand-600" checked={p.receiveSoaEmail} onChange={(e) => setP({ ...p, receiveSoaEmail: e.target.checked })} />Send SOAs by email</label>
+      <label className="flex items-center gap-2 text-[13px]"><input type="checkbox" className="size-4 accent-brand-600" checked={p.includeInSoa} onChange={(e) => setP({ ...p, includeInSoa: e.target.checked })} />Show on the SOA</label>
     </fieldset>
   );
 
   return (
     <Drawer open onClose={() => { if (!busy) onClose(); }} width="max-w-xl" title={isNew ? "Add unit" : `Edit unit ${unit!.unitNo}`}
-      subtitle={isNew ? "Parking and storage are added as units of type PARKING / STORAGE." : "The unit number can't be changed."}
+      subtitle={isNew ? "Choose a unit category. Residential type is optional and defaults to Studio." : "The unit number can't be changed."}
       footer={<><Button variant="secondary" onClick={onClose} disabled={busy}>Cancel</Button><Button icon="save-3-line" loading={busy} onClick={submit}>{isNew ? "Create unit" : "Save changes"}</Button></>}>
       <form ref={ref} className="space-y-4" noValidate onSubmit={(e) => { e.preventDefault(); void submit(); }}>
         {serverError && <Notice tone="warn">{serverError}</Notice>}
         <div className="grid gap-3 sm:grid-cols-2">
           {isNew && <Field label="Unit number" error={err("unitNo")} hint="e.g. 12-01, P-15">{(id) => <input id={id} className="input" data-autofocus value={form.unitNo} aria-invalid={Boolean(err("unitNo")) || undefined} onChange={(e) => set({ unitNo: e.target.value }, ["unitNo"])} />}</Field>}
-          <Field label="Type" error={err("type")}>{(id) => (
-            <select id={id} className="input" value={form.type} aria-invalid={Boolean(err("type")) || undefined} onChange={(e) => set({ type: e.target.value }, ["type"])}>
+          {isNew ? (
+            <>
+              <Field label="Category" error={category === "" ? err("type") : ""}>{(id) => (
+                <select id={id} className="input" value={category} aria-invalid={Boolean(category === "" && err("type")) || undefined}
+                  onChange={(e) => {
+                    const nextCategory = e.target.value as UnitCategory;
+                    setCategory(nextCategory);
+                    const keepResidentialType = nextCategory === "RESIDENTIAL" && RESIDENTIAL_TYPES.some((option) => option.value === form.type);
+                    const floor = nextCategory === "COMMERCIAL" && !COMMERCIAL_FLOORS.includes(form.floor as typeof COMMERCIAL_FLOORS[number]) ? "" : form.floor;
+                    set({ type: nextCategory === "RESIDENTIAL" ? (keepResidentialType ? form.type : "STUDIO TYPE") : nextCategory, floor }, ["type", "floor"]);
+                  }}>
+                  <option value="">Choose…</option>
+                  <option value="COMMERCIAL">COMMERCIAL</option>
+                  <option value="RESIDENTIAL">RESIDENTIAL</option>
+                  <option value="DRYING AREA">DRYING AREA</option>
+                  <option value="STORAGE">STORAGE</option>
+                  <option value="PARKING">PARKING</option>
+                </select>)}</Field>
+              {category === "RESIDENTIAL" && <Field label="Residential type (optional)" error={err("type")} hint="Defaults to Studio if left blank.">{(id) => (
+                <select id={id} className="input" value={RESIDENTIAL_TYPES.some((option) => option.value === form.type) ? form.type : "STUDIO TYPE"}
+                  aria-invalid={Boolean(err("type")) || undefined} onChange={(e) => set({ type: e.target.value || "STUDIO TYPE" }, ["type"])}>
+                  {RESIDENTIAL_TYPES.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </select>)}</Field>}
+            </>
+          ) : (
+            <Field label="Type" error={err("type")}>{(id) => (
+              <select id={id} className="input" value={form.type} aria-invalid={Boolean(err("type")) || undefined} onChange={(e) => set({ type: e.target.value }, ["type"])}>
+                <option value="">Choose…</option>
+                {[...new Set([...(options?.unitTypes ?? []), ...(unit?.type ? [unit.type] : [])])].map((t) => <option key={t} value={t}>{t}</option>)}
+              </select>)}</Field>
+          )}
+          <Field label={isNew && category === "COMMERCIAL" ? "Commercial type" : "Floor"} error={err("floor")}
+            hint={isNew && category === "COMMERCIAL" ? "Choose 2F, UG, or LG." : undefined}>{(id) => isNew && category === "COMMERCIAL" ? (
+            <select id={id} className="input" value={form.floor} onChange={(e) => set({ floor: e.target.value }, ["floor"])}>
               <option value="">Choose…</option>
-              {[...new Set([...(options?.unitTypes ?? []), ...(unit?.type ? [unit.type] : [])])].map((t) => <option key={t} value={t}>{t}</option>)}
-            </select>)}</Field>
-          <Field label="Floor" error={err("floor")}>{(id) => <input id={id} className="input" maxLength={20} value={form.floor} onChange={(e) => set({ floor: e.target.value }, ["floor"])} />}</Field>
+              {COMMERCIAL_FLOORS.map((floor) => <option key={floor} value={floor}>{floor}</option>)}
+            </select>
+          ) : (
+            <input id={id} className="input" maxLength={20} value={form.floor} onChange={(e) => set({ floor: e.target.value }, ["floor"])} />
+          )}</Field>
           <Field label="Area (m²)" error={err("areaSqm")}>{(id) => <input id={id} inputMode="decimal" className="input tabular" value={form.areaSqm} aria-invalid={Boolean(err("areaSqm")) || undefined} onChange={(e) => set({ areaSqm: e.target.value }, ["areaSqm"])} />}</Field>
           <Field label="Status" error={err("status")}>{(id) => (
             <select id={id} className="input" value={form.status} onChange={(e) => set({ status: e.target.value as UnitInput["status"] })}><option>Vacant</option><option>Occupied</option></select>)}</Field>
@@ -379,6 +457,24 @@ function UnitFormDrawer({ open, unit, options, onClose, onSaved }:
           <Field label="Pricing" hint={form.duesMode === "manual" ? "Bills charge this fixed amount every month instead of area × rate." : undefined}>{(id) => (
             <select id={id} className="input" value={form.duesMode} onChange={(e) => set({ duesMode: e.target.value as UnitInput["duesMode"] })}><option value="per_sqm">Per m² (area × rate)</option><option value="manual">Manual monthly amount</option></select>)}</Field>
           {form.duesMode === "manual" && <Field label="Manual monthly amount (₱)" error={err("manualMonthlyDues")}>{(id) => <input id={id} inputMode="decimal" className="input tabular" value={form.manualMonthlyDues} aria-invalid={Boolean(err("manualMonthlyDues")) || undefined} onChange={(e) => set({ manualMonthlyDues: e.target.value }, ["manualMonthlyDues"])} />}</Field>}
+        </fieldset>
+
+        <fieldset className="space-y-3 rounded-xl border border-ink-200 p-4">
+          <legend className="px-1 text-[12.5px] font-semibold text-ink-700">Charge responsibility</legend>
+          <p className="text-[12px] text-ink-500">Choose whether each charge belongs on the Owner or Tenant SOA.</p>
+          {([
+            ["condo", "Condo dues"],
+            ["water", "Water"],
+            ["parking", "Parking"],
+            ["storage", "Storage"],
+            ["other", "Named other charges"],
+          ] as const).map(([key, label]) => (
+            <Field key={key} label={label} error={serverFields[`chargePayers.${key}`]}>{(id) => (
+              <select id={id} className="input" value={form.chargePayers[key]}
+                onChange={(e) => set({ chargePayers: { ...form.chargePayers, [key]: e.target.value as "Owner" | "Tenant" } }, [`chargePayers.${key}`])}>
+                <option value="Owner">Owner</option><option value="Tenant">Tenant</option>
+              </select>)}</Field>
+          ))}
         </fieldset>
 
         {!isAsset(form.type) && form.type !== "" && (
@@ -424,7 +520,8 @@ function PersonDrawer({ unit, kind, record, onClose, onSaved }:
   const endsAccess = record?.status === "Current" && form.status === "Past";
   // Only for a new CURRENT owner/tenant of a residential unit, and only with the provisioning
   // permission (Superadmin); the server checks all of this again.
-  const canProvision = !record && can("resident_users") && !["PARKING", "STORAGE"].includes((unit.type || "").toUpperCase()) && !(kind === "Tenant" && form.moveOut);
+  const canProvision = !record && can("resident_users") && !["PARKING", "STORAGE"].includes((unit.type || "").toUpperCase())
+    && !(kind === "Tenant" && (form.moveOut || !form.representative));
 
   async function submit() {
     setTouched(true); setServerError("");

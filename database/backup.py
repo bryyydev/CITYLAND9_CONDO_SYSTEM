@@ -72,10 +72,10 @@ def _verify(path):
     return size
 
 
-def _retention(folder, log):
+def _retention(folder, log, suffix=".sql.gz"):
     days = int(os.getenv("BACKUP_RETENTION_DAYS", "30"))
     keep = int(os.getenv("BACKUP_KEEP_MIN", "7"))
-    files = sorted((f for f in os.listdir(folder) if f.startswith(PREFIX) and f.endswith(".sql.gz")), reverse=True)
+    files = sorted((f for f in os.listdir(folder) if f.startswith(PREFIX) and f.endswith(suffix)), reverse=True)
     cutoff = time.time() - days * 86400
     for name in files[keep:]:
         path = os.path.join(folder, name)
@@ -84,7 +84,7 @@ def _retention(folder, log):
             log.info("Retention: deleted %s", path)
 
 
-def run():
+def _run_mysql():
     log = _logger()
     started = datetime.now(timezone.utc)
     target = None
@@ -125,6 +125,55 @@ def run():
                       file=None, error=str(exc)[:500])
         log.error("BACKUP FAILED: %s", exc)
         return 1
+
+
+def _run_sqlserver():
+    log = _logger()
+    started = datetime.now(timezone.utc)
+    target = None
+    partial = None
+    try:
+        backup_dir = os.getenv("BACKUP_DIR") or os.path.join(ROOT, "database", "backups")
+        os.makedirs(backup_dir, exist_ok=True)
+        free_gb = shutil.disk_usage(backup_dir).free / 1024 ** 3
+        if free_gb < float(os.getenv("BACKUP_MIN_FREE_GB", "2")):
+            raise RuntimeError(f"only {free_gb:.1f} GB free in {backup_dir}")
+        from sqlserver import backup_database
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        target = os.path.join(backup_dir, f"{PREFIX}{stamp}.bak")
+        partial = target + ".part"
+        # SYSTEM has backup rights on CityLand but intentionally cannot create databases,
+        # which SQL Server requires for RESTORE VERIFYONLY. BACKUP ... WITH CHECKSUM is
+        # verified by restore_test_database when run interactively by an authorized admin.
+        backup_database(os.getenv("DATABASE_URL", ""), partial, verify=False)
+        os.replace(partial, target)
+        copied = None
+        copy_dir = os.getenv("BACKUP_COPY_DIR", "").strip()
+        if copy_dir:
+            os.makedirs(copy_dir, exist_ok=True)
+            copied = shutil.copy2(target, copy_dir)
+            _retention(copy_dir, log, suffix=".bak")
+        _retention(backup_dir, log, suffix=".bak")
+        _write_status(status="ok", started_at=started.isoformat(), finished_at=datetime.now(timezone.utc).isoformat(),
+                      file=target, copied_to=copied, error=None)
+        log.info("SQL Server backup OK (CHECKSUM; restore verification requires an administrator): %s (%.1f MB)%s",
+                 target, os.path.getsize(target) / 1024 ** 2,
+                 f", copied to {copied}" if copied else "")
+        return 0
+    except Exception as exc:
+        for path in (target, partial):
+            if path and os.path.exists(path):
+                os.remove(path)
+        _write_status(status="failed", started_at=started.isoformat(), finished_at=datetime.now(timezone.utc).isoformat(),
+                      file=None, error=str(exc)[:500])
+        log.error("SQL Server backup FAILED: %s", exc)
+        return 1
+
+
+def run():
+    if os.getenv("DATABASE_URL", "").strip().lower().startswith("mssql"):
+        return _run_sqlserver()
+    return _run_mysql()
 
 
 if __name__ == "__main__":

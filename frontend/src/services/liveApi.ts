@@ -39,6 +39,8 @@ export const liveApi: DataService = {
     },
     changePassword: (currentPassword, newPassword) =>
       http("/auth/password", { method: "POST", body: { currentPassword, newPassword } }),
+    changeUsername: async (currentPassword, newUsername) =>
+      (await http<{ user: T.SessionUser }>("/auth/username", { method: "POST", body: { currentPassword, newUsername } })).user,
   },
 
   resident: {
@@ -84,6 +86,21 @@ export const liveApi: DataService = {
     options: () => http("/units/options"),
     detail: async (id) => (await http<{ unit: T.UnitDetail }>(`/units/${id}`)).unit,
     create: async (input) => (await http<{ unit: T.UnitDetail }>("/units", { method: "POST", body: input })).unit,
+    downloadBulkTemplate: () => downloadFile("/units/bulk-template", {
+      expect: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      fallbackName: "CITYLAND9_Bulk_Units_Template.xlsx",
+    }),
+    checkBulkImport: (file) => {
+      const body = new FormData();
+      body.append("file", file);
+      return http("/units/bulk-import/check", { method: "POST", body });
+    },
+    createBulk: (file) => {
+      const body = new FormData();
+      body.append("file", file);
+      return http("/units/bulk-import", { method: "POST", body });
+    },
+    delete: (id) => http(`/units/${id}`, { method: "DELETE" }),
     update: async (id, input) => (await http<{ unit: T.UnitDetail }>(`/units/${id}`, { method: "PUT", body: input })).unit,
     addPerson: async (id, kind, input) => {
       const r = await http<{ unit: T.UnitDetail; createdPersonId?: number }>(`/units/${id}/${kind === "Owner" ? "owners" : "tenants"}`, { method: "POST", body: input });
@@ -94,8 +111,18 @@ export const liveApi: DataService = {
   },
   billing: {
     list: async (month) => (await http<{ bills: T.BillRow[] }>(`/billing?month=${month}`)).bills,
-    detail: async (id) => (await http<{ bill: T.BillDetail }>(`/billing/${id}`)).bill,
+    detail: async (id, payerType) => (await http<{ bill: T.BillDetail }>(`/billing/${id}${payerType ? `?payer=${payerType}` : ""}`)).bill,
+    partyBalance: (id, payerType, date) =>
+      http(`/billing/${id}/party-balance?payerType=${payerType}&date=${date}`),
+    printStatements: async (month, payerType) => (await http<{ statements: T.SoaDetail[] }>(
+      `/billing/print-statements?month=${month}${payerType ? `&payer=${payerType}` : ""}`,
+    )).statements,
+    partyTransactions: (id) => http(`/billing/${id}/party-transactions`),
+    assignPartyTransaction: (id, kind, transactionId, payerType) =>
+      http(`/billing/${id}/party-transactions/${kind}/${transactionId}`, { method: "PUT", body: { payerType } }),
     generate: (month) => http("/billing/generate", { method: "POST", body: { month } }),
+    deleteGenerated: (month, billIds) =>
+      http("/billing/delete-generated", { method: "POST", body: billIds ? { month, billIds } : { month } }),
     recordPayment: (id, input) => http(`/billing/${id}/payments`, { method: "POST", body: input }),
     recalculate: async (id) => {
       const r = await http<{ changed: boolean; bill: T.BillDetail }>(`/billing/${id}/recalculate`, { method: "POST" });
@@ -132,8 +159,24 @@ export const liveApi: DataService = {
   water: {
     month: (month) => http(`/water?month=${month}`),
     previousReading: async (unitId, month) => (await http<{ previous: number }>(`/water/previous?unit=${unitId}&month=${month}`)).previous,
+    downloadBulkTemplate: () => downloadFile("/water/bulk-template", {
+      expect: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      fallbackName: "CITYLAND9_Bulk_Water_Readings_Template.xlsx",
+    }),
+    checkBulkImport: (file) => {
+      const body = new FormData();
+      body.append("file", file);
+      return http("/water/bulk-import/check", { method: "POST", body });
+    },
+    createBulk: (file) => {
+      const body = new FormData();
+      body.append("file", file);
+      return http("/water/bulk-import", { method: "POST", body });
+    },
     save: (input) => http("/water", { method: "POST", body: input }),
     correct: (id, input) => http(`/water/${id}`, { method: "PUT", body: input }),
+    saveCommercial: (input) => http("/water/commercial", { method: "POST", body: input }),
+    correctCommercial: (id, input) => http(`/water/commercial/${id}`, { method: "PUT", body: input }),
     pay: (id, input) => http(`/water/${id}/payments`, { method: "POST", body: input }),
   },
   gatePasses: {
@@ -243,6 +286,7 @@ export const liveApi: DataService = {
     saveRates: async (input) => (await http<{ rates: T.RatesAndRules }>("/admin/rates", { method: "PUT", body: input })).rates,
     collections: async (months) => (await http<{ months: T.CollectionSummary[] }>(`/reports/monthly?months=${months}`)).months,
     system: () => http("/admin/system"),
+    backupDatabase: () => http("/admin/system/backup", { method: "POST" }),
     importDatabase: (file) => {
       const form = new FormData();
       form.append("file", file);

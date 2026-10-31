@@ -1,0 +1,3 @@
+V10.45 HR NAVIGATION FIXED
+
+Moved the Employees/Attendance/Leave/Overtime/Payroll/Loans/Payroll Rules/Payroll Reports/13th Month navigation inside the HTML body so it displays correctly. Existing V10.44 payroll, payslip, attendance and statutory features retained. Database is not modified.

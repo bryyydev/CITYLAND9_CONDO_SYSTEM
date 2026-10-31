@@ -530,8 +530,7 @@ DENY_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_ca
 DENY_PREFIXES = ("database/backups/", "database/mysql-data/", "backend/instance/", "uploads/")
 DENY_SUFFIXES = (".db", ".db-wal", ".db-shm", ".sqlite", ".sqlite3", ".sql.gz", ".bak", ".pyc", ".zip", ".log", ".cnf")
 SECRET_RE = re.compile(r"^\s*(SECRET_KEY|[A-Z_]*PASSWORD)\s*=\s*([^\s#<]{6,})", re.M)
-# Known non-secrets: the published demo password of the SQLite demo setup (not anyone's credential).
-SECRET_SCAN_ALLOW = {"scripts/first_run_setup.py"}
+SECRET_SCAN_ALLOW = set()
 
 
 def app_files():

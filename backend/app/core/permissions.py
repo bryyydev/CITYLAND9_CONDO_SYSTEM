@@ -37,6 +37,7 @@ PERMISSIONS = {
     "units": PROPERTY,
     "unit_detail": PROPERTY,          # CHANGED: was any logged-in user (bug D2: residents saw every unit)
     "edit_unit": PROPERTY,            # CHANGED: was SA/manager/staff, admin was blocked (bug D3)
+    "delete_unit": PROPERTY,           # Soft-delete: hide the unit from the active directory but keep the historical record.
     "add_owner": PROPERTY,            # CHANGED: was SA/manager/staff (bug D3)
     "edit_owner": PROPERTY,           # CHANGED: was SA/manager/admin/staff
     "add_tenant": PROPERTY, "edit_tenant": PROPERTY, "tenant_status": PROPERTY, "tenants": PROPERTY,
@@ -49,6 +50,7 @@ PERMISSIONS = {
     "edit_soa": BILLING_RW,           # CHANGED: + accounting
     "billing_qr": BILLING_RW,         # CHANGED: + accounting
     "recalculate_soa": BILLING_RW,    # NEW (Phase B1): re-price an issued bill from current rates
+    "delete_generated_soa": {SA},     # Super Admin only; guarded deletion of unallocated generated SOAs
     "receipts": BILLING_RW,           # NEW (Phase B2): official receipts ledger
     "receipt_detail": BILLING_RW,     # NEW (Phase B2): printable official receipt
     "void_receipt": {SA, ACC},        # NEW: void a receipt + reverse its payments (reason required)  CONFIRM

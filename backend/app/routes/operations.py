@@ -21,7 +21,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from flask import Blueprint, jsonify, request
-from sqlalchemy import func
+from sqlalchemy import func, true
 
 from ..core.numbers import InputError, parse_amount
 from ..services.soa import money
@@ -84,7 +84,7 @@ def make_operations_blueprint(legacy):
         data = request.get_json(silent=True) or {}
         errors = {}
         unit_no = str(data.get("unitNo") or "").strip()
-        unit = Unit.query.filter(func.lower(Unit.unit_no) == unit_no.lower(), Unit.active.is_(True)).first() if unit_no else None
+        unit = Unit.query.filter(func.lower(Unit.unit_no) == unit_no.lower(), Unit.active == true()).first() if unit_no else None
         if not unit:
             errors["unitNo"] = "Enter an existing unit number, e.g. TEST-501."
         kind = str(data.get("type") or "Visitor")
@@ -161,7 +161,7 @@ def make_operations_blueprint(legacy):
     @permission_required("move_certificate")
     def certificate_options():
         units = []
-        for u in Unit.query.filter(Unit.active.is_(True), Unit.unit_type.notin_(("PARKING", "STORAGE"))).order_by(Unit.unit_no).all():
+        for u in Unit.query.filter(Unit.active == true(), Unit.unit_type.notin_(("PARKING", "STORAGE"))).order_by(Unit.unit_no).all():
             people = [{"id": o.id, "type": "Owner", "name": o.owner_name, "status": o.status or "Current", "moveIn": iso(o.move_in), "moveOut": iso(o.move_out)}
                       for o in legacy.Owner.query.filter_by(unit_id=u.id).order_by(legacy.Owner.id.desc())]
             people += [{"id": t.id, "type": "Tenant", "name": t.tenant_name, "status": t.status or "Current", "moveIn": iso(t.move_in), "moveOut": iso(t.move_out)}

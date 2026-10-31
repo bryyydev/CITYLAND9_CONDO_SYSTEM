@@ -54,6 +54,51 @@ Get-ScheduledTask -TaskName "CityLand9*" | Get-ScheduledTaskInfo   # last run ti
 .venv\Scripts\python.exe database\backup.py         # exit code 0 = OK, 1 = failed (reason in logs\backup.log)
 ```
 
+### SQL Server Express backup permissions
+
+With a SQL Server `DATABASE_URL`, the scheduled backup command creates a native `.bak` using
+`BACKUP DATABASE ... WITH CHECKSUM` and confirms the file was created. The least-privileged
+`SYSTEM` task does not run `RESTORE VERIFYONLY`, because SQL Server requires `CREATE DATABASE`
+permission for that command. Do not grant that server-level permission just to verify daily
+backups. Instead, periodically run the restore test below from an interactive administrator
+account; it runs `VERIFYONLY`, restores to a separate test database, checks every table's row
+counts, then removes that test database. SQL Server itself writes and reads the backup file as its
+**service account**; the Python account also needs to see the resulting file. By default the folder is
+`database\backups`, so grant the SQL Server service access from an **elevated PowerShell** on
+the server PC. For the `SQLEXPRESS` instance:
+
+```powershell
+$backup = (Resolve-Path 'database\backups').Path
+icacls $backup /grant 'NT SERVICE\MSSQL$SQLEXPRESS:(OI)(CI)M'
+```
+
+Confirm the service identity first if your instance differs:
+`Get-CimInstance Win32_Service | Where-Object Name -eq 'MSSQL$SQLEXPRESS' | Select-Object StartName`.
+Do not grant access to the whole project folder. Keep backups on an administrator-protected drive.
+The `.bak` contains all resident/financial data and password hashes.
+
+The scheduled tasks run as `SYSTEM`. For that account to connect using Windows integrated
+authentication, a SQL Server administrator must create its login and give it only application
+data and backup rights in the CityLand database (replace `CityLand9` if needed):
+
+```sql
+USE [master];
+IF SUSER_ID(N'NT AUTHORITY\SYSTEM') IS NULL
+    CREATE LOGIN [NT AUTHORITY\SYSTEM] FROM WINDOWS;
+GO
+USE [CityLand9];
+IF DATABASE_PRINCIPAL_ID(N'NT AUTHORITY\SYSTEM') IS NULL
+    CREATE USER [NT AUTHORITY\SYSTEM] FOR LOGIN [NT AUTHORITY\SYSTEM];
+ALTER ROLE [db_datareader] ADD MEMBER [NT AUTHORITY\SYSTEM];
+ALTER ROLE [db_datawriter] ADD MEMBER [NT AUTHORITY\SYSTEM];
+ALTER ROLE [db_backupoperator] ADD MEMBER [NT AUTHORITY\SYSTEM];
+GO
+```
+
+Run this once in SSMS as a SQL Server administrator, only after deciding to use the SYSTEM
+scheduled tasks. It does **not** grant `sysadmin` or database schema-change rights. Apply schema migrations interactively using an account authorized for that operation. Test the
+scheduled backup and periodically run a full interactive restore test before relying on backups.
+
 **Failure reporting:** a failed or missing backup shows as a warning on `/readyz` (§4) and in
 the server log at every start, once the last good backup is older than `BACKUP_MAX_AGE_HOURS` (26).
 Task Scheduler also shows *Last Run Result* ≠ `0x0`.
@@ -94,6 +139,20 @@ the current (damaged) data as `cityland9_before_restore_*.sql`, restores, and ve
 the system again. If the backup came from an older version, run `database\db_migrate.py upgrade`
 before starting. Everything entered after the backup was taken is lost: re-enter it from the
 paper receipts/forms of that period.
+
+For SQL Server, use the separate restore tool and a verified native backup:
+
+```powershell
+.venv-sqlserver\Scripts\python.exe database\sqlserver_restore.py database\backups\cityland9_auto_<date>.bak --drop-after
+STOP_WINDOWS.bat --keep-db
+.venv-sqlserver\Scripts\python.exe database\sqlserver_restore.py database\backups\cityland9_auto_<date>.bak --replace-live
+```
+
+The first command restores to a new test database and reports every table's row count; the
+second requires the server to be stopped, a typed confirmation, and a verified safety backup.
+The SQL Server service account must be able to read the `.bak`, and the interactive Windows
+account must be authorized to create and restore databases. Do not use `--replace-live` for
+migration testing.
 
 ### What was verified
 

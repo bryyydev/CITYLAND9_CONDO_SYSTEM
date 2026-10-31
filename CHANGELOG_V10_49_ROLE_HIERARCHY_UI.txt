@@ -1,0 +1,9 @@
+CITYLAND 9 SYSTEM V10.49
+
+- Modern light office UI: soft neutral background, readable dark text, muted blue/teal accents, subtle borders/shadows.
+- Existing Appearance/theme selector remains available; Comfort Teal stays the default.
+- Superadmin can change/reset passwords for accounts below Superadmin hierarchy only (admin, manager, accounting, staff).
+- Superadmin accounts cannot be changed from User Management password controls.
+- User Management remains Superadmin-only; Admin cannot delete or manage accounts.
+- Navigation now follows the same role restrictions as backend route decorators. Restricted modules are hidden from lower-role users instead of being shown as unusable links.
+- Existing backend role protection remains active, so direct URL access is still denied.

@@ -22,7 +22,11 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 }
 
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
-$python = Join-Path $root ".venv\Scripts\python.exe"
+$databaseUrl = Get-Content (Join-Path $root ".env") |
+    Where-Object { $_ -match '^\s*DATABASE_URL\s*=' -and $_ -notmatch '^\s*#' } |
+    Select-Object -Last 1
+$pythonEnv = if ($databaseUrl -match '^\s*DATABASE_URL\s*=\s*mssql\+pyodbc:') { ".venv-sqlserver" } else { ".venv" }
+$python = Join-Path $root "$pythonEnv\Scripts\python.exe"
 $names = @("CityLand9 Server", "CityLand9 Backup")
 
 foreach ($name in $names) {
@@ -35,7 +39,7 @@ foreach ($name in $names) {
 if ($Remove) { Write-Host "Done (tasks removed)."; exit 0 }
 
 if (-not (Test-Path $python)) {
-    Write-Host "Not found: $python  - run START_WINDOWS.bat once first (it creates .venv)." -ForegroundColor Red
+    Write-Host "Not found: $python  - run START_WINDOWS.bat once first (it creates the runtime environment)." -ForegroundColor Red
     exit 1
 }
 if (-not (Test-Path (Join-Path $root ".env"))) {

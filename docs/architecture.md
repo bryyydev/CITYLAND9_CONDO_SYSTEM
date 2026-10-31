@@ -8,21 +8,21 @@
 ## 1. Deployment topology
 
 ```
- Office PCs / phones on the LAN                 Server PC (client-owned)
- ┌──────────────────────────┐   HTTP :5000   ┌──────────────────────────────────────────┐
- │ Browser                  │ ─────────────▶ │ waitress (Flask)  0.0.0.0:5000            │
- │  React app (static files │ ◀───────────── │  ├─ /            → React build (static)   │
- │  served by Flask)        │   JSON /api/*  │  ├─ /api/*       → Flask blueprints       │
- └──────────────────────────┘                │  └─ legacy pages → Jinja (until retired)  │
-                                             │              │ PyMySQL                    │
-                                             │              ▼                            │
-                                             │ MySQL 8 / MariaDB   127.0.0.1:3306 only   │
-                                             │ Local folders: uploads/, database/backups │
-                                             └──────────────────────────────────────────┘
+ Office PCs / phones on the LAN                         Server PC (client-owned)
+ ┌──────────────────────────┐ HTTPS :443 ┌─────────────────────────────────────────────┐
+ │ Browser                  │ ──────────▶ │ Caddy (TLS) → Waitress / Flask 127.0.0.1:5000│
+ │  React app (static files │ ◀────────── │  ├─ /            → React build (static)      │
+ │  served by Flask)        │  JSON /api/*│  ├─ /api/*       → Flask blueprints          │
+ └──────────────────────────┘             │  └─ legacy pages → Jinja (until retired)     │
+                                          │              │ PyMySQL                       │
+                                          │              ▼                               │
+                                          │ MySQL 8 / MariaDB   127.0.0.1:3306 only      │
+                                          │ Local folders: uploads/, database/backups    │
+                                          └──────────────────────────────────────────────┘
  Optional, outside the core: SMTP server (LAN or ISP) for SOA email only
 ```
 
-- **One origin.** In production Flask serves the built React files *and* the API on the same address (`http://192.168.x.x:5000`). There are no cross-origin requests, so **no CORS configuration** is needed, and none is opened.
+- **One origin.** In production Flask serves the built React files *and* the API on the same origin through the HTTPS reverse proxy (for example, `https://cityland9.local`). Waitress is bound to loopback; port 5000 is not exposed to the LAN. There are no cross-origin requests, so **no CORS configuration** is needed, and none is opened.
 - **Development:** the Vite dev server (`localhost:5173`) proxies `/api` to Flask on `127.0.0.1:5000`. That's still the same origin from the browser's point of view.
 - **MySQL is never reachable from the browser or the LAN.** It listens on `127.0.0.1`, and port 3306 stays closed in the firewall. Only Flask holds the credentials, in the local `.env` file.
 - **Offline audit (2026-09-29):** the current templates and static files load **no** CDN scripts, web fonts or external resources, and the backend makes **no** outbound calls except the optional SMTP email. The React build must keep that: every dependency is bundled locally, with no CDN links and no Google Fonts URLs.
@@ -49,7 +49,7 @@ cd frontend
 npm install
 npm run build
 cd ..
-python backend/run.py --lan        # http://127.0.0.1:5000/app/   (legacy UI still at http://127.0.0.1:5000/)
+python backend/run.py --lan        # local: http://127.0.0.1:5000/app/; LAN: HTTPS proxy URL
 
 # while developing the frontend (hot reload), with the Flask server also running:
 cd frontend
@@ -136,8 +136,8 @@ Plan:
 
 | Setting | Plan |
 |---|---|
-| `FLASK_DEBUG` | Always `0` on the server. `run.py` refuses `FLASK_DEBUG=1` when the host is `0.0.0.0`. Today the dev mode defaults to debug on `0.0.0.0` (a HIGH finding). |
-| `SECRET_KEY` | Required from `.env`; the app refuses to start with the placeholder `change-me`. Today there's a hard-coded fallback. |
+| `FLASK_DEBUG` | Production uses Waitress. `run.py` refuses development mode with `--lan` and refuses to bind the development server to a network address. |
+| `SECRET_KEY` | Production requires a long key and refuses known placeholders, including the value in `.env.example`. Standard `run.py` allows the development fallback only on loopback and refuses `--lan`. |
 | Database account | `cityland9_app`, limited to the `cityland9` database, never root (docs/migration.md §9.1) |
 | Logs | Local rotating log files (`backend/instance/logs/`), no external log service |
 | Backups | Windows Task Scheduler: a daily `mysqldump` plus the uploads folder, copied to a local or external drive |

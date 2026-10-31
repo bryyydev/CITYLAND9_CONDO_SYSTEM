@@ -7,22 +7,37 @@ rem    START_WINDOWS.bat --rebuild  rebuild the React app first (after updating 
 rem
 rem  What it does (docs\run-guide\README.md explains each step):
 rem    1. checks Python (and Node.js only when the React app must be built); on a new PC
-rem       (no .env yet) runs scripts\first_run_setup.py: configuration, database, demo data
-rem    2. creates .venv and installs Python packages only when requirements change,
+rem       (no .env yet) runs scripts\first_run_setup.py: configuration and an empty database
+rem    2. creates the appropriate Python environment and installs packages only when requirements change,
 rem       so the server PC can start without internet
 rem    3. builds the React app (frontend\dist) when it is missing, older than the code
 rem       (compared by content, scripts\frontend_build.py) or --rebuild is given
 rem    4. starts CityLand's own MariaDB and checks the database
-rem    5. starts the Waitress server on 0.0.0.0:5000 and shows the LAN address
+rem  5. starts Waitress on loopback; LAN access requires the configured HTTPS proxy
 rem  Stop the server: press Ctrl+C in this window, or close it (or run STOP_WINDOWS.bat).
 rem  Set CL9_NO_BROWSER=1 to start without opening the browser.
 rem ===========================================================================
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 title CityLand 9 Condo System
-set "PY=.venv\Scripts\python.exe"
+set "PY_ENV=.venv"
+set "PY=!PY_ENV!\Scripts\python.exe"
+set "REQUIREMENTS=requirements.txt"
+findstr /b /i "DATABASE_URL=mssql+pyodbc:" .env >nul 2>nul
+if not errorlevel 1 (
+    set "PY_ENV=.venv-sqlserver"
+    set "PY=!PY_ENV!\Scripts\python.exe"
+    set "REQUIREMENTS=requirements-sqlserver.txt"
+    py -3.14 -c "import sys; sys.exit(0 if sys.version_info[:2] == (3, 14) else 1)" >nul 2>nul
+    if errorlevel 1 (
+        echo [X] SQL Server mode needs Python 3.14. Install it alongside other Python versions, then retry.
+        goto :fail
+    )
+    set "BOOT=py -3.14"
+)
 set "PORT=5000"
 for /f "usebackq tokens=1,* delims==" %%A in (`findstr /b /i "FLASK_PORT=" .env 2^>nul`) do set "PORT=%%B"
+for /f "usebackq tokens=1,* delims==" %%A in (`findstr /b /i "PUBLIC_URL=" .env 2^>nul`) do set "PUBLIC_URL=%%B"
 
 echo.
 echo  CITYLAND 9 CONDO MANAGEMENT SYSTEM
@@ -30,16 +45,16 @@ echo  ==================================
 echo.
 
 rem --- 1. Python ---------------------------------------------------------------
-rem A .venv copied from another PC (e.g. inside a zip) points to that PC's Python: rebuild it.
+rem A virtual environment copied from another PC (e.g. inside a zip) points to that PC's Python: rebuild it.
 if exist "%PY%" (
     "%PY%" -c "import sys" >nul 2>nul
     if errorlevel 1 (
-        echo [1/5] The Python environment ^(.venv^) was made on another PC. Rebuilding it...
-        rmdir /s /q .venv
+        echo [1/5] The Python environment ^(!PY_ENV!^) was made on another PC. Rebuilding it...
+        rmdir /s /q "!PY_ENV!"
     )
 )
 if not exist "%PY%" (
-    call :find_python
+    if not defined BOOT call :find_python
     if not defined BOOT (
         echo [X] Python 3.10 or newer is not installed.
         echo     Install it from https://www.python.org/downloads/ and tick
@@ -55,10 +70,10 @@ if not exist "%PY%" (
         echo     then run START_WINDOWS.bat again.
         goto :fail
     )
-    echo [1/5] Creating the Python environment ^(.venv^) with !BOOT!...
-    !BOOT! -m venv .venv
+    echo [1/5] Creating the Python environment ^(!PY_ENV!^) with !BOOT!...
+    !BOOT! -m venv "!PY_ENV!"
     if errorlevel 1 (
-        if exist .venv rmdir /s /q .venv
+        if exist "!PY_ENV!" rmdir /s /q "!PY_ENV!"
         echo [X] Could not create the Python environment.
         echo     - Extract the zip first ^(don't run START_WINDOWS.bat from inside the zip^).
         echo     - Use a short folder path, e.g. C:\CITYLAND9 ^(Windows limits paths to 260 characters^).
@@ -69,21 +84,22 @@ echo [1/5] Python:
 "%PY%" --version
 
 rem Install packages only when requirements changed since the last install.
-copy /b requirements.txt "%TEMP%\cl9-req.txt" >nul
-fc /b "%TEMP%\cl9-req.txt" ".venv\cl9-requirements.installed" >nul 2>nul
+copy /b "!REQUIREMENTS!" "%TEMP%\cl9-req.txt" >nul
+if /i "!REQUIREMENTS!"=="requirements-sqlserver.txt" type requirements.txt >> "%TEMP%\cl9-req.txt"
+fc /b "%TEMP%\cl9-req.txt" "!PY_ENV!\cl9-requirements.installed" >nul 2>nul
 if errorlevel 1 (
     echo [2/5] Installing Python packages ^(needs internet the first time^)...
-    "%PY%" -m pip install --disable-pip-version-check -q -r requirements.txt
+    "%PY%" -m pip install --disable-pip-version-check -q -r "!REQUIREMENTS!"
     if errorlevel 1 (
         echo [X] Package installation failed. Check the internet connection and try again.
         goto :fail
     )
-    copy /y "%TEMP%\cl9-req.txt" ".venv\cl9-requirements.installed" >nul
+    copy /y "%TEMP%\cl9-req.txt" "!PY_ENV!\cl9-requirements.installed" >nul
 ) else (
     echo [2/5] Python packages are up to date.
 )
 
-rem --- First run on this PC: configuration, database, demo data, Superadmin ------
+rem --- First run on this PC: configuration, empty database, Superadmin ----------
 rem (A downloaded copy has no .env: it holds secrets and is never shared.)
 if not exist ".env" (
     echo.
@@ -91,6 +107,7 @@ if not exist ".env" (
     if errorlevel 1 goto :fail
     if not exist ".env" goto :fail
     for /f "usebackq tokens=1,* delims==" %%A in (`findstr /b /i "FLASK_PORT=" .env 2^>nul`) do set "PORT=%%B"
+    for /f "usebackq tokens=1,* delims==" %%A in (`findstr /b /i "PUBLIC_URL=" .env 2^>nul`) do set "PUBLIC_URL=%%B"
 )
 
 rem --- 3. React app -----------------------------------------------------------
@@ -149,8 +166,11 @@ if errorlevel 1 (
     goto :fail
 )
 rem Going through run.py starts CityLand's own MariaDB before the app connects to it.
-"%PY%" -c "import sys; sys.path.insert(0, 'backend'); import run; run.init_db(); print('      Database: OK')"
-if errorlevel 1 (
+pushd backend
+"..\%PY%" -c "import run; run.init_db(); print('      Database: OK')"
+set "DB_CHECK_EXIT=%errorlevel%"
+popd
+if not "%DB_CHECK_EXIT%"=="0" (
     echo [X] The database check failed. The error above shows the exact problem.
     echo     See docs\run-guide\05-TROUBLESHOOTING.md
     goto :fail
@@ -160,17 +180,20 @@ rem --- 5. Start the server ----------------------------------------------------
 echo [5/5] Starting the server...
 echo.
 echo  ------------------------------------------------------------------
-echo   This PC:        http://127.0.0.1:%PORT%
-for /f "tokens=2 delims=:" %%A in ('ipconfig ^| findstr /r /c:"IPv4 Address"') do (
-    set "IP=%%A"
-    echo   Other PCs:      http://!IP: =!:%PORT%
+if defined PUBLIC_URL (
+    echo   Access URL:     !PUBLIC_URL!
+) else (
+    echo   This PC:        http://127.0.0.1:%PORT%
+    echo   LAN access:     configure HTTPS first ^(docs\run-guide\06-SECURITY.md^)
 )
 echo.
 echo   Keep this window open while the system is in use.
 echo   To stop the server: press Ctrl+C here, or close this window.
 echo  ------------------------------------------------------------------
 echo.
-if not defined CL9_NO_BROWSER start "" "http://127.0.0.1:%PORT%"
+if not defined CL9_NO_BROWSER (
+    if defined PUBLIC_URL (start "" "!PUBLIC_URL!") else start "" "http://127.0.0.1:%PORT%"
+)
 "%PY%" backend\run.py --lan
 exit /b %errorlevel%
 

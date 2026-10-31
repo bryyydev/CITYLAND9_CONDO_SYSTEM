@@ -1,0 +1,36 @@
+{
+  "_comment": "Copy to migration_data/import_config.json (git-ignored) and fill in ONLY decisions the client approved. Read by the dry-run validator (database/import_check.py, Settings > Check only). Guide: CITYLAND9_IMPORT_SAFEGUARDS.md",
+
+  "source_system": {
+    "code": "<stable-code-of-the-old-system, e.g. legacy-condo>",
+    "name": "<name of the old system>",
+    "_comment": "The code identifies the SOURCE SYSTEM, never a file. Keep it the same for every re-export; it namespaces all external ids."
+  },
+
+  "properties": {
+    "sheet": "Properties",
+    "columns": { "external_id": "ID", "unit_no": "Name", "area_sqm": "Size", "group": "Group", "owner": "Owner", "tenant": "Tenant" },
+    "unit_no_confirmed": false,
+    "area_unit": "sqm",
+    "group_mapping": {
+      "<GROUP LABEL>": { "approved": false, "unit_type": null, "floor": null, "note": "<client's meaning and date>" }
+    },
+    "people": {
+      "one_person_per_cell_confirmed": false,
+      "owner_equals_tenant_rule": null,
+      "_comment": "Until confirmed, every Owner/Tenant cell is reported as unresolved. Names are never used to merge people."
+    }
+  },
+
+  "financial": {
+    "approved": false,
+    "approved_by": null,
+    "approved_on": null,
+    "cutoff_date": null,
+    "mode": null,
+    "_mode_values": "full_history | opening_balances",
+    "scope": { "first_month": null, "last_month": null, "entities": [] },
+    "control_totals": { "billing_rows": null, "billing_charges_total": null, "payment_rows": null, "payment_total": null },
+    "_comment": "Financial readiness stays BLOCKED until every field above is filled from an approved decision and the control totals match the source."
+  }
+}

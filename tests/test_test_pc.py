@@ -16,6 +16,7 @@ PY = sys.executable
 
 def run(args, **env_changes):
     env = {k: v for k, v in os.environ.items() if k not in ("DATABASE_URL", "CL9_TEST_INSTALL", "OUTBOUND_EMAIL")}
+    env["PYTHON_DOTENV_DISABLED"] = "1"
     env.update(env_changes)
     return subprocess.run([PY, *args], cwd=ROOT, env=env, capture_output=True, text=True, timeout=120)
 

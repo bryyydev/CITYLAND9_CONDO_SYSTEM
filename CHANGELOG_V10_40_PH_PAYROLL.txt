@@ -1,0 +1,1 @@
+V10.40 adds SSS, PhilHealth, Pag-IBIG, BIR withholding tax, statutory payroll summary, printable statutory payroll, and 13th-month report.

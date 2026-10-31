@@ -29,7 +29,7 @@ const TODAY = todayIso();
 const THIS_MONTH = TODAY.slice(0, 7);
 const nowUtc = () => new Date().toISOString().slice(0, 19);
 const STORAGE_FROM = "2026-10";
-const RESIDENTIAL: T.UnitType[] = ["STUDIO TYPE", "1 BEDROOM", "2 BEDROOM", "3 BEDROOM"];
+const RESIDENTIAL: T.UnitType[] = ["STUDIO TYPE", "1 BEDROOM", "2 BEDROOM", "3 BEDROOM", "COMMERCIAL", "DRYING AREA"];
 
 // ------------------------------------------------------------------ session (Role Switcher)
 const SESSION_KEY = "cl9.mock.role";
@@ -40,6 +40,7 @@ let currentRole: T.Role | null = (() => {
     return null;
   }
 })();
+let mockResidentUsername = PERSONAS.resident.username;
 
 export function setMockRole(role: T.Role | null) {
   currentRole = role;
@@ -57,13 +58,15 @@ const actor = () => (currentRole ? PERSONAS[currentRole].username : "system");
 const rates: T.RatesAndRules = {
   corporationName: "CITYLAND 9 CONDOMINIUM CORPORATION",
   address: "9 Dela Rosa Street, Barangay Pio del Pilar, Makati City",
-  ratesPerSqm: { studio: "85.00", oneBed: "85.00", twoBed: "90.00", threeBed: "95.00" },
+  ratesPerSqm: { residential: "85.00", commercial: "0.00", dryingArea: "0.00" },
   parkingRatePerSqm: "60.00",
   storageRatePerSqm: "45.00",
   waterRate: "50.00",
   waterAutoCompute: true,
   penaltyRate: "10",
   penaltyIncludes: { condo: true, parking: false, storage: false, water: false },
+  vatRate: "0",
+  vatIncludes: { condo: false, parking: false, storage: false, water: false, other: false },
   storageInTotalFrom: STORAGE_FROM,
   booksClosedThrough: "",
   dueDay: 8,
@@ -78,12 +81,12 @@ const rates: T.RatesAndRules = {
 
 const rateFor = (type: T.UnitType): number => {
   const r = rates.ratesPerSqm;
-  return toCents({ "STUDIO TYPE": r.studio, "1 BEDROOM": r.oneBed, "2 BEDROOM": r.twoBed, "3 BEDROOM": r.threeBed }[type as "STUDIO TYPE"] ?? "0");
+  return toCents(type === "COMMERCIAL" ? r.commercial : type === "DRYING AREA" ? r.dryingArea : type === "PARKING" || type === "STORAGE" ? "0" : r.residential);
 };
 
 // ------------------------------------------------------------------ people & units
-interface Person { id: number; unitId: number; type: "Owner" | "Tenant"; name: string; contactNo: string; email: string; status: "Current" | "Past"; moveIn: string | null; moveOut: string | null }
-interface MockUnit { id: number; unitNo: string; floor: string; type: T.UnitType; areaSqm: number; ratePerSqmCents: number | null; status: "Occupied" | "Vacant"; occupancy: "Owner" | "Tenant"; active: boolean; parkingId: number | null; storageId: number | null }
+interface Person { id: number; unitId: number; type: "Owner" | "Tenant"; name: string; contactNo: string; email: string; status: "Current" | "Past"; moveIn: string | null; moveOut: string | null; includeInSoa: boolean }
+interface MockUnit { id: number; unitNo: string; floor: string; type: T.UnitType; areaSqm: number; ratePerSqmCents: number | null; status: "Occupied" | "Vacant"; occupancy: "Owner" | "Tenant"; chargePayers: T.UnitChargePayers; active: boolean; parkingId: number | null; storageId: number | null }
 
 const OWNERS = ["Juan Dela Cruz", "Maria Santos", "Pedro Reyes", "Ana Garcia", "Jose Mendoza", "Liza Ramos", "Carlo Aquino", "Rosa Villareal",
   "Miguel Torres", "Grace Lim", "Antonio Navarro", "Cristina Castillo", "Ramon Gonzales", "Teresa Domingo", "Eduardo Pascual", "Isabel Flores",
@@ -98,27 +101,28 @@ let nextPersonId = 1;
   const types: T.UnitType[] = ["STUDIO TYPE", "1 BEDROOM", "2 BEDROOM"];
   const areas: Record<string, number> = { "STUDIO TYPE": 28, "1 BEDROOM": 42, "2 BEDROOM": 64, "3 BEDROOM": 86 };
   // Parking and storage units first (they are assigned to residential units).
-  for (let p = 1; p <= 10; p++) units.push({ id: id++, unitNo: `P-${String(p).padStart(2, "0")}`, floor: "B1", type: "PARKING", areaSqm: 12.5, ratePerSqmCents: null, status: "Occupied", occupancy: "Owner", active: true, parkingId: null, storageId: null });
-  for (let s = 1; s <= 6; s++) units.push({ id: id++, unitNo: `S-${String(s).padStart(2, "0")}`, floor: "B2", type: "STORAGE", areaSqm: 4, ratePerSqmCents: null, status: "Occupied", occupancy: "Owner", active: true, parkingId: null, storageId: null });
+  for (let p = 1; p <= 10; p++) units.push({ id: id++, unitNo: `P-${String(p).padStart(2, "0")}`, floor: "B1", type: "PARKING", areaSqm: 12.5, ratePerSqmCents: null, status: "Occupied", occupancy: "Owner", chargePayers: { condo: "Owner", water: "Owner", parking: "Owner", storage: "Owner", other: "Owner" }, active: true, parkingId: null, storageId: null });
+  for (let s = 1; s <= 6; s++) units.push({ id: id++, unitNo: `S-${String(s).padStart(2, "0")}`, floor: "B2", type: "STORAGE", areaSqm: 4, ratePerSqmCents: null, status: "Occupied", occupancy: "Owner", chargePayers: { condo: "Owner", water: "Owner", parking: "Owner", storage: "Owner", other: "Owner" }, active: true, parkingId: null, storageId: null });
   let o = 0;
   for (let floor = 5; floor <= 12; floor++) {
     for (let n = 1; n <= 3; n++) {
       const type = floor === 12 && n === 1 ? "3 BEDROOM" : types[(floor + n) % 3];
       const vacant = (floor === 7 && n === 3) || (floor === 10 && n === 2);
       const withTenant = !vacant && (floor + n) % 4 === 0;
+      const occupancy = withTenant ? "Tenant" : "Owner";
       const unit: MockUnit = { id: id++, unitNo: `${floor}-${String(n).padStart(2, "0")}`, floor: `${floor}F`, type, areaSqm: areas[type], ratePerSqmCents: null,
-        status: vacant ? "Vacant" : "Occupied", occupancy: withTenant ? "Tenant" : "Owner", active: true,
+        status: vacant ? "Vacant" : "Occupied", occupancy, chargePayers: { condo: occupancy, water: occupancy, parking: occupancy, storage: occupancy, other: occupancy }, active: true,
         parkingId: o < 10 && !vacant ? units[o].id : null, storageId: o < 6 && !vacant ? units[10 + o].id : null };
       units.push(unit);
       const ownerName = unit.unitNo === "12-01" ? "Marcus Villanueva" : OWNERS[o % OWNERS.length];
       people.push({ id: nextPersonId++, unitId: unit.id, type: "Owner", name: ownerName, contactNo: `0917${String(1000000 + o * 7919).slice(-7)}`,
         email: unit.unitNo === "12-01" ? "marcus.v@email.com" : `${ownerName.toLowerCase().replace(/[^a-z]+/g, ".")}@email.com`,
-        status: "Current", moveIn: `20${18 + (o % 7)}-0${1 + (o % 9)}-15`, moveOut: null });
+        status: "Current", moveIn: `20${18 + (o % 7)}-0${1 + (o % 9)}-15`, moveOut: null, includeInSoa: true });
       if (withTenant) {
         const t = TENANTS[(floor + n) % TENANTS.length];
-        people.push({ id: nextPersonId++, unitId: unit.id, type: "Tenant", name: t, contactNo: `0998${String(2000000 + o * 3571).slice(-7)}`, email: `${t.toLowerCase().replace(/[^a-z]+/g, ".")}@email.com`, status: "Current", moveIn: "2025-06-01", moveOut: null });
+        people.push({ id: nextPersonId++, unitId: unit.id, type: "Tenant", name: t, contactNo: `0998${String(2000000 + o * 3571).slice(-7)}`, email: `${t.toLowerCase().replace(/[^a-z]+/g, ".")}@email.com`, status: "Current", moveIn: "2025-06-01", moveOut: null, includeInSoa: true });
       }
-      if (floor === 9 && n === 1) people.push({ id: nextPersonId++, unitId: unit.id, type: "Tenant", name: "Arnel Pineda", contactNo: "09281234567", email: "", status: "Past", moveIn: "2023-02-01", moveOut: "2025-05-31" });
+      if (floor === 9 && n === 1) people.push({ id: nextPersonId++, unitId: unit.id, type: "Tenant", name: "Arnel Pineda", contactNo: "09281234567", email: "", status: "Past", moveIn: "2023-02-01", moveOut: "2025-05-31", includeInSoa: true });
       o++;
     }
   }
@@ -135,20 +139,52 @@ const condoCents = (u: MockUnit) => Math.round(u.areaSqm * (u.ratePerSqmCents ??
 const assetCents = (assetId: number | null, rateCents: number) => (assetId ? Math.round(unitById(assetId).areaSqm * rateCents) : 0);
 
 // ------------------------------------------------------------------ water
-interface MockReading { id: number; unitId: number; month: string; previous: number; current: number; rateCents: number; readingDate: string; paidCents: number }
+interface MockReading { id: number; unitId: number; month: string; previous: number; current: number; rateCents: number; readingDate: string; readingFrom: string; readingTo: string; paidCents: number }
 const readings: MockReading[] = [];
 let nextReadingId = 1;
+interface MockCommercialReading { id: number; commercialType: "2F" | "UG" | "LG"; month: string; previous: number; current: number; rateCents: number; readingDate: string; readingFrom: string; readingTo: string }
+const commercialReadings: MockCommercialReading[] = [];
+let nextCommercialReadingId = 1;
+const defaultReadingPeriod = (month: string) => ({ readingFrom: `${addMonths(month, -1)}-16`, readingTo: `${month}-15` });
 const FIRST_MONTH = "2026-04";
 for (const u of residential()) {
   let meter = 100 + u.id * 3;
   for (let m = FIRST_MONTH; m < THIS_MONTH; m = addMonths(m, 1)) {
     const use = u.status === "Vacant" ? 0 : 6 + ((u.id * 7 + Number(m.slice(5))) % 11);
-    readings.push({ id: nextReadingId++, unitId: u.id, month: m, previous: meter, current: meter + use, rateCents: 5000, readingDate: `${m}-05`, paidCents: 0 });
+    const dateRange = defaultReadingPeriod(m);
+    readings.push({ id: nextReadingId++, unitId: u.id, month: m, previous: meter, current: meter + use, rateCents: 5000,
+      readingDate: dateRange.readingTo, ...dateRange, paidCents: 0 });
     meter += use;
   }
 }
 const readingFor = (unitId: number, month: string) => readings.find((r) => r.unitId === unitId && r.month === month);
 const readingCents = (r: MockReading | undefined) => (r && rates.waterAutoCompute ? Math.round(Math.max(r.current - r.previous, 0) * r.rateCents) : 0);
+const commercialUnits = (commercialType: string) => units.filter((u) => u.active && u.type === "COMMERCIAL" && u.floor === commercialType);
+const commercialShares = (commercialType: string, amountCents: number) => {
+  const matching = commercialUnits(commercialType).map((unit) => ({ unit, area: Math.max(unit.areaSqm, 0) }));
+  const totalArea = matching.reduce((sum, row) => sum + row.area, 0);
+  const positive = matching.filter((row) => row.area > 0);
+  const shares = new Map<number, number>();
+  let remaining = amountCents;
+  positive.forEach(({ unit, area }, index) => {
+    const share = index === positive.length - 1 ? remaining : Math.min(Math.max(Math.round(amountCents * area / totalArea), 0), remaining);
+    shares.set(unit.id, share);
+    remaining -= share;
+  });
+  matching.filter((row) => row.area === 0).forEach(({ unit }) => shares.set(unit.id, 0));
+  return { shares, totalArea };
+};
+const commercialReadingCents = (r: MockCommercialReading | undefined) => (r && rates.waterAutoCompute ? Math.round(Math.max(r.current - r.previous, 0) * r.rateCents) : 0);
+const commercialReadingForBill = (commercialType: string, month: string) => commercialReadings
+  .filter((r) => r.commercialType === commercialType && r.month < month)
+  .sort((a, b) => b.month.localeCompare(a.month))[0];
+const commercialReadingOut = (r: MockCommercialReading): T.CommercialWaterReadingAdmin => {
+  const group = commercialUnits(r.commercialType);
+  return { id: r.id, commercialType: r.commercialType, month: r.month, previous: r.previous, current: r.current,
+    rate: fromCents(r.rateCents), usage: Math.max(r.current - r.previous, 0), amount: fromCents(commercialReadingCents(r)),
+    readingDate: r.readingDate, readingFrom: r.readingFrom, readingTo: r.readingTo,
+    unitCount: group.length, totalArea: group.reduce((sum, u) => sum + Math.max(u.areaSqm, 0), 0) };
+};
 
 // ------------------------------------------------------------------ bills, payments, advances, receipts
 interface MockPayment { id: number; billId: number; amountCents: number; date: string; method: T.PaymentMethod; type: string; reference: string }
@@ -167,6 +203,15 @@ const storageIncluded = (b: MockBill) => b.month >= rates.storageInTotalFrom;
 const currentCharges = (b: MockBill) => b.condo + b.parking + (storageIncluded(b) ? b.storage : 0) + (waterIncluded(b) ? b.water : 0);
 const totalCents = (b: MockBill) => currentCharges(b) + b.penalty + b.previous - b.advance;
 const balanceCents = (b: MockBill) => totalCents(b) - b.paid;
+const soaVatCents = (b: MockBill) => {
+  const selected = [
+    rates.vatIncludes.condo ? b.condo : 0,
+    rates.vatIncludes.parking ? b.parking : 0,
+    rates.vatIncludes.storage && storageIncluded(b) ? b.storage : 0,
+    rates.vatIncludes.water && waterIncluded(b) ? b.water : 0,
+  ];
+  return Math.round(selected.reduce((sum, amount) => sum + Math.max(amount, 0), 0) * Number(rates.vatRate || 0) / 100);
+};
 
 function statusOf(b: MockBill): T.BillStatus {
   if (balanceCents(b) <= 0) return "Paid";
@@ -204,9 +249,14 @@ function createBill(u: MockUnit, month: string): MockBill {
   const prior = earlier.at(-1);
   const previous = prior ? Math.max(balanceCents(prior), 0) : 0;
   const priorCondoUnpaid = prior ? Math.min(previous, prior.condo) : 0;
+  const sharedReading = u.type === "COMMERCIAL" ? commercialReadingForBill(u.floor, month) : undefined;
+  const sharedAmount = commercialReadingCents(sharedReading);
+  const water = u.type === "COMMERCIAL"
+    ? commercialShares(u.floor, sharedAmount).shares.get(u.id) ?? 0
+    : readingCents(readingFor(u.id, month));
   const bill: MockBill = {
     id: nextBillId++, unitId: u.id, month, condo: condoCents(u), parking: assetCents(u.parkingId, toCents(rates.parkingRatePerSqm)),
-    storage: assetCents(u.storageId, toCents(rates.storageRatePerSqm)), water: readingCents(readingFor(u.id, month)),
+    storage: assetCents(u.storageId, toCents(rates.storageRatePerSqm)), water,
     penalty: rates.penaltyIncludes.condo ? Math.round(priorCondoUnpaid * Number(rates.penaltyRate) / 100) : 0,
     previous, advance: 0, paid: 0, dueDate: `${month}-08`, note: "", manual: false,
   };
@@ -215,6 +265,8 @@ function createBill(u: MockUnit, month: string): MockBill {
   applyAdvances(bill);
   return bill;
 }
+
+const billableUnits = () => units.filter((u) => u.active && !["PARKING", "STORAGE"].includes(u.type));
 
 function pay(bill: MockBill, amountCents: number, date: string, method: T.PaymentMethod, reference: string, remarks = "", type = "FULL", receivedBy = actor()) {
   const balance = Math.max(balanceCents(bill), 0);
@@ -238,7 +290,7 @@ function pay(bill: MockBill, amountCents: number, date: string, method: T.Paymen
 
 // Seed history: bills from April to last month with realistic payment behaviour.
 for (let m = FIRST_MONTH; m < THIS_MONTH; m = addMonths(m, 1)) {
-  for (const u of residential()) {
+  for (const u of billableUnits()) {
     const bill = createBill(u, m);
     const behaviour = (u.id + Number(m.slice(5))) % 9;
     const cashier = ["melissa.bautista", "karen.uy"][u.id % 2];
@@ -474,21 +526,47 @@ const filterAudit = ({ q, user, from, to }: Omit<T.AuditLogQuery, "page" | "perP
 auditLogs.sort((a, b) => b.at.localeCompare(a.at));
 
 // ------------------------------------------------------------------ mappers
-const soaRow = (b: MockBill): T.SoaRow => ({ id: b.id, billingMonth: b.month, dueDate: b.dueDate, status: statusOf(b), total: fromCents(totalCents(b)), amountPaid: fromCents(b.paid), balance: fromCents(Math.max(balanceCents(b), 0)) });
+const soaRow = (b: MockBill): T.SoaRow => {
+  const vat = soaVatCents(b), balance = balanceCents(b) + vat;
+  const status: T.BillStatus = balance <= 0 ? "Paid" : b.paid > 0 ? "Partially Paid" : TODAY > b.dueDate ? "Overdue" : "Unpaid";
+  return { id: b.id, billingMonth: b.month, dueDate: b.dueDate, status, total: fromCents(totalCents(b) + vat), amountPaid: fromCents(b.paid), balance: fromCents(Math.max(balance, 0)) };
+};
 const billRow = (b: MockBill): T.BillRow => {
   const u = unitById(b.unitId);
   return { ...soaRow(b), unitId: u.id, unitNo: u.unitNo, unitType: u.type, payerName: payerName(u.id) };
 };
 function soaDetail(b: MockBill): T.SoaDetail {
   const r = readingFor(b.unitId, b.month);
+  const displayReading = r ?? readings.filter((row) => row.unitId === b.unitId && row.month <= b.month)
+    .sort((a, next) => next.month.localeCompare(a.month))[0] ?? null;
   const u = unitById(b.unitId);
-  const owner = people.find((p) => p.unitId === u.id && p.type === "Owner" && p.status === "Current");
-  const tenant = people.find((p) => p.unitId === u.id && p.type === "Tenant" && p.status === "Current");
+  const displayCommercialReading = u.type === "COMMERCIAL" ? commercialReadingForBill(u.floor, b.month) : undefined;
+  const shares = displayCommercialReading ? commercialShares(u.floor, commercialReadingCents(displayCommercialReading)) : null;
+  const waterAllocation = displayCommercialReading && shares?.shares.get(u.id) === b.water ? {
+    commercialType: u.floor as "2F" | "UG" | "LG",
+    unitArea: u.areaSqm.toFixed(2),
+    totalArea: shares.totalArea.toFixed(2),
+    sharedAmount: fromCents(commercialReadingCents(displayCommercialReading)),
+    unitAmount: fromCents(b.water),
+  } : null;
+  const owner = people.find((p) => p.unitId === u.id && p.type === "Owner" && p.status === "Current" && p.includeInSoa);
+  const tenant = people.find((p) => p.unitId === u.id && p.type === "Tenant" && p.status === "Current" && p.includeInSoa);
   const [y, m] = b.month.split("-").map(Number);
   const rate = Number(rates.penaltyRate || "4");
+  const vatBaseCents = [
+    rates.vatIncludes.condo ? b.condo : 0,
+    rates.vatIncludes.parking ? b.parking : 0,
+    rates.vatIncludes.storage && storageIncluded(b) ? b.storage : 0,
+    rates.vatIncludes.water && waterIncluded(b) ? b.water : 0,
+  ].reduce((sum, amount) => sum + Math.max(amount, 0), 0);
+  const vatEligible = ([
+    ["condo", "Condo dues", b.condo], ["parking", "Parking", b.parking],
+    ["storage", "Storage", storageIncluded(b) ? b.storage : 0], ["water", "Water", waterIncluded(b) ? b.water : 0],
+  ] as const).filter(([k, , amount]) => rates.vatIncludes[k] && amount > 0).map(([, label]) => label);
+  const vat = soaVatCents(b);
   return {
     ...soaRow(b),
-    statementNo: `SOA-${b.month.replace("-", "")}-${String(b.id).padStart(5, "0")}`,
+    statementNo: `${b.month.replace("-", "")}-${String(b.id).padStart(5, "0")}`,
     issueDate: `${b.month}-01`,
     periodStart: `${b.month}-01`,
     periodEnd: `${b.month}-${String(new Date(y, m, 0).getDate()).padStart(2, "0")}`,
@@ -498,13 +576,22 @@ function soaDetail(b: MockBill): T.SoaDetail {
     bases: { condo: u.ratePerSqmCents ? { kind: "condo", basis: "sqm", unitNo: null, area: u.areaSqm.toFixed(2), rate: fromCents(u.ratePerSqmCents) } : null, parking: null, storage: null, recorded: false },
     penaltyInfo: { amount: fromCents(b.penalty), rate: String(rate), base: fromCents(Math.round(b.penalty * 100 / (rate || 1))), eligible: ["condo dues"], overdue: TODAY > b.dueDate, recorded: false,
       explanation: b.penalty > 0 ? `${rate}% of the unpaid condo dues from earlier statements, assessed because this statement is past its due date.` : `A ${rate}% penalty on unpaid condo dues applies after the due date. Water and other charges are not penalized.` },
-    previousUnpaid: bills.filter((x) => x.unitId === b.unitId && x.month < b.month && balanceCents(x) > 0).map((x) => ({ id: x.id, month: x.month, dueDate: x.dueDate, balance: fromCents(balanceCents(x)) })),
+    previousUnpaid: bills.filter((x) => x.unitId === b.unitId && x.month < b.month && balanceCents(x) > 0).map((x) => ({
+      id: x.id, statementNo: `${x.month.replace("-", "")}-${String(x.id).padStart(5, "0")}`,
+      month: x.month, dueDate: x.dueDate, balance: fromCents(balanceCents(x)),
+    })),
     correctedByHand: b.manual,
     payment: { instructions: "Pay at the Admin Office by cash, check or online transfer. Please bring this statement or quote the unit number and statement no.", onlinePaymentUrl: null, qrAvailable: false },
     charges: {
       condoDues: fromCents(b.condo), parking: fromCents(b.parking), storage: fromCents(b.storage), storageIncluded: storageIncluded(b), storageFrom: rates.storageInTotalFrom,
-      water: fromCents(b.water), waterUsage: r ? Math.max(r.current - r.previous, 0) : null, waterRate: r ? fromCents(r.rateCents) : null, waterPaidSeparately: !waterIncluded(b),
-      penalty: fromCents(b.penalty), previousBalance: fromCents(b.previous), advanceApplied: fromCents(b.advance), currentCharges: fromCents(currentCharges(b)),
+      water: fromCents(b.water), waterReadingMonth: displayCommercialReading?.month ?? displayReading?.month ?? null,
+      waterReadingFrom: displayCommercialReading?.readingFrom ?? displayReading?.readingFrom ?? null,
+      waterReadingTo: displayCommercialReading?.readingTo ?? displayReading?.readingTo ?? null,
+      waterUsage: displayCommercialReading ? Math.max(displayCommercialReading.current - displayCommercialReading.previous, 0) : displayReading ? Math.max(displayReading.current - displayReading.previous, 0) : null,
+      waterRate: displayCommercialReading ? fromCents(displayCommercialReading.rateCents) : displayReading ? fromCents(displayReading.rateCents) : null,
+      waterPaidSeparately: !waterIncluded(b), waterAllocation,
+      vat: fromCents(vat), vatBase: fromCents(vatBaseCents), vatRate: rates.vatRate, vatEligible,
+      penalty: fromCents(b.penalty), previousBalance: fromCents(b.previous), advanceApplied: fromCents(b.advance), currentCharges: fromCents(currentCharges(b) + vat),
     },
     note: b.note,
     payments: payments.filter((p) => p.billId === b.id).map((p) => ({ date: p.date, amount: fromCents(p.amountCents), receiptNo: receiptFor("bill", p.id), method: p.method, type: p.type, reference: p.reference })),
@@ -546,7 +633,8 @@ const unitRowOut = (u: MockUnit): T.UnitRow => {
   const parking = RESIDENTIAL.includes(u.type) ? assetCents(u.parkingId, toCents(rates.parkingRatePerSqm)) : 0;
   const last = bills.filter((b) => b.unitId === u.id).at(-1);
   return { id: u.id, unitNo: u.unitNo, floor: u.floor, type: u.type, areaSqm: u.areaSqm, ratePerSqm: base.ratePerSqm, effectiveRatePerSqm: base.ratePerSqm,
-    autoRate: u.ratePerSqmCents === null, duesMode: "per_sqm", manualMonthlyDues: "0.00", occupancy: u.occupancy, status: u.status, active: u.active,
+    autoRate: u.ratePerSqmCents === null, duesMode: "per_sqm", manualMonthlyDues: "0.00", occupancy: u.occupancy,
+    chargePayers: { ...u.chargePayers }, status: u.status, active: u.active,
     ownerName: base.ownerName, tenantName: base.tenantName, contactNo: base.contactNo, email: base.email,
     parkingUnit: ref(u.parkingId), storageUnit: ref(u.storageId), assignedTo: user ? { id: user.id, unitNo: user.unitNo } : null,
     dues: { condo: fromCents(condo), parking: fromCents(parking), storage: "0.00" }, monthlyTotal: fromCents(condo + parking),
@@ -561,9 +649,9 @@ const unitDetailOut = (u: MockUnit): T.UnitDetail => ({
     total: fromCents(totalCents(b)), paid: fromCents(b.paid), balance: fromCents(Math.max(balanceCents(b), 0)), status: statusOf(b) })),
 });
 const personRecord = (p: Person): T.UnitPersonRecord => ({ id: p.id, kind: p.type, name: p.name, contactNo: p.contactNo, email: p.email, moveIn: p.moveIn, moveOut: p.moveOut,
-  status: p.status, notes: "", receiveSoaEmail: Boolean(p.email), includeInSoa: true, representative: p.type === "Tenant" && p.status === "Current" });
+  status: p.status, notes: "", receiveSoaEmail: Boolean(p.email), includeInSoa: p.includeInSoa, representative: p.type === "Tenant" && p.status === "Current" });
 const readingOut = (r: MockReading): T.WaterReadingAdmin => ({ id: r.id, unitId: r.unitId, unitNo: unitById(r.unitId).unitNo, month: r.month, previous: r.previous, current: r.current, rate: fromCents(r.rateCents),
-  usage: Math.max(r.current - r.previous, 0), amount: fromCents(readingCents(r)), readingDate: r.readingDate, paid: r.paidCents > 0 });
+  usage: Math.max(r.current - r.previous, 0), amount: fromCents(readingCents(r)), readingDate: r.readingDate, readingFrom: r.readingFrom, readingTo: r.readingTo, paid: r.paidCents > 0 });
 const advanceOut = (a: MockAdvance): T.AdvancePayment => ({ id: a.id, unitId: a.unitId, unitNo: unitById(a.unitId).unitNo, date: a.date, amount: fromCents(a.amountCents), startMonth: a.startMonth, months: a.months,
   monthlyAmount: fromCents(Math.floor(a.amountCents / a.months)), method: a.method, reference: a.reference, applied: fromCents(a.appliedCents), remaining: fromCents(a.amountCents - a.appliedCents), receiptNo: receiptFor("advance", a.id) ?? "" });
 const residentPass = ({ id, type, date, name, purpose, status, reviewNote, requestedAt }: T.AdminGatePass): T.ResidentGatePass => ({ id, type, date, name, purpose, status, reviewNote, requestedAt });
@@ -607,11 +695,14 @@ function propertyReport(q: T.ReportQuery): T.PropertyReport {
   const collected = valid.reduce((s, r) => s + r.amountCents, 0);
   const latest = residential().map((u) => bills.filter((b) => b.unitId === u.id).at(-1)).filter(Boolean) as MockBill[];
   const owing = latest.filter((b) => balanceCents(b) > 0);
-  const res = residential();
+  const res = residential().filter((u) => u.type !== "COMMERCIAL");
+  const commercial = units.filter((u) => u.active && u.type === "COMMERCIAL");
   return {
     period: q.period, label, from, to,
     property: { residentialUnits: res.length, occupied: res.filter((u) => u.status === "Occupied").length, vacant: res.filter((u) => u.status !== "Occupied").length,
-      currentTenants: people.filter((p) => p.type === "Tenant" && p.status === "Current").length, withParking: res.filter((u) => u.parkingId).length },
+      currentTenants: people.filter((p) => p.type === "Tenant" && p.status === "Current").length, withParking: res.filter((u) => u.parkingId).length,
+      commercialUnits: commercial.length, commercialOccupied: commercial.filter((u) => u.status === "Occupied").length,
+      commercialVacant: commercial.filter((u) => u.status !== "Occupied").length },
     billing: { bills: periodBills.length, charged: fromCents(Object.values(charges).reduce((s, c) => s + c, 0)), advanceCredits: fromCents(sum((b) => b.advance)),
       charges: Object.fromEntries(Object.entries(charges).map(([k, v]) => [k, fromCents(v)])) as T.PropertyReport["billing"]["charges"] },
     collections: { total: fromCents(collected), bills: fromCents(kind("bill")), water: fromCents(kind("water")), advances: fromCents(kind("advance")), byMethod,
@@ -663,11 +754,11 @@ export const mockApi: DataService = {
     me: () => {
       if (!currentRole) return fail(401, "Not signed in.");
       const cfg = ROLES[currentRole];
-      return wait({ username: PERSONAS[cfg.role].username, role: currentRole, roleLabel: cfg.label, portal: cfg.portal, unitId: currentRole === "resident" ? RESIDENT_UNIT.id : null,
+      return wait({ username: currentRole === "resident" ? mockResidentUsername : PERSONAS[cfg.role].username, role: currentRole, roleLabel: cfg.label, portal: cfg.portal, unitId: currentRole === "resident" ? RESIDENT_UNIT.id : null,
         permissions: permissionsForRole(currentRole), mustChangePassword: false, passwordPolicy: { minLength: 10, maxLength: 128 }, displayName: PERSONAS[cfg.role].displayName, email: PERSONAS[cfg.role].email, subtitle: PERSONAS[cfg.role].subtitle });
     },
     login: async (username) => {
-      const cfg = Object.values(ROLES).find((c) => PERSONAS[c.role].username === username.trim().toLowerCase());
+      const cfg = Object.values(ROLES).find((c) => (c.role === "resident" ? mockResidentUsername : PERSONAS[c.role].username) === username.trim().toLowerCase());
       if (!cfg) return fail(401, "Invalid username or password.");
       setMockRole(cfg.role);
       audit("Login", PERSONAS[cfg.role].username);
@@ -683,6 +774,22 @@ export const mockApi: DataService = {
       if (next === current) return fail(400, "New password must be different from the current password.");
       audit(`Changed password for user ${actor()}`);
       return wait(undefined);
+    },
+    changeUsername: async (currentPassword, newUsername) => {
+      if (currentRole !== "resident") return fail(403, "Only residents can change their username here.");
+      if (!currentPassword) return fail(400, "Current password is incorrect.");
+      const username = newUsername.trim();
+      if (!/^[A-Za-z0-9._-]{3,80}$/.test(username)) return fail(400, "Use 3–80 letters, numbers, dots, dashes or underscores.");
+      if (username.toLowerCase() === mockResidentUsername.toLowerCase()) return fail(400, "Choose a username different from your current username.");
+      if (Object.values(PERSONAS).some((persona) => persona.username.toLowerCase() === username.toLowerCase()) ||
+          residentAccounts.some((account) => account.username.toLowerCase() === username.toLowerCase())) {
+        return fail(409, "That username is already taken.");
+      }
+      const previous = mockResidentUsername;
+      mockResidentUsername = username;
+      for (const account of residentAccounts) if (account.username === previous) account.username = username;
+      audit("Changed resident username", previous);
+      return mockApi.auth.me();
     },
   },
 
@@ -726,7 +833,7 @@ export const mockApi: DataService = {
       audit(`Created maintenance ticket ${t.ticketNo}`);
       return wait({ ticketNo: t.ticketNo, category: t.category, title: t.title, description: t.description, priority: t.priority, status: t.status, resolution: "", requestedAt: t.requestedAt });
     },
-    gatePasses: (unitId) => needResidentUnit(unitId) ?? wait({ passes: gatePasses.filter((p) => p.unitId === unitId).map(residentPass), types: ["Visitor", "Delivery", "Move-in", "Move-out"], maxDaysAhead: 90 }),
+    gatePasses: (unitId) => needResidentUnit(unitId) ?? wait({ passes: gatePasses.filter((p) => p.unitId === unitId).map(residentPass), types: ["Visitor", "Delivery", "Move-in", "Move-out", "Pull Out"], maxDaysAhead: 90 }),
     requestGatePass: (unitId, input) => {
       const denied = needResidentUnit(unitId);
       if (denied) return denied;
@@ -813,13 +920,15 @@ export const mockApi: DataService = {
     list: () => wait(units.map(unitOut)),
     people: (unitId) => wait(people.filter((p) => p.unitId === unitId).map(({ id, type, name, status, moveIn, moveOut }) => ({ id, type, name, status, moveIn, moveOut }))),
     page: ({ q, kind, floor, status, page, perPage, past }) => {
-      const ofKind = (u: MockUnit, k: T.UnitKind) => (k === "residential" ? !["PARKING", "STORAGE"].includes(u.type) : u.type === k);
+      const ofKind = (u: MockUnit, k: T.UnitKind) => (k === "residential"
+        ? !["COMMERCIAL", "DRYING AREA", "PARKING", "STORAGE"].includes(u.type)
+        : u.type === k);
       const needle = q.trim().toLowerCase();
       const rows = units.filter((u) => u.active && ofKind(u, kind) && (!floor || u.floor === floor) && (!status || u.status === status)
         && (!needle || [u.unitNo, currentOwner(u.id)?.name ?? "", currentTenant(u.id)?.name ?? "",
           ...(past ? people.filter((p) => p.unitId === u.id).flatMap((p) => [p.name, p.contactNo, p.email]) : [])].some((v) => v.toLowerCase().includes(needle))))
         .sort((a, b) => a.unitNo.localeCompare(b.unitNo, undefined, { numeric: true }));
-      const counts = Object.fromEntries((["residential", "PARKING", "STORAGE"] as T.UnitKind[]).map((k) => [k, units.filter((u) => u.active && ofKind(u, k)).length])) as Record<T.UnitKind, number>;
+      const counts = Object.fromEntries((["residential", "COMMERCIAL", "DRYING AREA", "PARKING", "STORAGE"] as T.UnitKind[]).map((k) => [k, units.filter((u) => u.active && ofKind(u, k)).length])) as Record<T.UnitKind, number>;
       return wait({ units: rows.slice((page - 1) * perPage, page * perPage).map(unitRowOut), total: rows.length, page, perPage, counts });
     },
     options: () => {
@@ -827,26 +936,43 @@ export const mockApi: DataService = {
         const owner = units.find((u) => u.parkingId === a.id || u.storageId === a.id);
         return { id: a.id, unitNo: a.unitNo, floor: a.floor, assignedTo: owner ? { id: owner.id, unitNo: owner.unitNo } : null };
       });
-      return wait({ parking: asset("PARKING"), storage: asset("STORAGE"), unitTypes: ["STUDIO TYPE", "1 BEDROOM", "2 BEDROOM", "3 BEDROOM", "PARKING", "STORAGE"],
-        floors: [...new Set(units.map((u) => u.floor))].sort(), typeRates: Object.fromEntries((["STUDIO TYPE", "1 BEDROOM", "2 BEDROOM", "3 BEDROOM"] as T.UnitType[]).map((t) => [t, fromCents(rateFor(t))])) });
+      return wait({ parking: asset("PARKING"), storage: asset("STORAGE"), unitTypes: ["STUDIO TYPE", "1 BEDROOM", "2 BEDROOM", "3 BEDROOM", "COMMERCIAL", "DRYING AREA", "PARKING", "STORAGE"],
+        floors: [...new Set(units.map((u) => u.floor))].sort(), typeRates: Object.fromEntries((["STUDIO TYPE", "1 BEDROOM", "2 BEDROOM", "3 BEDROOM", "COMMERCIAL", "DRYING AREA"] as T.UnitType[]).map((t) => [t, fromCents(rateFor(t))])) });
     },
     detail: (id) => (unitById(id) ? wait(unitDetailOut(unitById(id))) : fail(404, "Unit not found.")),
     create: (input) => {
       if (!input.unitNo.trim()) return failFields({ unitNo: "Unit number is required." });
       if (unitByNo(input.unitNo)) return failFields({ unitNo: "That unit number already exists." });
       const u: MockUnit = { id: Math.max(...units.map((x) => x.id)) + 1, unitNo: input.unitNo.trim(), floor: input.floor, type: input.type as T.UnitType, areaSqm: Number(input.areaSqm) || 0,
-        ratePerSqmCents: input.ratePerSqm ? toCents(input.ratePerSqm) : null, status: input.status, occupancy: input.occupancy, active: true, parkingId: input.parkingUnitId, storageId: input.storageUnitId };
+        ratePerSqmCents: input.ratePerSqm ? toCents(input.ratePerSqm) : null, status: input.status, occupancy: input.occupancy, chargePayers: { ...input.chargePayers }, active: true, parkingId: input.parkingUnitId, storageId: input.storageUnitId };
       units.push(u);
       for (const [p, type] of [[input.owner, "Owner"], [input.tenant, "Tenant"]] as const)
-        if (p?.name.trim()) people.push({ id: nextPersonId++, unitId: u.id, type, name: p.name.trim(), contactNo: p.contactNo, email: p.email, status: "Current", moveIn: p.moveIn || null, moveOut: null });
+        if (p?.name.trim()) people.push({ id: nextPersonId++, unitId: u.id, type, name: p.name.trim(), contactNo: p.contactNo, email: p.email, status: "Current", moveIn: p.moveIn || null, moveOut: null, includeInSoa: p.includeInSoa });
       audit(`Created unit ${u.unitNo}`);
       return wait(unitDetailOut(u));
+    },
+    downloadBulkTemplate: () => fail(501, "Bulk unit upload is unavailable in prototype mode."),
+    checkBulkImport: () => fail(501, "Bulk unit upload is unavailable in prototype mode."),
+    createBulk: () => fail(501, "Bulk unit upload is unavailable in prototype mode."),
+    delete: async (id) => {
+      const u = unitById(id);
+      if (!u) return fail(404, "Unit not found.");
+      if (!u.active) return fail(409, "This unit is already removed from the active directory.");
+      for (const unit of units) {
+        if (unit.id !== u.id && (unit.parkingId === u.id || unit.storageId === u.id)) {
+          if (unit.parkingId === u.id) unit.parkingId = null;
+          if (unit.storageId === u.id) unit.storageId = null;
+        }
+      }
+      u.active = false;
+      audit(`Removed unit ${u.unitNo} from the active directory`);
+      return wait(undefined);
     },
     update: (id, input) => {
       const u = unitById(id);
       if (!u) return fail(404, "Unit not found.");
       Object.assign(u, { floor: input.floor, type: input.type, areaSqm: Number(input.areaSqm) || 0, ratePerSqmCents: input.ratePerSqm ? toCents(input.ratePerSqm) : null,
-        status: input.status, occupancy: input.occupancy, parkingId: input.parkingUnitId, storageId: input.storageUnitId });
+        status: input.status, occupancy: input.occupancy, chargePayers: { ...input.chargePayers }, parkingId: input.parkingUnitId, storageId: input.storageUnitId });
       audit(`Updated unit ${u.unitNo}`);
       return wait(unitDetailOut(u));
     },
@@ -855,7 +981,7 @@ export const mockApi: DataService = {
       if (!u) return fail(404, "Unit not found.");
       if (!input.name.trim()) return failFields({ name: `${kind} name is required.` });
       people.push({ id: nextPersonId++, unitId: id, type: kind, name: input.name.trim(), contactNo: input.contactNo, email: input.email,
-        status: input.moveOut ? "Past" : "Current", moveIn: input.moveIn || null, moveOut: input.moveOut || null });
+        status: input.moveOut ? "Past" : "Current", moveIn: input.moveIn || null, moveOut: input.moveOut || null, includeInSoa: input.includeInSoa });
       if (kind === "Tenant" && !input.moveOut) u.status = "Occupied";
       audit(`Added ${kind.toLowerCase()} ${input.name} to unit ${u.unitNo}`);
       return wait({ ...unitDetailOut(u), createdPersonId: nextPersonId - 1 });
@@ -864,7 +990,7 @@ export const mockApi: DataService = {
       const p = people.find((x) => x.id === personId && x.unitId === id && x.type === kind);
       if (!p) return fail(404, `${kind} not found.`);
       if (!input.name.trim()) return failFields({ name: `${kind} name is required.` });
-      Object.assign(p, { name: input.name.trim(), contactNo: input.contactNo, email: input.email, status: input.status, moveIn: input.moveIn || null,
+      Object.assign(p, { name: input.name.trim(), contactNo: input.contactNo, email: input.email, status: input.status, includeInSoa: input.includeInSoa, moveIn: input.moveIn || null,
         moveOut: input.status === "Current" ? null : input.moveOut || TODAY });
       audit(`Updated ${kind.toLowerCase()} ${p.name} in unit ${unitById(id).unitNo}`);
       return wait(unitDetailOut(unitById(id)));
@@ -877,16 +1003,27 @@ export const mockApi: DataService = {
       const b = bills.find((x) => x.id === billId);
       return b ? wait(billDetail(b)) : fail(404, "Bill not found.");
     },
+    partyBalance: (billId) => {
+      const b = bills.find((x) => x.id === billId);
+      return b ? wait({ balance: billRow(b).balance }) : fail(404, "Bill not found.");
+    },
+    printStatements: (month) => wait(bills.filter((b) => b.month === month)
+      .sort((a, b) => unitById(a.unitId).unitNo.localeCompare(unitById(b.unitId).unitNo, undefined, { numeric: true }))
+      .map(billDetail)),
+    partyTransactions: (billId) => bills.some((bill) => bill.id === billId)
+      ? wait({ transactions: [], ready: true }) : fail(404, "Bill not found."),
+    assignPartyTransaction: () => fail(501, "Party transaction assignment is unavailable in prototype mode."),
     generate: (month) => {
       if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return fail(400, "Invalid billing month.");
       let created = 0, skipped = 0;
-      for (const u of residential()) {
+      for (const u of billableUnits()) {
         if (bills.some((b) => b.unitId === u.id && b.month === month)) skipped++;
         else { createBill(u, month); created++; }
       }
       audit(`Generated ${created} detailed bills for ${month}`);
       return wait({ month, created, skipped });
     },
+    deleteGenerated: () => fail(501, "Deleting generated SOAs is unavailable in prototype mode."),
     recordPayment: (billId, input) => {
       const b = bills.find((x) => x.id === billId);
       if (!b) return fail(404, "Bill not found.");
@@ -921,6 +1058,7 @@ export const mockApi: DataService = {
       const billed = new Set(bills.filter((b) => b.month === month).map((b) => b.unitId));
       const read = new Set(readings.filter((r) => r.month === month).map((r) => r.unitId));
       return wait({ month, residentialUnits: res.length, alreadyBilled: res.filter((u) => billed.has(u.id)).length, toCreate: res.filter((u) => !billed.has(u.id)).length,
+        assetUnits: 0, assetsAlreadyBilled: 0, assetsToCreate: 0, assetsDeferred: [],
         readings: res.filter((u) => read.has(u.id)).length, missingReadings: res.filter((u) => !read.has(u.id) && !billed.has(u.id)).map((u) => u.unitNo).slice(0, 50),
         zeroDuesUnits: [], dueDate: `${month}-08`, closed: false, closedThrough: null });
     },
@@ -984,6 +1122,9 @@ export const mockApi: DataService = {
   },
 
   water: {
+    downloadBulkTemplate: () => fail(501, "Bulk water-reading upload is unavailable in prototype mode."),
+    checkBulkImport: () => fail(501, "Bulk water-reading upload is unavailable in prototype mode."),
+    createBulk: () => fail(501, "Bulk water-reading upload is unavailable in prototype mode."),
     month: (month) => {
       const rows = readings.filter((r) => r.month === month).map(readingOut).sort((a, b) => a.unitNo.localeCompare(b.unitNo, undefined, { numeric: true }));
       const done = new Set(rows.map((r) => r.unitId));
@@ -991,9 +1132,23 @@ export const mockApi: DataService = {
         const prev = readings.filter((r) => r.unitId === u.id && r.month < month).sort((a, b) => b.month.localeCompare(a.month))[0];
         return { unitId: u.id, unitNo: u.unitNo, payerName: payerName(u.id), previous: prev?.current ?? 0, previousMonth: prev?.month ?? null };
       });
+      const commercialRows = commercialReadings.filter((r) => r.month === month).map(commercialReadingOut);
+      const commercialDone = new Set(commercialRows.map((r) => r.commercialType));
+      const commercialTypes = (["2F", "UG", "LG"] as const).map((commercialType) => {
+        const group = commercialUnits(commercialType);
+        return { commercialType, unitCount: group.length, totalArea: group.reduce((sum, u) => sum + Math.max(u.areaSqm, 0), 0) };
+      }).filter((group) => group.unitCount > 0);
+      const commercialMissing = commercialTypes.filter((group) => !commercialDone.has(group.commercialType)).map((group) => {
+        const prev = commercialReadings.filter((r) => r.commercialType === group.commercialType && r.month < month).sort((a, b) => b.month.localeCompare(a.month))[0];
+        return { commercialType: group.commercialType, previous: prev?.current ?? 0, previousMonth: prev?.month ?? null,
+          unitCount: group.unitCount, totalArea: group.totalArea };
+      });
       const unpaid = readings.map(readingOut).filter((r) => !r.paid && toCents(r.amount) > 0);
-      return wait({ month, readings: rows, missing, unpaid, defaultRate: rates.waterRate, autoCompute: rates.waterAutoCompute,
-        totals: { read: rows.length, toRead: missing.length, usage: rows.reduce((s, r) => s + r.usage, 0), amount: fromCents(rows.reduce((s, r) => s + toCents(r.amount), 0)),
+      return wait({ month, readings: rows, missing, unpaid, commercialReadings: commercialRows, commercialMissing, commercialTypes,
+        defaultRate: rates.waterRate, autoCompute: rates.waterAutoCompute,
+        totals: { read: rows.length + commercialRows.length, toRead: missing.length + commercialMissing.length,
+          usage: rows.reduce((s, r) => s + r.usage, 0) + commercialRows.reduce((s, r) => s + r.usage, 0),
+          amount: fromCents(rows.reduce((s, r) => s + toCents(r.amount), 0) + commercialRows.reduce((s, r) => s + toCents(r.amount), 0)),
           unpaid: fromCents(unpaid.reduce((s, r) => s + toCents(r.amount), 0)) } });
     },
     correct: (id, input) => {
@@ -1003,16 +1158,55 @@ export const mockApi: DataService = {
     },
     pay: () => fail(409, "Prototype: water payments are only available in the live system."),
     previousReading: (unitId, month) => wait(readings.filter((r) => r.unitId === unitId && r.month < month).sort((a, b) => b.month.localeCompare(a.month))[0]?.current ?? 0),
+    saveCommercial: (input) => {
+      if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(input.month)) return fail(400, "Invalid reading month.");
+      if (!input.readingFrom || !input.readingTo || input.readingFrom > input.readingTo) return failFields({ readingFrom: "Enter a valid reading date range." });
+      const group = commercialUnits(input.commercialType);
+      if (!group.length) return failFields({ commercialType: "There are no active commercial units for this type." });
+      const totalArea = group.reduce((sum, u) => sum + Math.max(u.areaSqm, 0), 0);
+      if (totalArea <= 0) return failFields({ commercialType: "The units need a total area greater than zero." });
+      const previous = input.previous === "" ? commercialReadings.filter((r) => r.commercialType === input.commercialType && r.month < input.month)
+        .sort((a, b) => b.month.localeCompare(a.month))[0]?.current ?? 0 : Number(input.previous);
+      const current = Number(input.current);
+      if (current < previous) return failFields({ current: "The current reading can't be lower than the previous reading." });
+      const rateCents = toCents(input.rate === "" ? rates.waterRate : input.rate);
+      let reading = commercialReadings.find((r) => r.commercialType === input.commercialType && r.month === input.month);
+      const created = !reading;
+      if (!reading) commercialReadings.push((reading = { id: nextCommercialReadingId++, commercialType: input.commercialType, month: input.month,
+        previous: 0, current: 0, rateCents: 0, readingDate: input.readingTo,
+        readingFrom: input.readingFrom, readingTo: input.readingTo }));
+      Object.assign(reading, { previous, current, rateCents, readingDate: input.readingTo, readingFrom: input.readingFrom, readingTo: input.readingTo });
+      let billUpdated = false;
+      const shares = commercialShares(input.commercialType, commercialReadingCents(reading)).shares;
+      for (const bill of bills) {
+        const unit = unitById(bill.unitId);
+        if (unit.type === "COMMERCIAL" && unit.floor === input.commercialType && bill.month > input.month
+          && commercialReadingForBill(input.commercialType, bill.month)?.id === reading.id && !bill.manual) {
+          bill.water = shares.get(unit.id) ?? 0;
+          billUpdated = true;
+        }
+      }
+      audit(`Saved shared commercial water reading for ${input.commercialType}, ${input.month}`);
+      return wait({ reading: commercialReadingOut(reading), created, billUpdated });
+    },
+    correctCommercial: (id, input) => {
+      const reading = commercialReadings.find((r) => r.id === id);
+      if (!reading) return fail(404, "Commercial water reading not found.");
+      return mockApi.water.saveCommercial({ ...input, commercialType: reading.commercialType, month: reading.month });
+    },
     save: (input) => {
       if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(input.month)) return fail(400, "Invalid reading month.");
+      if (!input.readingFrom || !input.readingTo || input.readingFrom > input.readingTo) return failFields({ readingFrom: "Enter a valid reading date range." });
       const previous = input.previous === "" ? (readings.filter((x) => x.unitId === input.unitId && x.month < input.month).sort((a, b) => b.month.localeCompare(a.month))[0]?.current ?? 0) : Number(input.previous);
       const current = Number(input.current);
       if (current < previous) return failFields({ current: "The current reading can't be lower than the previous reading." });
       const rate = input.rate === "" ? rates.waterRate : input.rate;
       let r = readingFor(input.unitId, input.month);
       const created = !r;
-      if (!r) readings.push((r = { id: nextReadingId++, unitId: input.unitId, month: input.month, previous: 0, current: 0, rateCents: 0, readingDate: input.readingDate, paidCents: 0 }));
-      Object.assign(r, { previous, current, rateCents: toCents(rate), readingDate: input.readingDate });
+      if (!r) readings.push((r = { id: nextReadingId++, unitId: input.unitId, month: input.month, previous: 0, current: 0, rateCents: 0,
+        readingDate: input.readingTo, readingFrom: input.readingFrom, readingTo: input.readingTo, paidCents: 0 }));
+      Object.assign(r, { previous, current, rateCents: toCents(rate), readingDate: input.readingTo,
+        readingFrom: input.readingFrom, readingTo: input.readingTo });
       const bill = bills.find((b) => b.unitId === input.unitId && b.month === input.month);
       if (bill) bill.water = readingCents(r); // the month's bill follows the corrected reading
       audit(`Saved water reading for unit ${unitById(input.unitId).unitNo}, ${input.month}`);
@@ -1567,11 +1761,12 @@ export const mockApi: DataService = {
       // Same checks as backend/app/routes/rates.py (the ones the form can trigger).
       const fields: Record<string, string> = {};
       const num = (v: string, max = 100000) => /^\d{1,6}(\.\d{1,4})?$/.test(v.trim()) && Number(v) <= max;
-      (["studio", "oneBed", "twoBed", "threeBed"] as const).forEach((k) => { if (!num(rest.ratesPerSqm[k])) fields[`ratesPerSqm.${k}`] = "Enter a rate, e.g. 85.00."; });
+      (["residential", "commercial", "dryingArea"] as const).forEach((k) => { if (!num(rest.ratesPerSqm[k])) fields[`ratesPerSqm.${k}`] = "Enter a rate, e.g. 85.00."; });
       if (!num(rest.parkingRatePerSqm)) fields.parkingRatePerSqm = "Enter a rate, e.g. 60.00.";
       if (!num(rest.storageRatePerSqm)) fields.storageRatePerSqm = "Enter a rate, e.g. 45.00.";
       if (!num(rest.waterRate)) fields.waterRate = "Enter a rate, e.g. 50.00.";
       if (!num(rest.penaltyRate, 100)) fields.penaltyRate = "Penalty rate (%) can't be more than 100.";
+      if (!num(rest.vatRate, 100)) fields.vatRate = "VAT rate (%) can't be more than 100.";
       if (!rest.corporationName.trim()) fields.corporationName = "Corporation name is required (it is printed on every SOA).";
       if (rest.smtpPort && !/^\d+$/.test(rest.smtpPort)) fields.smtpPort = "SMTP port must be a number from 1 to 65535, e.g. 587.";
       if (Object.keys(fields).length) return failFields(fields);
@@ -1581,10 +1776,11 @@ export const mockApi: DataService = {
     },
     collections: (months) => wait(Array.from({ length: months }, (_, i) => collectionsFor(addMonths(THIS_MONTH, i - months + 1)))),
     system: () => wait({
-      backup: { ok: true, status: "ok", ageHours: 14.2, detail: null, maxAgeHours: 26 },
+      backup: { ok: true, status: "ok", ageHours: 14.2, detail: null, maxAgeHours: 26, manualAllowed: true },
       database: { engine: "MySQL / MariaDB" }, export: { url: "/database/export.xlsx" },
-      import: { maxUploadMb: 20, maxUnpackedMb: 200, maxRowsPerSheet: 50000, allowed: true },
+      import: { templateUrl: "/api/admin/system/import-template", maxUploadMb: 20, maxUnpackedMb: 200, maxRowsPerSheet: 50000, allowed: true },
     }),
+    backupDatabase: () => fail(501, "Manual backup is unavailable in prototype mode."),
     importDatabase: (file) => {
       if (!/\.(xlsx|xlsm)$/i.test(file.name)) return fail(400, "Please select an Excel .xlsx file.");
       audit(`Imported database from Excel (optimized): ${file.name}`);

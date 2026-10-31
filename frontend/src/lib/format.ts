@@ -37,6 +37,11 @@ export function dateLabel(iso: IsoDate | null | undefined): string {
   return new Date(`${iso.slice(0, 10)}T00:00:00Z`).toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
 }
 
+export function longDateLabel(iso: IsoDate | null | undefined): string {
+  if (!iso) return "—";
+  return new Date(`${iso.slice(0, 10)}T00:00:00Z`).toLocaleDateString("en-PH", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
+}
+
 /** UTC timestamp from the server -> "Oct 1, 2026, 9:54 AM" in Manila time. */
 export function dateTimeLabel(iso: IsoDateTime | null | undefined): string {
   if (!iso) return "—";

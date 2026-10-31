@@ -6,8 +6,8 @@ has the columns added by migration 0010 (SOA issue snapshot); on an older databa
 not exist and every bill query would fail.
 
 flag_old_schema() checks the database and, when billing.issued_at is missing, sets
-CL9_SCHEMA_BEFORE_0010=1 (and CL9_SCHEMA_BEFORE_0011=1 when user.temp_password_expires_at is
-missing) BEFORE legacy_app is imported: the models then leave those columns out.
+CL9_SCHEMA_BEFORE_0010=1, CL9_SCHEMA_BEFORE_0011=1, and CL9_SCHEMA_BEFORE_0013=1 when their
+columns are missing BEFORE legacy_app is imported: the models then leave those columns out.
 Bills of such a database have no snapshot anyway (the new code treats them exactly like that), so
 the computed figures are the same. The running server never uses this: it refuses to start on an
 older schema (db_migrate.py check).
@@ -49,6 +49,9 @@ def flag_old_schema(sqlite_path=None):
     flagged = False
     if cols and "issued_at" not in cols:
         os.environ["CL9_SCHEMA_BEFORE_0010"] = "1"
+        flagged = True
+    if cols and "water_reading_month" not in cols:
+        os.environ["CL9_SCHEMA_BEFORE_0013"] = "1"
         flagged = True
     if ucols and "temp_password_expires_at" not in ucols:
         os.environ["CL9_SCHEMA_BEFORE_0011"] = "1"

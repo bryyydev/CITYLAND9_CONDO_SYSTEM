@@ -25,7 +25,8 @@ npm run build
 ```
 
 - Type-checks (`tsc`), then writes the optimised app to **`frontend\dist\`**.
-- Flask serves it at **`http://<server>:5000/app/`** (`backend\app\routes\spa.py`); unknown
+- Flask serves it at **`http://127.0.0.1:5000/app/`** locally, or through the configured HTTPS
+  reverse-proxy URL for LAN users (`backend\app\routes\spa.py`); unknown
   `/app/...` paths return `index.html` so deep links work.
 - `START_WINDOWS.bat` builds automatically when `frontend\dist` is missing, when it is a
   prototype (mock) build, or when the code changed since the last build. "Changed" is checked by
@@ -86,8 +87,8 @@ Open **http://127.0.0.1:5173/app/** and click a name on the sign-in page.
 
 ## 6. How the frontend finds the server
 
-It doesn't need to: every API call is **relative** (`/api/...`). Whatever address the user opened
-(`http://127.0.0.1:5000`, `http://192.168.100.63:5000`, a hostname) is also where the API is.
+It doesn't need to: every API call is **relative** (`/api/...`). The local URL or HTTPS proxy URL
+opened by the user is also where the API is.
 Don't add a `VITE_API_BASE_URL`: it would tie the build to one IP address and create
 cross-origin (CORS) problems.
 
@@ -107,4 +108,4 @@ A test fails if the copy is out of date. The server still checks every permissio
 - [ ] `node --version` → v20.19+
 - [ ] `npm ci` and `npm run build` finish without errors (inside `frontend\`)
 - [ ] `frontend\dist\index.html` exists
-- [ ] `http://<server>:5000/app/` shows the CityLand 9 sign-in page
+- [ ] `http://127.0.0.1:5000/app/` works locally; LAN users access the HTTPS proxy URL

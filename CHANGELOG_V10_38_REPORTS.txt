@@ -1,0 +1,25 @@
+CITYLAND 9 CONDO SYSTEM 2026 - V10.38 REPORTS
+
+Added a full Reports module based on the existing V10.37 system.
+
+Features:
+- Daily report preset
+- Weekly report preset (Monday-Sunday)
+- Monthly report preset
+- Yearly report preset
+- Custom date range
+- Bills generated count and total billed
+- Billing collections
+- Direct water collections
+- Advance payments received
+- Current outstanding balance
+- Expenses and net cash flow
+- Collections by CASH / CHECK / ONLINE
+- Billing assessment summary
+- Detailed collection transaction list
+- Detailed expense list
+- Print-friendly report
+- Excel export for selected date range
+
+Reports use transaction dates for collections/expenses and bill creation dates for bills generated.
+Existing V10.37 billing, unpaid and advance functions are preserved.
