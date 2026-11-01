@@ -44,6 +44,7 @@ HOST = "127.0.0.1"
 PORT = int(os.getenv("MYSQL_PORT", "3307"))
 DATABASE = os.getenv("MYSQL_DATABASE", "cityland9")
 APP_USER = os.getenv("MYSQL_USER", "cityland9_app")
+EXTERNAL_SERVER = os.getenv("MYSQL_EXTERNAL_SERVER", "").strip().lower() in ("1", "true", "yes")
 BACKUP_DIR = os.getenv("BACKUP_DIR") or os.path.join(ROOT, "database", "backups")
 
 
@@ -110,6 +111,10 @@ def set_env(values):
 
 
 def start(wait=30):
+    if EXTERNAL_SERVER:
+        if is_running():
+            return True
+        sys.exit(f"External MySQL is not reachable at {HOST}:{PORT}. Start it with XAMPP.")
     if is_running():
         return True
     if not os.path.exists(ini_path()):
@@ -138,6 +143,8 @@ def stop():
 
 
 def init():
+    if EXTERNAL_SERVER:
+        sys.exit("MYSQL_EXTERNAL_SERVER=1: refusing to initialize a separate CityLand database server.")
     if os.path.exists(os.path.join(DATA_DIR, "mysql")):
         print(f"Already initialised: {DATA_DIR}")
     else:

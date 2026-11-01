@@ -32,7 +32,10 @@ if TEST_INSTALL and (os.getenv("DATABASE_URL") or os.getenv("MYSQL_HOST", "127.0
 
 # With DB_ENGINE=mysql and CityLand's own local database server (MYSQL_DATA_DIR),
 # start that server first: legacy_app connects to the database while it loads.
-if os.getenv("DB_ENGINE", "").strip().lower() == "mysql" and os.getenv("MYSQL_DATA_DIR") and not os.getenv("DATABASE_URL"):
+if (os.getenv("DB_ENGINE", "").strip().lower() == "mysql"
+        and os.getenv("MYSQL_DATA_DIR")
+        and os.getenv("MYSQL_EXTERNAL_SERVER", "").strip().lower() not in ("1", "true", "yes")
+        and not os.getenv("DATABASE_URL")):
     sys.path.insert(0, os.path.join(_ROOT, "database"))
     import local_mysql  # noqa: E402
     local_mysql.start()

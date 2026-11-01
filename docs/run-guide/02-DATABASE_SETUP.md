@@ -1,9 +1,17 @@
 # 02 — Database setup
 
-CityLand 9 runs its **own MariaDB instance**: its own data folder (`database\mysql-data`),
-port **3307**, listening on **127.0.0.1 only**. It uses XAMPP's MariaDB programs but never
-XAMPP's data or port 3306. The server starts it automatically (`backend\run.py`), so you
-normally never start it by hand.
+By default, CityLand 9 runs its **own MariaDB instance**: its own data folder (`database\mysql-data`),
+port **3307**, listening on **127.0.0.1 only**. It may use XAMPP's MariaDB programs, but it does
+not use XAMPP's data or port 3306. The server starts the dedicated instance automatically
+(`backend\run.py`).
+
+An existing local MySQL/MariaDB server (for example, XAMPP on port **3306**) can be selected
+instead. Set `MYSQL_EXTERNAL_SERVER=1`, `MYSQL_HOST=127.0.0.1`, and `MYSQL_PORT=3306` in `.env`;
+set `MYSQL_DATA_DIR` to an empty value so the app does not start CityLand's separate server.
+The external server must already be running. The database and least-privilege accounts must be
+created on that server; `database\local_mysql.py init` is intentionally refused in this mode.
+Keep the server bound to localhost and set `MYSQL_ROOT_PASSWORD` to the actual local administrator
+password for backups and database maintenance.
 
 **Before you start:** `.env` exists ([01](01-PREREQUISITES_AND_ENV.md)) and the Python environment
 is installed ([03 §1–2](03-BACKEND_SETUP.md)). Run every command from the **project root**.
