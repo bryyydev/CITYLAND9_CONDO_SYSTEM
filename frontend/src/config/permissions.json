@@ -66,6 +66,13 @@
       "manager",
       "super_admin"
     ],
+    "delete_generated_soa": [
+      "super_admin"
+    ],
+    "delete_unit": [
+      "admin",
+      "super_admin"
+    ],
     "delete_user": [
       "super_admin"
     ],

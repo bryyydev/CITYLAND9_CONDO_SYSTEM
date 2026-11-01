@@ -15,6 +15,7 @@ interface AuthValue {
   checkError: string | null;
   refresh: () => Promise<void>;
   login: (username: string, password: string) => Promise<SessionUser>;
+  changeUsername: (currentPassword: string, newUsername: string) => Promise<SessionUser>;
   logout: () => Promise<void>;
   /** Prototype only: switch the whole workspace to another role. */
   switchRole: (role: Role) => Promise<SessionUser>;
@@ -58,6 +59,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return signedIn;
   }, []);
 
+  const changeUsername = useCallback(async (currentPassword: string, newUsername: string) => {
+    const updated = withChosenUnit(await api.auth.changeUsername(currentPassword, newUsername));
+    setUser(updated);
+    return updated;
+  }, []);
+
   const logout = useCallback(async () => {
     try {
       await api.auth.logout();
@@ -82,10 +89,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const value = useMemo<AuthValue>(() => {
     const allowed = new Set(user?.permissions ?? []);
     return {
-      user, checkError, refresh, login, logout, switchRole, selectUnit,
+      user, checkError, refresh, login, changeUsername, logout, switchRole, selectUnit,
       can: (permission) => permission === "index" || permission === "change_password" || allowed.has(permission),
     };
-  }, [user, checkError, refresh, login, logout, switchRole, selectUnit]);
+  }, [user, checkError, refresh, login, changeUsername, logout, switchRole, selectUnit]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

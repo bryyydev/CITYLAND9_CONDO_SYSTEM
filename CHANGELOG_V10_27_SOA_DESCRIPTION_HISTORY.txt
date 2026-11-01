@@ -1,0 +1,13 @@
+V10.27 - SOA Description Layout Update
+
+- Removed the separate Water Reading History section from the SOA.
+- Removed the separate Previous Unpaid Statements section from the SOA.
+- Moved PREVIOUS UNPAID STATEMENTS HISTORY into the main Description/Charges table.
+- Current month now appears as a month header followed by Condo Dues, Water Bill, Parking (with Parking Lot #), Other Charges, and Adjustment where applicable.
+- Previous unpaid/outstanding months are grouped under CONDO DUES and WATER BILL.
+- Previous water descriptions include consumption in cubic meters multiplied by the applicable rate.
+- Previous statement descriptions include UNPAID, PARTIALLY PAID, or OVERDUE status.
+- Paid water readings are excluded from the SOA description and outstanding history.
+- Parking history includes Parking Lot # where applicable.
+- Penalty description includes the calculated overdue outstanding base multiplied by the configured penalty rate.
+- SOA total continues to use the recalculated balance with paid water excluded.

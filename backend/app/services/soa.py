@@ -9,6 +9,8 @@ the statement is overpaid (credit) and is shown as such, never hidden as ₱0.00
 from datetime import date, datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
 
+from flask import g
+
 CENT = Decimal("0.01")
 OFFICE_INSTRUCTIONS = "Pay at the Admin Office by cash, check or online transfer. Please bring this statement or quote the unit number and statement no."
 
@@ -26,19 +28,63 @@ def _local_date(utc_dt):
 
 
 def statement_no(bill):
-    return f"SOA-{bill.billing_month.replace('-', '')}-{bill.id:05d}"
+    return f"{bill.billing_month.replace('-', '')}-{bill.id:05d}"
+
+
+def _water_reading_period(reading):
+    """Use the entered range, falling back to the water form's 16th-to-15th cycle."""
+    if not reading:
+        return None, None
+    year, month = (int(part) for part in reading.reading_month.split("-"))
+    previous_year, previous_month = (year - 1, 12) if month == 1 else (year, month - 1)
+    start = reading.reading_period_start or date(previous_year, previous_month, 16)
+    end = reading.reading_period_end or date(year, month, 15)
+    return start.isoformat(), end.isoformat()
 
 
 def soa_row(legacy, bill):
     calc = legacy._bill_calc(bill)
+    vat = soa_vat(legacy, calc)
+    total = Decimal(str(calc["total"])) + vat["amount"]
+    balance = Decimal(str(calc["balance"])) + vat["amount"]
+    status = legacy.bill_status(bill)
+    if vat["amount"] > 0 and balance > 0 and status == "Paid":
+        status = ("Partially Paid" if Decimal(str(bill.amount_paid or 0)) > 0 else
+                  "Overdue" if bill.due_date and date.today() > bill.due_date else "Unpaid")
     return {
         "id": bill.id,
         "billingMonth": bill.billing_month,
         "dueDate": bill.due_date.isoformat() if bill.due_date else None,
-        "status": legacy.bill_status(bill),
-        "total": money(calc["total"]),
+        "status": status,
+        "total": money(total),
         "amountPaid": money(bill.amount_paid),
-        "balance": money(calc["balance"]),
+        "balance": money(balance),
+    }
+
+
+VAT_CHARGES = {"condo": "Condo dues", "parking": "Parking", "storage": "Storage", "water": "Water", "other": "Other charges"}
+
+
+def soa_vat(legacy, calc):
+    """VAT is a presentation-only SOA amount; it never changes the stored bill calculation."""
+    rate = Decimal(str(legacy.setting("vat_rate", "0")))
+    selected = [kind for kind in VAT_CHARGES
+                if legacy.setting(f"vat_include_{kind}", "0") == "1"]
+    amounts = {
+        "condo": Decimal(str(calc["condo"])),
+        "parking": Decimal(str(calc["parking"])),
+        "storage": Decimal(str(calc["storage"])),
+        "water": Decimal("0") if calc["reading"] and calc["reading"].paid else Decimal(str(calc["water"])),
+        "other": Decimal(str(calc.get("other", 0))),
+    }
+    taxable = [(kind, max(amounts[kind], Decimal("0"))) for kind in selected if amounts[kind] > 0]
+    base = sum((amount for _, amount in taxable), Decimal("0"))
+    amount = (base * rate / Decimal("100")).quantize(CENT, rounding=ROUND_HALF_UP)
+    return {
+        "amount": amount,
+        "base": base.quantize(CENT, rounding=ROUND_HALF_UP),
+        "rate": format(rate.normalize(), "f"),
+        "eligible": [VAT_CHARGES[kind] for kind, _ in taxable],
     }
 
 
@@ -60,9 +106,11 @@ def _basis(kind, amount, area, rate, basis, unit_no=None):
 def charge_bases(legacy, bill, calc):
     """Area × rate per sqm for condo / parking / storage: the issue-time snapshot when recorded,
     otherwise the unit's current record if (and only if) it gives exactly the charged amount."""
-    if bill.dues_basis is not None or bill.parking_area is not None or bill.storage_area is not None:
+    if (bill.dues_basis is not None or bill.parking_unit_no is not None or bill.parking_area is not None
+            or bill.storage_unit_no is not None or bill.storage_basis is not None or bill.storage_area is not None):
         condo = _basis("condo", calc["condo"], bill.condo_area, bill.condo_rate, bill.dues_basis)
-        parking = _basis("parking", calc["parking"], bill.parking_area, bill.parking_rate, "sqm", bill.parking_unit_no) if bill.parking_unit_no else None
+        parking_basis = ("manual" if bill.unit and bill.unit.unit_type == "PARKING" and bill.parking_area is None else "sqm")
+        parking = _basis("parking", calc["parking"], bill.parking_area, bill.parking_rate, parking_basis, bill.parking_unit_no) if bill.parking_unit_no else None
         storage = _basis("storage", calc["storage"] or bill.storage_dues, bill.storage_area, bill.storage_rate, bill.storage_basis, bill.storage_unit_no) if bill.storage_unit_no else None
         recorded = True
     else:
@@ -77,11 +125,57 @@ def charge_bases(legacy, bill, calc):
     return {"condo": condo, "parking": parking, "storage": storage, "recorded": recorded}
 
 
+def _soa_people(legacy, unit):
+    if not unit:
+        return None, None, None
+    if "owners" in unit.__dict__:
+        owners = sorted((p for p in unit.owners if p.status == "Current"), key=lambda p: p.id, reverse=True)
+    else:
+        owners = legacy.Owner.query.filter_by(unit_id=unit.id, status="Current").order_by(legacy.Owner.id.desc()).all()
+    if "tenants" in unit.__dict__:
+        tenants = sorted((p for p in unit.tenants if p.status == "Current"), key=lambda p: p.id)
+    else:
+        tenants = legacy.Tenant.query.filter_by(unit_id=unit.id, status="Current").order_by(legacy.Tenant.id.asc()).all()
+    owner = next((person for person in owners if person.include_in_soa is not False), None)
+    tenants = [person for person in tenants if person.include_in_soa is not False]
+    tenant = tenants[0] if tenants else None
+    contact = next((person for person in tenants if person.representative), None)
+    if not contact:
+        contact = next((person for person in tenants if person.email or person.contact_no), None)
+    if not contact:
+        contact = owner
+    if not contact and unit.unit_type in ("PARKING", "STORAGE"):
+        parents = getattr(g, "_asset_bill_parent_units", None)
+        if parents is None:
+            from sqlalchemy import or_
+            from sqlalchemy.orm import selectinload
+
+            rows = legacy.Unit.query.filter(
+                legacy.Unit.active.is_(True),
+                legacy.Unit.unit_type.notin_(("PARKING", "STORAGE")),
+                or_(legacy.Unit.assigned_parking_unit_id.isnot(None),
+                    legacy.Unit.assigned_storage_unit_id.isnot(None)),
+            ).options(selectinload(legacy.Unit.owners), selectinload(legacy.Unit.tenants)).order_by(legacy.Unit.id).all()
+            parents = {}
+            for row in rows:
+                for asset_id in (row.assigned_parking_unit_id, row.assigned_storage_unit_id):
+                    if asset_id is not None:
+                        parents.setdefault(asset_id, row)
+            g._asset_bill_parent_units = parents
+        residential = parents.get(unit.id)
+        if residential:
+            return _soa_people(legacy, residential)
+    return owner, tenant, contact
+
+
+def soa_contact_for_unit(legacy, unit):
+    """The current owner/tenant contact allowed to appear beside or on this SOA."""
+    return _soa_people(legacy, unit)[2]
+
+
 def _account(legacy, bill):
     unit = bill.unit
-    owner = legacy.Owner.query.filter_by(unit_id=unit.id, status="Current").order_by(legacy.Owner.id.desc()).first() if unit else None
-    tenant = legacy.Tenant.query.filter_by(unit_id=unit.id, status="Current").order_by(legacy.Tenant.id.desc()).first() if unit else None
-    contact = legacy.current_contact_for_unit(unit) if unit else None
+    owner, tenant, contact = _soa_people(legacy, unit)
     bill_to = (getattr(contact, "tenant_name", None) or getattr(contact, "owner_name", None) or "") if contact else ""
     return {"unitNo": unit.unit_no if unit else "", "unitType": (unit.unit_type or "") if unit else "", "floor": (unit.floor or "") if unit else "",
             "billTo": bill_to, "ownerName": owner.owner_name if owner else "", "tenantName": tenant.tenant_name if tenant else ""}
@@ -117,14 +211,47 @@ def payment_guidance(legacy):
     return {"instructions": text, "onlinePaymentUrl": url or None, "qrAvailable": bool(url)}
 
 
-def soa_detail(legacy, bill):
+def soa_detail(legacy, bill, payer_type=None):
+    if payer_type not in (None, "Owner", "Tenant"):
+        raise ValueError("payer_type must be Owner or Tenant")
+    if payer_type and not legacy.party_ledger_enabled(bill.billing_month):
+        raise ValueError("Separate Owner/Tenant statements are available from the configured cutover month.")
+    if payer_type and not legacy.party_statement_ready(bill.unit_id, bill.billing_month):
+        raise ValueError("Payer assignment is required for earlier payments and advances before separate statements can be issued.")
     calc = legacy._bill_calc(bill)
+    vat = soa_vat(legacy, calc)
     reading = calc.get("reading")
+    commercial_reading = None
+    water_allocation = None
+    if bill.unit and bill.unit.unit_type == "COMMERCIAL" and bill.unit.floor and bill.water_reading_month:
+        commercial_reading = legacy.CommercialWaterReading.query.filter_by(
+            commercial_type=bill.unit.floor, reading_month=bill.water_reading_month,
+        ).first()
+        if commercial_reading:
+            shared_amount = legacy.commercial_water_amount_for_reading(commercial_reading)
+            shares, total_area = legacy.commercial_water_shares(bill.unit.floor, shared_amount)
+            if shares.get(bill.unit_id, Decimal("0.00")) == Decimal(str(calc["water"])).quantize(CENT, rounding=ROUND_HALF_UP):
+                water_allocation = {
+                    "commercialType": bill.unit.floor,
+                    "unitArea": _num(bill.unit.area_sqm) or "0.00",
+                    "totalArea": _num(total_area) or "0.00",
+                    "sharedAmount": money(shared_amount),
+                    "unitAmount": money(calc["water"]),
+                }
     y, mth = (int(x) for x in bill.billing_month.split("-"))
     period_end = date(y + (mth == 12), mth % 12 + 1, 1) - timedelta(days=1)
     previous = legacy.unpaid_previous_bills(bill.unit_id, bill.billing_month)
     issued = _local_date(bill.issued_at) or _local_date(bill.created_at)
-    return {
+    if commercial_reading:
+        water_reading_month = commercial_reading.reading_month
+    elif reading:
+        water_reading_month = reading.reading_month
+    elif bill.unit and bill.unit.unit_type == "COMMERCIAL":
+        water_reading_month = bill.water_reading_month
+    else:
+        water_reading_month = None
+    water_reading_from, water_reading_to = _water_reading_period(commercial_reading or reading)
+    detail = {
         **soa_row(legacy, bill),
         "statementNo": statement_no(bill),
         "issueDate": issued.isoformat() if issued else None,
@@ -140,19 +267,32 @@ def soa_detail(legacy, bill):
             "storageIncluded": legacy.storage_charged(bill),   # recorded at issue; older bills: the cut-off month
             "storageFrom": legacy.storage_cutoff(),
             "water": money(calc["water"]),
-            "waterUsage": round(reading.usage, 2) if reading else None,
-            "waterRate": money(reading.rate) if reading else None,
+            "waterReadingMonth": water_reading_month,
+            "waterReadingFrom": water_reading_from,
+            "waterReadingTo": water_reading_to,
+            "waterUsage": round(commercial_reading.usage, 2) if commercial_reading else round(reading.usage, 2) if reading else None,
+            "waterRate": money(commercial_reading.rate) if commercial_reading else money(reading.rate) if reading else None,
             "waterPaidSeparately": bool(reading and reading.paid),
+            "waterAllocation": water_allocation,
             "other": money(calc.get("other", 0)),
+            "otherItems": [
+                {"description": row.description, "amount": money(row.amount), "payerType": row.payer_type}
+                for row in bill.extra_charges
+            ],
             "adjustment": money(calc.get("adjustment", 0)),
             "penalty": money(calc["penalty"]),
             "previousBalance": money(calc["previous"]),
             "advanceApplied": money(calc["advance"]),
-            "currentCharges": money(calc["current"]),
+            "vat": money(vat["amount"]),
+            "vatBase": money(vat["base"]),
+            "vatRate": vat["rate"],
+            "vatEligible": vat["eligible"],
+            "currentCharges": money(Decimal(str(calc["current"])) + vat["amount"]),
         },
         "bases": charge_bases(legacy, bill, calc),
         "penaltyInfo": _penalty(legacy, bill, calc),
-        "previousUnpaid": [{"id": x.id, "month": x.billing_month, "dueDate": x.due_date.isoformat() if x.due_date else None,
+        "previousUnpaid": [{"id": x.id, "statementNo": statement_no(x), "month": x.billing_month,
+                            "dueDate": x.due_date.isoformat() if x.due_date else None,
                             "balance": money(legacy.bill_unpaid_part(x))} for x in previous],
         "correctedByHand": bool(bill.soa_manual_override),
         "payment": payment_guidance(legacy),
@@ -165,3 +305,99 @@ def soa_detail(legacy, bill):
             for p in sorted(bill.payments, key=lambda p: (p.payment_date or datetime.min.date(), p.id))
         ],
     }
+    if payer_type:
+        filtered = dict(calc)
+        for category in ("condo", "parking", "storage", "water", "other", "adjustment"):
+            if category == "other" and bill.extra_charges:
+                extra_rows = list(bill.extra_charges)
+                filtered[category] = sum(
+                    (Decimal(str(row.amount or 0)) for row in extra_rows if row.payer_type == payer_type),
+                    Decimal("0.00"),
+                )
+                if not extra_rows and legacy.party_charge_payer(bill, category) != payer_type:
+                    filtered[category] = Decimal("0.00")
+            elif legacy.party_charge_payer(bill, category) != payer_type:
+                filtered[category] = Decimal("0.00")
+        if payer_type != "Tenant":
+            filtered["penalty"] = Decimal("0.00")
+        vat = soa_vat(legacy, filtered)
+        previous = legacy.party_balance_before(bill.unit_id, payer_type, bill.billing_month)
+        current = legacy.party_current_charges(bill, payer_type)
+        total = previous + current + vat["amount"]
+        month_paid = legacy.party_month_payments(bill.unit_id, payer_type, bill.billing_month)
+        balance = total - month_paid
+        status = ("Paid" if balance <= 0 else "Partially Paid" if month_paid > 0 else
+                  "Overdue" if bill.due_date and date.today() > bill.due_date else "Unpaid")
+        person = None
+        if payer_type == "Owner":
+            person = legacy.Owner.query.filter_by(unit_id=bill.unit_id, status="Current").order_by(
+                legacy.Owner.id.desc()).first()
+            person_name = person.owner_name if person else None
+        else:
+            tenants = legacy.Tenant.query.filter_by(unit_id=bill.unit_id, status="Current").order_by(
+                legacy.Tenant.id.asc()).all()
+            person = next((item for item in tenants if item.representative), tenants[0] if tenants else None)
+            person_name = person.tenant_name if person else None
+        detail["billingMonth"] = bill.billing_month
+        detail["statementNo"] = f"{detail['statementNo']}-{payer_type[:1].upper()}"
+        detail["status"] = status
+        detail["total"] = money(total)
+        detail["amountPaid"] = money(total - balance)
+        detail["balance"] = money(balance)
+        detail["account"] = {**detail["account"], "billTo": person_name or payer_type}
+        detail["charges"] = {
+            **detail["charges"],
+            "condoDues": money(filtered["condo"]),
+            "parking": money(filtered["parking"]),
+            "storage": money(filtered["storage"]),
+            "water": money(filtered["water"]),
+            "waterPaidSeparately": False,
+            "other": money(filtered["other"]),
+            "adjustment": money(filtered["adjustment"]),
+            "penalty": money(filtered["penalty"]),
+            "previousBalance": money(previous),
+            "advanceApplied": "0.00",
+            "vat": money(vat["amount"]),
+            "vatBase": money(vat["base"]),
+            "vatEligible": vat["eligible"],
+            "currentCharges": money(Decimal(str(current)) - Decimal(str(filtered["penalty"])) + vat["amount"]),
+            "otherItems": [
+                {"description": row.description, "amount": money(row.amount), "payerType": row.payer_type}
+                for row in bill.extra_charges if row.payer_type == payer_type
+            ],
+        }
+        detail["previousUnpaid"] = []
+        detail["payments"] = [
+            {"date": payment.payment_date.isoformat() if payment.payment_date else None,
+             "amount": money(payment.amount), "receiptNo": legacy.receipt_no_for("bill", payment.id) or None,
+             "reversed": bool(payment.reversed_at), "method": payment.payment_method,
+             "type": payment.payment_type, "reference": payment.reference or ""}
+            for payment in legacy.Payment.query.join(legacy.Billing).filter(
+                legacy.Billing.unit_id == bill.unit_id,
+                legacy.Payment.payer_type == payer_type,
+                legacy.Payment.billing_id == bill.id,
+                legacy.Payment.reversed_at.is_(None),
+            ).order_by(legacy.Payment.payment_date, legacy.Payment.id).all()
+        ]
+        detail["payments"].extend(
+            {"date": allocation.receipt.received_date.isoformat(),
+             "amount": money(allocation.amount), "receiptNo": allocation.receipt.receipt_no,
+             "reversed": False, "method": allocation.receipt.payment_method,
+             "type": "WATER", "reference": allocation.receipt.reference or ""}
+            for allocation in legacy.ReceiptAllocation.query.join(
+                legacy.Receipt, legacy.ReceiptAllocation.receipt_id == legacy.Receipt.id,
+            ).join(
+                legacy.WaterReading, legacy.ReceiptAllocation.water_reading_id == legacy.WaterReading.id,
+            ).filter(
+                legacy.WaterReading.unit_id == bill.unit_id,
+                legacy.ReceiptAllocation.kind == "water",
+                legacy.ReceiptAllocation.payer_type == payer_type,
+                legacy.Receipt.voided_at.is_(None),
+                legacy.Receipt.received_date >= date.fromisoformat(f"{bill.billing_month}-01"),
+                legacy.Receipt.received_date < date.fromisoformat(f"{legacy.month_shift(bill.billing_month, 1)}-01"),
+            ).all()
+        )
+        detail["payments"].sort(key=lambda payment: (payment["date"] or "", payment["receiptNo"] or ""))
+        detail["payerType"] = payer_type
+        detail["partyBalance"] = money(balance)
+    return detail

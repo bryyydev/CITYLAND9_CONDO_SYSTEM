@@ -1,0 +1,10 @@
+V10.31 - Billing Management Layout
+- Redesigned Billing Management to match the approved dashboard reference.
+- Added KPI cards for total, paid, pending and overdue bills.
+- Added compact Search & Filter area with billing period, status and unit type.
+- Added server-side pagination controls and page-size selector.
+- Added clearer billing table with unit, owner/tenant, period, dues, water, total and status.
+- Kept View SOA, Print and QR actions.
+- Added responsive and light-mode styling.
+- Added status filtering and unit-type filtering to billing route.
+- Billing queries now paginate displayed records instead of rendering every bill at once.

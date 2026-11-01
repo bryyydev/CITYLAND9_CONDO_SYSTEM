@@ -5,14 +5,15 @@ The backend is a Flask 3.1 application (`backend\legacy_app.py` plus the API blu
 
 | Command | Server | Use |
 |---|---|---|
-| `backend\run.py --lan` | **Waitress** WSGI, 8 threads, `FLASK_HOST:FLASK_PORT` (default `0.0.0.0:5000`) | **Production / LAN** (this is what `START_WINDOWS.bat` runs) |
-| `backend\run.py` | Waitress as above; only with `APP_ENV=development` the Flask development server on 127.0.0.1 (debugger only if also `FLASK_DEBUG=1`) | Development only, never on the server |
+| `backend\run.py --lan` | **Waitress** WSGI, 8 threads, loopback by default (`127.0.0.1:5000`); HTTPS proxy required for LAN access | Production (this is what `START_WINDOWS.bat` runs) |
+| `backend\run.py` | Waitress in production; with `APP_ENV=development`, Flask serves loopback only (debugger only if also `FLASK_DEBUG=1`) | Local development only; `--lan` refuses development mode |
 | `backend\service.py` | Runs `run.py --lan` and restarts it whenever it stops | Windows service via Task Scheduler ([07 §1](07-OPERATIONS.md#1-run-as-a-windows-service)) |
 
 Before it loads the app, `run.py` reads `.env` and, when `DB_ENGINE=mysql` and `MYSQL_DATA_DIR`
 are set, **starts CityLand's MariaDB** if it isn't running. It refuses to start when `SECRET_KEY`
-is missing or weak, or when the database tables are missing or older than the code (it never
-changes tables itself; see [02](02-DATABASE_SETUP.md)).
+is missing or weak, or when required database tables are missing. Application startup never creates
+or alters production tables: apply MariaDB/MySQL migrations or SQL Server schema changes separately
+before restarting (see [02](02-DATABASE_SETUP.md)).
 
 All commands below are run from the **project root**.
 
@@ -43,7 +44,8 @@ directly, which always uses the right environment. If you prefer activating it:
 |---|---|
 | `requirements.txt` | **Everything the server needs** (the one runtime file): Flask 3.1.3, Flask-SQLAlchemy 3.0.5, SQLAlchemy 1.4.54, Werkzeug 3.1.3, **Waitress 3.0.2**, **PyMySQL 1.2.3**, cryptography (encrypted SMTP password), python-dotenv, **Alembic** (migrations), openpyxl (Excel), qrcode (SOA QR) |
 | `backend\requirements.txt` | Points to `requirements.txt` (kept for older instructions) |
-| `requirements-optional.txt` | `pyodbc`, only for the old SQL Server migration script; not needed |
+| `requirements-sqlserver.txt` | SQL Server runtime: base requirements plus `pyodbc`; selected by `START_WINDOWS.bat` with Python 3.14 when `DATABASE_URL` targets SQL Server |
+| `requirements-optional.txt` | Optional database extras; not used by the normal MariaDB/SQLite startup |
 | `requirements-dev.txt` | `pytest` for the test suite (development PCs) |
 
 All versions are pinned. `START_WINDOWS.bat` installs `requirements.txt` automatically, and only
@@ -61,24 +63,15 @@ or by hand:
 .venv\Scripts\python.exe backend\run.py --lan
 ```
 
-Expected output:
+Expected output for local-only access:
 
 ```
 Log file: C:\...\CITYLAND9_SYSTEM\logs\cityland9.log
-CityLand 9 running on http://0.0.0.0:5000 (waitress, 8 threads, production)
-```
-
-`0.0.0.0` means "every network card of this PC". Other PCs connect with this PC's IP:
-
-```powershell
-ipconfig | findstr IPv4          # e.g. 192.168.100.63  ->  http://192.168.100.63:5000
+CityLand 9 running on http://127.0.0.1:5000 (Waitress, 8 threads, production, local access only)
 ```
 
 - **This PC:** `http://127.0.0.1:5000`
-- **Other PCs / phones on the same network:** `http://<server IP>:5000`
-- Allow port 5000 through Windows Firewall once, for the local subnet only: [06 §6](06-SECURITY.md#6-windows-firewall).
-- Give the server PC a **fixed IP** (DHCP reservation in the router) so the address never changes.
-- HTTPS on the LAN: [06 §5](06-SECURITY.md#5-https-on-the-lan-recommended).
+- **Other PCs / phones:** configure HTTPS first; do not expose port 5000 directly. Follow [06 §5](06-SECURITY.md#5-https-on-the-lan-required-for-lan-access).
 
 What the server answers:
 
@@ -138,7 +131,7 @@ and the daily backup: see [07 §1](07-OPERATIONS.md#1-run-as-a-windows-service).
 
 - [ ] `.venv\Scripts\python.exe --version` → 3.11+
 - [ ] `pip install` finished without errors
-- [ ] `backend\run.py --lan` prints `running on http://0.0.0.0:5000 (waitress, 8 threads, production)`
+- [ ] `backend\run.py --lan` binds to `127.0.0.1`; configure HTTPS before enabling LAN access
 - [ ] `http://127.0.0.1:5000` opens the sign-in page on the server
-- [ ] `http://<server IP>:5000` opens it from another PC
+- [ ] The configured HTTPS URL opens from another PC; port 5000 is not reachable over the LAN
 - [ ] `FLASK_DEBUG=0` and `APP_ENV=production` on the server

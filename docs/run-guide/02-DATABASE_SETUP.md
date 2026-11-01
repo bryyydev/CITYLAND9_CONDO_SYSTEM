@@ -96,7 +96,7 @@ and do a first backup + restore test ([07 §2–3](07-OPERATIONS.md#2-backups)).
 
 ### Step 5 (optional, never on the client's live data) — Demo data
 
-For a test or training PC only:
+Fresh installations start empty. For a test or training PC only, add sample data explicitly:
 
 ```powershell
 .venv\Scripts\python.exe seed_test_data.py
@@ -176,3 +176,55 @@ the PC, failure alerts, and the tested restore procedure.
 - [ ] First Superadmin created with `create_admin.py`; nobody shares that account
 - [ ] Named staff accounts created
 - [ ] Backup task registered, a first backup exists, and a restore test passed ([07](07-OPERATIONS.md))
+
+## 8. SQL Server Express alternative
+
+SQL Server is supported as an **alternative**, not the default. Do not change the live `.env`
+until the SQLite data has been migrated to a separate SQL Server database and verified. This
+installation's SQL Server Express is version 17 (SQL Server 2025); Python connects locally using
+ODBC Driver 18 and Windows integrated authentication.
+
+1. Install ODBC Driver 18 and Python 3.14 alongside the existing Python. Create the separate
+   runtime environment once (the existing `.venv` remains unchanged):
+
+   ```powershell
+   py -3.14 -m venv .venv-sqlserver
+   .venv-sqlserver\Scripts\python.exe -m pip install -r requirements-sqlserver.txt
+   ```
+
+   `START_WINDOWS.bat` also selects this environment automatically when `.env` contains an
+   active `DATABASE_URL=mssql+pyodbc:...`.
+2. In SSMS, create a **new, empty** test database (for example `CityLand9_Migration_Test`).
+   `CityLand9_Test` was already used for an earlier test and is not empty. Do not target the
+   live database or the existing SQLite file.
+3. From an ordinary PowerShell window opened in the project root, run the migration against a
+   verified SQLite copy:
+
+   ```powershell
+   $env:SOURCE_SQLITE_PATH = "database\backups\cityland_condo_web_before_sqlserver_20261016_125049.db"
+   $env:TARGET_DATABASE_URL = "mssql+pyodbc://@localhost\SQLEXPRESS/CityLand9_Migration_Test?driver=ODBC+Driver+18+for+SQL+Server&trusted_connection=yes&TrustServerCertificate=yes"
+   .venv-sqlserver\Scripts\python.exe migrate_sqlite_to_sqlserver.py
+   Remove-Item Env:SOURCE_SQLITE_PATH, Env:TARGET_DATABASE_URL
+   ```
+
+   Use the actual path of the verified SQLite backup and your SQL Server instance/database name.
+   The migration refuses a target containing tables and verifies every copied primary key and
+   column value; require the final `Migration verified` message. Keep the original SQLite file
+   and its backup unchanged.
+4. Test the app on the SQL Server database **before** switching production. To run it as a test,
+   save the SQL Server URL in `.env` only after stopping the production server and making another
+   SQLite backup; then start it with `START_WINDOWS.bat`, check `/readyz`, log in, and exercise
+   key billing and resident workflows. Switching back to SQLite requires restoring the original
+   `.env` value; SQL Server writes are not copied back automatically.
+5. Before enabling scheduled tasks or in-app backups, follow the SQL Server service-account and
+   backup-folder permission setup in [07 §2](07-OPERATIONS.md#2-backups). Do not grant the
+   application `sysadmin`; schema migrations require a separate, deliberate administrative step.
+   The scheduled application does not have schema-change rights and will not apply SQL Server
+   schema changes on startup. Apply each required change with an authorized administrator first.
+   The SQL Server equivalent of migration 0016 is
+   [`database/migrations/sqlserver/0016_party_soa_accounting.sql`](../../database/migrations/sqlserver/0016_party_soa_accounting.sql).
+   Back up the target database and execute the script against that database in SQL Server Management
+   Studio; it is transactional and safe to rerun.
+
+The SQL Server integration is still being exercised. This guide is not approval to change the
+current production `.env`; do so only after the test and backup/restore checks pass.

@@ -1,0 +1,10 @@
+CITYLAND 9 CONDO SYSTEM 2026
+V10.62 – Reference UI Remarks Update
+
+Applied the remarks shown on the supplied reference image:
+1. Dashboard summary cards are arranged in one line on desktop screens.
+2. Unit Directory status, parking/storage, and SOA status badge text is white.
+3. Billing Management status badge text is white.
+4. No database, billing calculation, payroll, or route logic was changed.
+
+Responsive behavior is retained for smaller screens.

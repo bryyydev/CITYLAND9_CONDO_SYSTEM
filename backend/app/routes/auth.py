@@ -8,6 +8,7 @@ in through React is also signed in on the classic pages (and back).
     POST /api/auth/logout                                   -> 204
     GET  /api/auth/me                                       -> {"user": {...}} or 401
     POST /api/auth/password {"currentPassword", "newPassword"}  -> 204 (other sessions end)
+    POST /api/auth/username {"currentPassword", "newUsername"}  -> {"user": {...}} (resident only)
 
 user = {username, role, roleLabel, portal, home, unitId, permissions[], mustChangePassword, passwordPolicy}
 
@@ -15,22 +16,29 @@ Sign-in is throttled per account+client and per client (app.core.security.LoginT
 failures always answer "Invalid username or password." Sessions are validated on every request
 by the application's current_user() (active account, session version, idle/absolute expiry).
 """
+import re
+
 from flask import Blueprint, current_app, jsonify, request, session
+from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 
 from ..core import security
 from ..core.permissions import permissions_for_role
 from ..core.roles import PORTALS, RESIDENT, ROLE_LABELS
 from ..utils.auth import csrf_token, json_error, protect_api_blueprint, signed_in_user
 
+USERNAME_RE = re.compile(r"^[A-Za-z0-9._-]{3,80}$")
 
-def make_auth_blueprint(*, User, audit, check_password_hash, commit, home_endpoint, resident_access_problem,
+
+def make_auth_blueprint(*, db, User, audit, check_password_hash, commit, home_endpoint, resident_access_problem,
                         start_session, set_password, client_address, resident_unit_id=None, resident_access_links=None,
-                        activation_expired=None):
+                        activation_expired=None, end_sessions=None):
     """Build the blueprint with the application's objects (no import cycle)."""
     bp = protect_api_blueprint(Blueprint("api_auth", __name__, url_prefix="/api"))
     resident_unit_id = resident_unit_id or (lambda user: user.resident_profile.unit_id if user.resident_profile else None)
     resident_access_links = resident_access_links or (lambda user: [])
     activation_expired = activation_expired or (lambda user: False)
+    end_sessions = end_sessions or (lambda user, keep_current=False: None)
 
     def user_payload(user):
         return {
@@ -142,6 +150,48 @@ def make_auth_blueprint(*, User, audit, check_password_hash, commit, home_endpoi
         audit(f"Activated resident portal account {user.username}" if activating else f"Changed password for user {user.username}",
               entity_type="user", entity_id=user.id)
         return "", 204
+
+    @bp.post("/auth/username")
+    def change_username():
+        """The signed-in resident changes their own username after confirming their password."""
+        user = signed_in_user()
+        if not user:
+            return json_error(401, "Not signed in.")
+        if user.role != RESIDENT:
+            return json_error(403, "Only residents can change their username here.")
+        data = request.get_json(silent=True) or {}
+        current = str(data.get("currentPassword", ""))
+        new_username = str(data.get("newUsername", "")).strip()
+        if activation_expired(user):
+            return json_error(403, "This activation code has expired. Ask the Admin Office for a new one.")
+        if getattr(user, "temp_password_expires_at", None) and user.must_change_password:
+            current = current.strip().upper()
+        if not check_password_hash(user.password_hash, current):
+            return json_error(400, "Current password is incorrect.")
+        if not USERNAME_RE.fullmatch(new_username):
+            return json_error(400, "Use 3–80 letters, numbers, dots, dashes or underscores.")
+        if new_username == user.username:
+            return json_error(400, "Choose a username different from your current username.")
+        if User.query.filter(func.lower(User.username) == new_username.lower()).first():
+            return json_error(409, "That username is already taken.")
+
+        previous_username = user.username
+        user.username = new_username
+        end_sessions(user, keep_current=True)
+        session["username"] = new_username
+        try:
+            audit("Changed resident username", entity_type="user", entity_id=user.id,
+                  details={"before": previous_username, "after": new_username}, commit=False)
+            commit()
+        except IntegrityError:
+            db.session.rollback()
+            session["username"] = previous_username
+            return json_error(409, "That username is already taken.")
+        except Exception:
+            db.session.rollback()
+            session["username"] = previous_username
+            raise
+        return jsonify({"user": user_payload(user)})
 
     @bp.route("/<path:unknown>", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
     def not_found(unknown):

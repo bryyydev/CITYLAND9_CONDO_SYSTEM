@@ -3,6 +3,10 @@ configuration is never overwritten. (The full launcher was verified on Windows w
 import importlib.util
 import os
 import re
+import sys
+from contextlib import nullcontext
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -34,6 +38,21 @@ def test_existing_configuration_is_kept(tmp_path, monkeypatch, capsys):
     assert "already set up" in capsys.readouterr().out
 
 
-def test_demo_password_meets_the_policy():
-    from app.core import security
-    assert security.password_problem("CityLand9-Demo", "demo_admin") is None
+def test_first_run_creates_empty_database_and_prompts_for_superadmin(tmp_path, monkeypatch, capsys):
+    mod = load(tmp_path, monkeypatch)
+    init_db = Mock()
+    application = SimpleNamespace(init_db=init_db, app=SimpleNamespace(app_context=nullcontext))
+    monkeypatch.setitem(sys.modules, "dotenv", SimpleNamespace(load_dotenv=Mock()))
+    monkeypatch.setitem(sys.modules, "legacy_app", application)
+    ask_admin = Mock(return_value="new_admin")
+    monkeypatch.setattr(mod, "ask_superadmin", ask_admin)
+
+    assert mod.main() == 0
+
+    init_db.assert_called_once_with()
+    ask_admin.assert_called_once_with(application)
+    output = capsys.readouterr().out
+    assert "Empty database created (no unit or demo records)." in output
+    assert "Sign in as new_admin" in output
+    assert "TEST-501" not in output
+    assert "CityLand9-Demo" not in output

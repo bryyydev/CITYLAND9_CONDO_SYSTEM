@@ -34,6 +34,7 @@ def is_development():
 PLACEHOLDER_SECRETS = {
     "", "change-me", "changeme", "secret", "cityland9-v10-change-this-secret", "paste-a-generated-value-here",
     "paste-the-generated-value-here", "your-secret-key", "dev", "development",
+    "<generate-a-64-character-random-value>",
 }
 MIN_SECRET_LENGTH = 32
 DEV_FALLBACK_SECRET = "development-only-not-for-production-" + "0" * 32

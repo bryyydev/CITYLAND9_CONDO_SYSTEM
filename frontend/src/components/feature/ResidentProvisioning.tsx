@@ -69,14 +69,14 @@ export function ProvisionDrawer({ target, onClose, onDone }: { target: Provision
             <li>a one-time <b>activation code</b>, shown to you once, to hand over in person</li>
             <li>the resident signs in with it and must choose their own password; the code then stops working</li>
           </ul>
-          <Notice tone="info">The resident can't see anything until they activate the account. Billing and statements work the same with or without a portal account.</Notice>
+          <Notice tone="info">Owner and tenant accounts are separate. After activation, this login sees the SOA for this party type only.</Notice>
           {error && <div role="alert"><Notice tone="warn">{error}</Notice></div>}
         </div>
       )}
       {target && candidates && (
         <div className="space-y-4 text-[13.5px]">
           <Notice tone="warn" title="This may be the same person as an existing account">
-            Owner/tenant records belong to one unit each, so the system can't tell for sure. People are never merged automatically:
+            Only matching owner records or matching tenant records can share an account. People are never merged automatically:
             check their identity (e.g. ID shown at the office) before adding this unit to an existing account.
           </Notice>
           <fieldset className="space-y-2">

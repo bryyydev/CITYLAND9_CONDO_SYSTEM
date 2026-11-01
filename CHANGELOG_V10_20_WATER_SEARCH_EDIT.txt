@@ -1,0 +1,6 @@
+V10.20 - Water Readings Search and Edit workflow
+- Moved Add/Edit entry form into an explicit Add Reading/Edit workflow.
+- Added unit/month/status search and filtering.
+- Added automatic previous-reading lookup when selecting a unit and month.
+- Updated Edit Water Reading to match the requested Billing Month/Unit/Previous/Current/Rate/Reading Date layout.
+- Added Partially Paid display when a related billing record is partially paid.

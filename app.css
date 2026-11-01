@@ -1,0 +1,96 @@
+@import "tailwindcss";
+
+/* CityLand 9 design tokens. Deep teal primary, dark slate ink, warm copper accent.
+   No blue or purple hues. Fonts and icons are bundled locally (the LAN may be offline). */
+@theme {
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, "Segoe UI", Arial, sans-serif;
+  --font-display: "Sora", "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+
+  --color-brand-50: #eaf4f7;
+  --color-brand-100: #cfe4ea;
+  --color-brand-200: #a3cad5;
+  --color-brand-300: #6fa9b9;
+  --color-brand-400: #3d8499;
+  --color-brand-500: #1a6d86;
+  --color-brand-600: #0d5c75;
+  --color-brand-700: #0b4c61;
+  --color-brand-800: #093c4d;
+  --color-brand-900: #072e3b;
+
+  --color-copper-50: #fbf3ec;
+  --color-copper-100: #f5e0cc;
+  --color-copper-200: #ebc29d;
+  --color-copper-400: #d98a4e;
+  --color-copper-500: #c8702a;
+  --color-copper-600: #a95a1d;
+  --color-copper-700: #874718;
+
+  --color-ink-50: #f8fafc;
+  --color-ink-100: #f1f4f6;
+  --color-ink-200: #e3e8eb;
+  --color-ink-300: #cbd3d8;
+  --color-ink-400: #94a3ad;
+  --color-ink-500: #66747e;
+  --color-ink-600: #4b5963;
+  --color-ink-700: #36424a;
+  --color-ink-800: #232d33;
+  --color-ink-900: #151c21;
+
+  /* Chart series (validated: lightness band, chroma, CVD separation, contrast on white and ink-50). */
+  --color-chart-1: #008a9e;
+  --color-chart-2: #c8702a;
+
+  --shadow-card: 0 1px 2px rgb(21 28 33 / 0.05), 0 4px 14px rgb(21 28 33 / 0.05);
+  --shadow-pop: 0 12px 40px rgb(21 28 33 / 0.18);
+
+  --animate-fade-in: fade-in 220ms ease-out both;
+  --animate-rise-in: rise-in 260ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  --animate-slide-in: slide-in 280ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  --animate-slide-in-left: slide-in-left 240ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  --animate-pop-in: pop-in 200ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+
+  @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes rise-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  @keyframes slide-in { from { transform: translateX(100%); } to { transform: none; } }
+  @keyframes slide-in-left { from { transform: translateX(-100%); } to { transform: none; } }
+  @keyframes pop-in { from { opacity: 0; transform: scale(0.97) translateY(4px); } to { opacity: 1; transform: none; } }
+}
+
+@layer base {
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    @apply bg-ink-50 font-sans text-[14px] leading-relaxed text-ink-800 antialiased;
+  }
+  h1, h2, h3, .font-display { font-family: var(--font-display); letter-spacing: -0.015em; }
+  :focus-visible { outline: 2px solid var(--color-brand-500); outline-offset: 2px; }
+  button { cursor: pointer; }
+  button:disabled { cursor: not-allowed; }
+  input[type="date"]::-webkit-calendar-picker-indicator { opacity: 0.6; cursor: pointer; }
+  ::selection { background: var(--color-brand-100); }
+}
+
+@utility tabular { font-variant-numeric: tabular-nums; }
+
+@layer components {
+  .input {
+    @apply h-10 w-full rounded-lg border border-ink-200 bg-white px-3 text-[14px] text-ink-800 shadow-sm outline-none transition
+      placeholder:text-ink-400 hover:border-ink-300 focus:border-brand-500 focus:ring-4 focus:ring-brand-100 disabled:bg-ink-100 disabled:text-ink-500;
+  }
+  textarea.input { @apply h-auto py-2 leading-normal; }
+  .input[aria-invalid="true"] { @apply border-red-500 focus:ring-red-100; }
+  .th { @apply whitespace-nowrap border-b border-ink-200 bg-ink-50 px-4 py-2.5 text-left text-[11.5px] font-semibold tracking-wide text-ink-500 uppercase; }
+  .td { @apply border-b border-ink-100 px-4 py-3 align-middle; }
+  .num { @apply text-right tabular-nums; }
+}
+
+/* Reduced motion: keep state changes, drop movement. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 1ms !important; transition-duration: 1ms !important; }
+}
+
+/* Printing an SOA or receipt prints only the document. */
+@media print {
+  .no-print { display: none !important; }
+  body { background: #fff; }
+  .print-sheet { box-shadow: none !important; border: 0 !important; margin: 0 !important; max-width: none !important; }
+}

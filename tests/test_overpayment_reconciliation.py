@@ -27,7 +27,7 @@ def unit(app_module):
     """A fresh 1-bedroom unit (dues 3,000/month, no penalty); other units inactive meanwhile."""
     m = app_module
     with m.app.app_context():
-        u = m.Unit(unit_no="OVERPAY-1", unit_type="1 BEDROOM", area_sqm=40, active=True)
+        u = m.Unit(unit_no="OVERPAY-1", unit_type="1 BEDROOM", area_sqm=40, unit_rate_per_sqm=75, active=True)
         m.db.session.add(u)
         m.db.session.commit()
         others = [x.id for x in m.Unit.query.filter(m.Unit.id != u.id, m.Unit.active.is_(True)).all()]
@@ -63,7 +63,7 @@ def bill(m, uid, month):
 
 def pay(m, bill_id, amount, when):
     return m.record_bill_payment(bill_id, amount=D(amount), payment_method="CASH", payment_type="FULL", reference="", remarks="",
-                                 payment_date=when, form_token=secrets.token_urlsafe(24))
+                                 payment_date=when, form_token=secrets.token_urlsafe(24), payer_type="Owner")
 
 
 def advance_applied(m, bill_id):
@@ -142,7 +142,7 @@ def test_a_scheduled_advance_never_pays_more_than_a_bill_still_owes(app_module, 
         jan = bill(m, unit, "2030-01")
         pay(m, jan.id, "3000", date(2030, 1, 5))
         m.record_advance_payment(unit_id=unit, amount=D("6000"), start_month="2030-01", months=2, method="CASH", reference="",
-                                 remarks="prepaid", payment_date=date(2030, 1, 10), form_token=secrets.token_urlsafe(24))
+                                 remarks="prepaid", payment_date=date(2030, 1, 10), form_token=secrets.token_urlsafe(24), payer_type="Owner")
         jan = bill(m, unit, "2030-01")
         assert advance_applied(m, jan.id) == D("0.00") and m._bill_calc(jan)["balance"] == D("0.00")
         adv = m.AdvancePayment.query.filter_by(unit_id=unit, remarks="prepaid").one()

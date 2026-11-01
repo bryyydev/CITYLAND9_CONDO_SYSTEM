@@ -1,0 +1,7 @@
+V10.46 UI / NAVIGATION ENHANCEMENT
+
+- Reorganized sidebar into clear sections: Workspace, Condo Management, Operations, Employees & Payroll, Administration.
+- Removed the old detached HR navigation bar.
+- Added visible HR submenu links for Employees, Attendance, Leave, Overtime, Payroll, Loans & Deductions, Payroll Rules, Payroll Reports and 13th Month.
+- Improved spacing, grouping, active states, hover states, tables, buttons, forms and responsive behavior.
+- Existing application routes and database are unchanged.

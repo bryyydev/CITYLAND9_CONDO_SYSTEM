@@ -55,7 +55,7 @@ export function GatePassesPage() {
       <div className="mb-6 grid gap-4 sm:grid-cols-3">
         <StatCard tone={requests.length ? "copper" : "default"} icon="inbox-archive-line" label="Waiting for approval" value={requests.length} hint="Requests from residents" />
         <StatCard icon="passport-line" label="Valid today" value={validToday.length} />
-        <StatCard icon="truck-line" label="Moves in the next 7 days" value={all.filter((p) => (p.type === "Move-in" || p.type === "Move-out") && p.status === "Issued" && (p.date ?? "") >= today && (p.date ?? "") <= addDays(today, 7)).length} />
+        <StatCard icon="truck-line" label="Moves in the next 7 days" value={all.filter((p) => (p.type === "Move-in" || p.type === "Move-out" || p.type === "Pull Out") && p.status === "Issued" && (p.date ?? "") >= today && (p.date ?? "") <= addDays(today, 7)).length} />
       </div>
       <Card>
         <div className="flex flex-wrap items-center gap-3 border-b border-ink-100 p-4">
@@ -66,7 +66,7 @@ export function GatePassesPage() {
           empty={{ icon: "passport-line", title: tab === "requests" ? "No requests waiting" : "No passes", text: tab === "requests" ? "New requests from residents appear here." : undefined }}
           columns={[
             { key: "d", header: "Date", cell: (p) => <b className="whitespace-nowrap text-ink-900">{dateLabel(p.date)}</b> },
-            { key: "t", header: "Type", cell: (p) => <Badge tone={p.type.startsWith("Move") ? "copper" : "info"} dot={false}>{p.type}</Badge> },
+            { key: "t", header: "Type", cell: (p) => <Badge tone={p.type.startsWith("Move") || p.type === "Pull Out" ? "copper" : "info"} dot={false}>{p.type}</Badge> },
             { key: "u", header: "Unit", cell: (p) => p.unitNo },
             { key: "n", header: "Name / details", cell: (p) => <><span className="font-medium">{p.name}</span><span className="block max-w-xs truncate text-[12px] text-ink-500">{p.purpose}</span></> },
             { key: "s", header: "Source", cell: (p) => (p.source === "resident" ? <span className="text-[12.5px]">Resident · {p.requestedBy}<span className="block text-ink-400">{dateTimeLabel(p.requestedAt)}</span></span> : <span className="text-[12.5px] text-ink-500">Office{p.reviewedBy ? ` · ${p.reviewedBy}` : ""}</span>) },
@@ -144,10 +144,10 @@ function IssuePassDrawer({ open, onClose, onDone }: { open: boolean; onClose: ()
     <Drawer open={open} onClose={onClose} title="Issue gate pass" subtitle="Passes issued by the office are valid immediately." width="max-w-md"
       footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button><Button icon="passport-line" loading={busy} onClick={submit}>Issue pass</Button></>}>
       <form className="grid gap-4 sm:grid-cols-2" onSubmit={(e) => { e.preventDefault(); void submit(); }} noValidate>
-        <Field label="Type">{(id) => <select id={id} className="input" value={form.type} onChange={(e) => set({ type: e.target.value as GatePassType })}>{["Visitor", "Delivery", "Move-in", "Move-out"].map((t) => <option key={t}>{t}</option>)}</select>}</Field>
+        <Field label="Type">{(id) => <select id={id} className="input" value={form.type} onChange={(e) => set({ type: e.target.value as GatePassType })}>{["Visitor", "Delivery", "Move-in", "Move-out", "Pull Out"].map((t) => <option key={t}>{t}</option>)}</select>}</Field>
         <Field label="Date" error={server.date}>{(id) => <input id={id} type="date" className="input" value={form.date} onChange={(e) => set({ date: e.target.value })} />}</Field>
         <Field label="Unit no." className="sm:col-span-2" error={server.unitNo || (touched && bad.unitNo && "Enter the unit number.")}>{(id) => <input id={id} className="input" placeholder="e.g. 12-01" value={form.unitNo} onChange={(e) => set({ unitNo: e.target.value })} />}</Field>
-        <Field label={form.type.startsWith("Move") ? "Mover / trucking company" : form.type === "Delivery" ? "Courier / company" : "Visitor name"} className="sm:col-span-2" error={server.name || (touched && bad.name && "Enter a name.")}>{(id) => <input id={id} className="input" maxLength={200} value={form.name} onChange={(e) => set({ name: e.target.value })} />}</Field>
+        <Field label={form.type.startsWith("Move") ? "Mover / trucking company" : form.type === "Pull Out" ? "Person / removal company" : form.type === "Delivery" ? "Courier / company" : "Visitor name"} className="sm:col-span-2" error={server.name || (touched && bad.name && "Enter a name.")}>{(id) => <input id={id} className="input" maxLength={200} value={form.name} onChange={(e) => set({ name: e.target.value })} />}</Field>
         <Field label="Purpose" className="sm:col-span-2" error={server.purpose || (touched && bad.purpose && "Enter the purpose.")}>{(id) => <input id={id} className="input" maxLength={300} value={form.purpose} onChange={(e) => set({ purpose: e.target.value })} />}</Field>
       </form>
     </Drawer>

@@ -43,7 +43,7 @@ export default function ResidentAccountsPage() {
   return (
     <>
       <PageHeader eyebrow="Administration" title="Resident Accounts"
-        description="Resident portal logins. The system generates the username and a one-time activation code; residents never sign up themselves. Every change is recorded in the audit log."
+        description="Separate portal accounts for owners and tenants, each with access to their own SOA. The system generates the username and a one-time activation code; residents never sign up themselves. Every change is recorded in the audit log."
         actions={view === "accounts" && <Button icon="user-add-line" onClick={() => setView("people")}>Generate resident account</Button>} />
       <div className="mb-4"><Tabs value={view} onChange={(v) => setView(v)} tabs={[{ key: "accounts", label: "Portal accounts" }, { key: "people", label: "Owners & tenants" }]} /></div>
       {view === "people" ? <PeoplePanel onOpenAccount={(username) => setView("accounts", username)} /> : <AccountsPanel initialQuery={params.get("q") ?? ""} />}
@@ -71,7 +71,7 @@ function PeoplePanel({ onOpenAccount }: { onOpenAccount: (username: string) => v
     : p.account ? <Button size="sm" variant="secondary" icon="arrow-right-line" onClick={() => onOpenAccount(p.account!.username)}>Open {p.account.username}</Button> : null;
   return (
     <>
-      <Notice tone="info">Only current owners and tenants of active residential units are listed. An account is created only when you choose it here (or when adding an owner/tenant in the Units Directory); nothing is created in bulk. Activation codes expire after {list.data?.activationDays ?? 7} days.</Notice>
+      <Notice tone="info">Only current owners and representative tenants of active residential units are listed. An account is created only when you choose it here (or when adding an owner/representative tenant in the Units Directory); nothing is created in bulk. Activation codes expire after {list.data?.activationDays ?? 7} days.</Notice>
       <Card className="mt-4">
         <div className="flex flex-wrap items-end gap-3 border-b border-ink-100 p-4">
           <Field label="Search" className="min-w-[200px] flex-1 sm:max-w-xs">{(id) => <input id={id} type="search" className="input" placeholder="Name or unit" value={search} onChange={(e) => setSearch(e.target.value)} />}</Field>
@@ -79,7 +79,7 @@ function PeoplePanel({ onOpenAccount }: { onOpenAccount: (username: string) => v
         </div>
         {list.error ? <ErrorState title="Couldn't load the owners and tenants" message={list.error.message} onRetry={list.reload} />
           : !list.data ? <Skeleton rows={6} />
-          : list.data.people.length === 0 ? <EmptyState icon="user-search-line" title="Nobody here">{state === "none" ? "Every current owner and tenant already has a portal account." : "No owners or tenants match."}</EmptyState>
+          : list.data.people.length === 0 ? <EmptyState icon="user-search-line" title="Nobody here">{state === "none" ? "Every current owner and representative tenant already has a portal account." : "No owners or representative tenants match."}</EmptyState>
           : (
             <div className={cx("overflow-x-auto", list.loading && "opacity-60")}>
               <table className="w-full min-w-[640px] border-collapse text-[13.5px]">

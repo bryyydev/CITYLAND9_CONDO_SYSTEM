@@ -1,0 +1,5 @@
+V10.35 Billing BILLS browser fit
+- Removed CONDO DUES, PARKING, STORAGE, WATER, and OTHER columns from Billing Management > BILLS.
+- Kept UNIT, OWNER / TENANT, BILLING PERIOD, TOTAL DUE, STATUS, and ACTIONS.
+- Increased table header/body/status fonts and contrast for easier reading.
+- Reduced table minimum width and disabled horizontal scrolling for this billing list.

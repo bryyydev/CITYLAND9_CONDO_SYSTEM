@@ -1,0 +1,18 @@
+V10.44 - EMPLOYEE PAYSLIP PRINTING + ATTENDANCE HISTORY
+
+1. Added dedicated printable employee payslip layout with:
+   - Employee name, employee number, position and payroll period
+   - Earnings: basic salary, overtime, allowances, gross pay
+   - Deductions: absence, late/undertime, other/loan deductions, SSS, PhilHealth, Pag-IBIG, BIR tax
+   - Net pay
+   - Employer statutory contributions for reference
+   - Prepared/Checked/Employee signature lines
+   - A4 print layout and PRINT PAYSLIP button
+
+2. Added employee attendance history:
+   - Employees -> Attendance -> View History
+   - Select start/end dates
+   - Daily status, time in, time out and remarks
+   - Attendance status summary
+
+3. Existing V10.43 Philippine payroll and statutory computation retained.

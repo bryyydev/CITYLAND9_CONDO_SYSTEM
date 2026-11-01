@@ -5,11 +5,8 @@
 Makes a downloaded copy of CityLand 9 runnable without any manual database work:
   1. creates .env from .env.example with a new random SECRET_KEY and DB_ENGINE=sqlite
      (a single database file, cityland_condo_web.db, in this folder: nothing else to install)
-  2. creates the database tables and loads the demo data (TEST-* units, owners, tenants, bills,
-     water readings: the same sample set as the development PC)
-  3. creates one demo account per role (password shown at the end) and links the demo resident
-     to unit TEST-502
-  4. asks for the Superadmin username and password (typed twice, not shown)
+  2. creates an empty database with no units, residents, bills, or demo accounts
+  3. asks for the Superadmin username and password (typed twice, not shown)
 Nothing is overwritten: an existing .env stops the script, and existing accounts/units are kept.
 For the client's real server use CityLand's own MariaDB instead (docs/run-guide/02-DATABASE_SETUP.md).
 Everything stays on this PC; no cloud service is used.
@@ -23,9 +20,6 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENV = os.path.join(ROOT, ".env")
 EXAMPLE = os.path.join(ROOT, ".env.example")
-DEMO_PASSWORD = "CityLand9-Demo"
-DEMO_ACCOUNTS = [("demo_admin", "admin"), ("demo_manager", "manager"), ("demo_staff", "staff"),
-                 ("demo_accounting", "accounting"), ("demo_resident", "resident")]
 
 
 def write_env():
@@ -47,7 +41,7 @@ def ask_superadmin(m):
     try:
         return _ask_superadmin(m)
     except (EOFError, KeyboardInterrupt):
-        # Optional step: the rest of the setup is kept; the demo accounts work already.
+        # Optional step: the database is ready; the administrator can be created later.
         m.db.session.rollback()
         print("\n  Superadmin not created (no input).\n" + later)
         return None
@@ -100,28 +94,8 @@ def main():
         sys.path.insert(0, ROOT)
         import legacy_app as m
         m.init_db()
-        print("  [2/4] Database created (cityland_condo_web.db).")
-        import seed_test_data
-        seed_test_data.add_if_missing()
-        print("  [3/4] Demo data loaded (TEST-501 to TEST-504, parking and storage units, bills, water readings).")
+        print("  [2/3] Empty database created (no unit or demo records).")
         with m.app.app_context():
-            for username, role in DEMO_ACCOUNTS:
-                if m.User.query.filter_by(username=username).first():
-                    continue
-                user = m.User(username=username, role=role, active=True, password_hash="!")
-                m.set_password(user, DEMO_PASSWORD, temporary=False)
-                m.db.session.add(user)
-                m.db.session.flush()
-                if role == "resident":
-                    unit = m.Unit.query.filter_by(unit_no="TEST-502").first()
-                    tenant = m.Tenant.query.filter_by(unit_id=unit.id, status="Current").first() if unit else None
-                    if unit:
-                        m.db.session.add(m.ResidentProfile(user_id=user.id, unit_id=unit.id, person_type="Tenant" if tenant else "Owner",
-                                                           person_id=tenant.id if tenant else None,
-                                                           display_name=tenant.tenant_name if tenant else "Demo Resident"))
-            m.db.session.add(m.AuditLog(username="system", action="Demo accounts created by first-run setup"))
-            m.db.session.commit()
-            print(f"  [4/4] Demo accounts: {', '.join(u for u, _ in DEMO_ACCOUNTS)}  (password: {DEMO_PASSWORD})")
             admin = ask_superadmin(m)
     except Exception as exc:
         # Leave no half-made configuration behind: the next start runs the setup again.
@@ -135,9 +109,10 @@ def main():
     print()
     print("  Setup complete.")
     if admin:
-        print(f"  Sign in as {admin} with the password you just chose,")
-    print(f"  or with a demo account (e.g. demo_admin / {DEMO_PASSWORD}).")
-    print("  Demo accounts are for testing only: change or delete them before real use.")
+        print(f"  Sign in as {admin} with the password you just chose.")
+    else:
+        print("  No Superadmin was created. Create one with:")
+        print("    .venv\\Scripts\\python.exe database\\create_admin.py")
     print()
     return 0
 

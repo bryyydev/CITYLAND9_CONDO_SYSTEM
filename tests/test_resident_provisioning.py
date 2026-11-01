@@ -1,4 +1,4 @@
-"""Automatic resident portal account provisioning (activation codes, one account per person,
+"""Automatic resident portal account provisioning (activation codes, one account per party type,
 multi-unit access). Isolated SQLite test database, dummy residents only."""
 import secrets
 from datetime import datetime, timedelta
@@ -40,9 +40,10 @@ def world(app_module):
         m.db.session.add_all([a, b, park]); m.db.session.flush()
         people = {
             "ownerA": m.Owner(unit_id=a.id, owner_name="Rosa Provision", status="Current", email="rosa@example.test", contact_no="0917 111 2222"),
-            "tenantA": m.Tenant(unit_id=a.id, tenant_name="Tito Tenant", status="Current"),
+            "tenantA": m.Tenant(unit_id=a.id, tenant_name="Tito Tenant", status="Current", representative=True),
+            "nonrepA": m.Tenant(unit_id=a.id, tenant_name="Other Tenant", status="Current"),
             "ownerB": m.Owner(unit_id=b.id, owner_name="Rosa Provision", status="Current", email="rosa@example.test", contact_no="09171112222"),
-            "otherB": m.Tenant(unit_id=b.id, tenant_name="Different Person", status="Current", email="rosa@example.test"),
+            "otherB": m.Tenant(unit_id=b.id, tenant_name="Different Person", status="Current", email="rosa@example.test", representative=True),
             "pastB": m.Tenant(unit_id=b.id, tenant_name="Old Tenant", status="Past"),
             "parkOwner": m.Owner(unit_id=park.id, owner_name="Parking Owner", status="Current"),
         }
@@ -161,6 +162,36 @@ def test_expired_invalid_and_replaced_codes(app_module, sa, world):
     assert row["status"] == "pending" and row["activationExpired"] is True
 
 
+def test_expired_activation_code_is_rejected_by_legacy_routes(app_module, sa, world):
+    m = app_module
+    provisioned = provision(sa, "Tenant", world["tenantA"]).get_json()
+    credentials = provisioned["credentials"]
+    user_id = provisioned["account"]["id"]
+    authenticated, _ = sign_in(m, credentials["username"], credentials["activationCode"])
+
+    with m.app.app_context():
+        user = m.db.session.get(m.User, user_id)
+        user.temp_password_expires_at = datetime.utcnow() - timedelta(minutes=1)
+        m.db.session.commit()
+
+    expired_client = m.app.test_client()
+    expired_login = expired_client.post(
+        "/login", data={"username": credentials["username"], "password": credentials["activationCode"]})
+    assert expired_login.status_code == 302
+    assert expired_login.headers["Location"].startswith("/app/login?notice=")
+    assert expired_client.get("/api/auth/me").status_code == 401
+
+    authenticated.post("/change-password", data={
+        "current_password": credentials["activationCode"],
+        "new_password": NEW_PW,
+        "confirm_password": NEW_PW,
+    })
+    with m.app.app_context():
+        user = m.db.session.get(m.User, user_id)
+        assert user.must_change_password is True
+        assert m.check_password_hash(user.password_hash, credentials["activationCode"])
+
+
 def test_activation_attempts_are_rate_limited(app_module, sa, world):
     m = app_module
     cred = provision(sa, "Owner", world["ownerA"]).get_json()["credentials"]
@@ -190,17 +221,90 @@ def test_same_person_is_flagged_and_reused_only_when_confirmed(app_module, sa, w
 
 def test_shared_email_alone_never_merges_people(app_module, sa, world):
     rosa = provision(sa, "Owner", world["ownerA"]).get_json()
-    review = provision(sa, "Tenant", world["otherB"])
+    m = app_module
+    with m.app.app_context():
+        other = m.db.session.get(m.Owner, world["ownerB"])
+        other.owner_name = "Different Owner"
+        other.contact_no = "0917 333 4444"
+        m.db.session.commit()
+    review = provision(sa, "Owner", world["ownerB"])
     assert review.status_code == 409 and review.get_json()["error"]["candidates"][0]["reasons"] == ["same email"]
-    separate = provision(sa, "Tenant", world["otherB"], mode="new")
+    separate = provision(sa, "Owner", world["ownerB"], mode="new")
     assert separate.status_code == 201
-    assert separate.get_json()["credentials"]["username"] == "different.person" != rosa["credentials"]["username"]
+    assert separate.get_json()["credentials"]["username"] == "different.owner" != rosa["credentials"]["username"]
 
 
 def test_owner_and_tenant_of_the_same_unit_get_separate_accounts(app_module, sa, world):
     owner = provision(sa, "Owner", world["ownerA"]).get_json()["credentials"]["username"]
     tenant = provision(sa, "Tenant", world["tenantA"]).get_json()["credentials"]["username"]
     assert owner != tenant
+
+
+def test_owner_and_tenant_with_matching_identity_still_get_separate_accounts(app_module, sa, world):
+    m = app_module
+    with m.app.app_context():
+        owner = m.db.session.get(m.Owner, world["ownerA"])
+        tenant = m.db.session.get(m.Tenant, world["tenantA"])
+        tenant.tenant_name = owner.owner_name
+        tenant.email = owner.email
+        tenant.contact_no = owner.contact_no
+        m.db.session.commit()
+
+    owner_result = provision(sa, "Owner", world["ownerA"])
+    tenant_result = provision(sa, "Tenant", world["tenantA"])
+
+    assert owner_result.status_code == tenant_result.status_code == 201
+    assert owner_result.get_json()["credentials"]["username"] != tenant_result.get_json()["credentials"]["username"]
+
+
+def test_owner_account_cannot_be_linked_to_tenant_record(app_module, sa, world):
+    owner = provision(sa, "Owner", world["ownerA"]).get_json()["account"]
+    response = provision(sa, "Tenant", world["tenantA"], mode="link", linkUserId=owner["id"])
+    assert response.status_code == 409
+    assert "separate portal accounts" in response.get_json()["error"]["message"]
+
+
+def test_owner_and_tenant_portals_show_their_party_specific_soa(app_module, sa, world):
+    m = app_module
+    owner = provision(sa, "Owner", world["ownerA"]).get_json()["credentials"]
+    tenant = provision(sa, "Tenant", world["tenantA"]).get_json()["credentials"]
+    owner_client = activate(m, owner["username"], owner["activationCode"])
+    tenant_client = activate(m, tenant["username"], tenant["activationCode"])
+
+    with m.app.app_context():
+        unit = m.db.session.get(m.Unit, world["A"])
+        bill = m.Billing(
+            unit_id=unit.id, billing_month="2036-06", assessment=2000, parking_dues=0, storage_dues=0, water=0,
+            other=0, penalty=0, adjustment=0, previous_balance=0, amount_paid=0,
+            due_date=datetime(2036, 6, 8).date(), status="Unpaid", condo_charge_payer="Owner",
+        )
+        bill.issued_at = datetime.utcnow()
+        m.db.session.add(bill)
+        m.db.session.commit()
+        bill_id = bill.id
+    try:
+        owner_response = owner_client.get(f"/api/resident/units/{world['A']}/soa/{bill_id}")
+        tenant_response = tenant_client.get(f"/api/resident/units/{world['A']}/soa/{bill_id}")
+        assert owner_response.status_code == tenant_response.status_code == 200
+        owner_soa = owner_response.get_json()["statement"]
+        tenant_soa = tenant_response.get_json()["statement"]
+        assert owner_soa["payerType"] == "Owner" and owner_soa["charges"]["condoDues"] == "2000.00"
+        assert tenant_soa["payerType"] == "Tenant" and tenant_soa["charges"]["condoDues"] == "0.00"
+
+        with m.app.app_context():
+            owner_user = m.User.query.filter_by(username=owner["username"]).one()
+            m.db.session.add(m.ResidentUnitLink(
+                user_id=owner_user.id, unit_id=world["B"], person_type="Tenant", person_id=world["otherB"],
+                active=True, active_key=m.link_key("Tenant", world["otherB"]),
+            ))
+            m.db.session.commit()
+        mixed_account = owner_client.get(f"/api/resident/units/{world['A']}/soa/{bill_id}")
+        assert mixed_account.status_code == 409
+        assert "separate portal accounts" in mixed_account.get_json()["error"]["message"]
+    finally:
+        with m.app.app_context():
+            m.db.session.delete(m.db.session.get(m.Billing, bill_id))
+            m.db.session.commit()
 
 
 # ------------------------------------------------------------------ duplicates / concurrency
@@ -244,9 +348,23 @@ def test_failure_mid_way_leaves_nothing_behind(app_module, sa, world, monkeypatc
 def test_ineligible_people_get_no_account(app_module, sa, world):
     past = provision(sa, "Tenant", world["pastB"])
     assert past.status_code == 409 and "not a current tenant" in past.get_json()["error"]["message"]
+    non_representative = provision(sa, "Tenant", world["nonrepA"])
+    assert non_representative.status_code == 409
+    assert "representative tenant" in non_representative.get_json()["error"]["message"]
     park = provision(sa, "Owner", world["parkOwner"])
     assert park.status_code == 409 and "Parking and storage" in park.get_json()["error"]["message"]
     assert provision(sa, "Owner", 999999).status_code == 404
+
+
+def test_tenant_account_choices_include_only_current_representatives(app_module, sa, world):
+    people = sa.get(f"{BASE}/people?state=none").get_json()["people"]
+    assert any(p["personType"] == "Tenant" and p["personId"] == world["tenantA"] for p in people)
+    assert not any(p["personType"] == "Tenant" and p["personId"] == world["nonrepA"] for p in people)
+
+    options = sa.get(f"{BASE}/options").get_json()["units"]
+    unit_a = next(unit for unit in options if unit["id"] == world["A"])
+    assert any(p["personType"] == "Tenant" and p["id"] == world["tenantA"] for p in unit_a["people"])
+    assert not any(p["personType"] == "Tenant" and p["id"] == world["nonrepA"] for p in unit_a["people"])
 
 
 def test_moving_out_of_one_unit_keeps_the_others(app_module, sa, world):

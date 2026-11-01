@@ -1,0 +1,10 @@
+V10.5 — SOA redesign, water synchronization, unpaid dues, and water reading edit
+
+- Redesigned Billing / SOA view to closely match the supplied official billing statement reference.
+- SOA now clearly shows billing period, statement number, unit information, owner/current tenants, contact/email, charges, total amount due, unpaid dues, water reading history, previous unpaid statements, and payment history.
+- Water charges are synchronized into an existing monthly bill when a water reading is saved or edited after bill generation.
+- Billing list and SOA also synchronize the current month's water charge before displaying it.
+- Added an Edit action beside every water reading and a dedicated water-reading correction page.
+- Editing a water reading automatically updates the corresponding monthly bill's water charge.
+- Added a prominent unpaid-dues alert and previous balance details to the SOA.
+- Preserved parking details and per-sqm charges in the SOA.

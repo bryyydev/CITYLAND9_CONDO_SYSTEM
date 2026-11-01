@@ -27,12 +27,13 @@ flowchart LR
     PC1["Office PCs / phones<br/>(browser)"]
   end
   subgraph Server["Server PC"]
-    W["Waitress WSGI server<br/>0.0.0.0:5000"]
+    C["Caddy HTTPS proxy<br/>:443 (recommended)"]
+    W["Waitress WSGI server<br/>127.0.0.1:5000"]
     F["Flask app<br/>backend/legacy_app.py"]
     R["React app (built)<br/>frontend/dist → /app/"]
     DB[("CityLand's own MariaDB<br/>127.0.0.1:3307")]
   end
-  PC1 -- "http://SERVER-IP:5000" --> W --> F
+  PC1 -- "https://cityland9.local" --> C --> W --> F
   F -- "serves" --> R
   F -- "PyMySQL / SQLAlchemy" --> DB
 ```
@@ -40,9 +41,9 @@ flowchart LR
 | Layer | Technology | Where |
 |---|---|---|
 | Frontend | React 19 + TypeScript + Vite + Tailwind CSS | `frontend/` → built into `frontend/dist`, served by Flask at **`/app/`** |
-| Backend | Flask 3.1 on the **Waitress** WSGI server (8 threads) | `backend/` (entry point `backend/run.py`), port **5000** |
+| Backend | Flask 3.1 on the **Waitress** WSGI server (8 threads), loopback-only behind HTTPS | `backend/` (entry point `backend/run.py`), port **5000**; Caddy serves HTTPS on **443** |
 | Classic screens | Flask/Jinja pages, still used by staff modules not yet rebuilt | `legacy_flask_ui/`, served at `/` paths (e.g. `/billing`) |
-| Database | **MariaDB** (XAMPP binaries) with CityLand's **own data folder and port** | `database/mysql-data/`, **127.0.0.1:3307** (this PC only) |
+| Database | **MariaDB** (default; XAMPP binaries) with CityLand's own data folder and port; SQL Server Express is an alternative | MariaDB: `database/mysql-data/`, **127.0.0.1:3307**; SQL Server: local instance via ODBC Driver 18 |
 
 Key points:
 
@@ -77,15 +78,16 @@ flowchart TD
 START_WINDOWS.bat
 ```
 
-- Opens a console window that shows the addresses, for example:
-  `This PC: http://127.0.0.1:5000` and `Other PCs: http://192.168.100.63:5000`.
+- Opens a console window. Without an HTTPS reverse proxy, CityLand is available only on the server
+  PC at `http://127.0.0.1:5000`. Configure HTTPS as described in
+  [06 — Security](06-SECURITY.md) for office-PC access.
 - **Keep the window open** while people use the system.
 - **Stop:** press **Ctrl+C** in that window or close it. At the end of the day run
   **`STOP_WINDOWS.bat`** to also stop the database.
 - After updating the code (e.g. `git pull`) a normal start rebuilds the React app by itself
   (Node.js needed); **`START_WINDOWS.bat --rebuild`** forces it.
 
-### Teammate / demo laptop (downloaded zip) — automatic
+### New PC (downloaded package) — automatic
 
 1. Install **Python 3.10+** from python.org (tick *Add python.exe to PATH*). Node.js is **not** needed:
    the built React app (`frontend\dist`) is included.
@@ -95,13 +97,13 @@ START_WINDOWS.bat
    it runs `scripts\first_run_setup.py`, which:
    - creates `.env` with a new secret key and **`DB_ENGINE=sqlite`** (one database file,
      `cityland_condo_web.db`, in the folder — nothing else to install);
-   - creates the tables and loads the demo data (TEST-501…504, parking/storage, bills, water readings);
-   - creates demo accounts `demo_admin`, `demo_manager`, `demo_staff`, `demo_accounting`,
-     `demo_resident` (password **`CityLand9-Demo`**) and asks you to choose a Superadmin password.
+   - creates the tables without adding units, residents, bills, or demo accounts;
+   - asks you to create the first Superadmin account.
 4. The browser opens `http://127.0.0.1:5000`. Next starts skip the setup.
 
-Each laptop gets its **own** database (no data is shared between PCs and nothing goes to the cloud).
-The client's server uses CityLand's own MariaDB instead (next section). Demo accounts are for testing.
+Each PC gets its **own** database (no data is shared between PCs and nothing goes to the cloud).
+The client's server uses CityLand's own MariaDB instead (next section). Sample records are only added
+by explicitly running `seed_test_data.py` on a test installation.
 
 ### Production — brand-new server PC
 

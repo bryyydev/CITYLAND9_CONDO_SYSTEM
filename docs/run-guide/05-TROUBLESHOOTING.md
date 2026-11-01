@@ -57,42 +57,44 @@ netstat -ano | findstr ":3307"
   Common causes: the disk is full, the data folder was copied while the server was running, or
   `MYSQL_BIN_DIR` points to a folder without `mysqld.exe`.
 
-## 3. Other PCs can't open the system (Windows Firewall)
+## 3. Other PCs can't open the system (HTTPS proxy and Windows Firewall)
 
-The server works at `http://127.0.0.1:5000` on the server PC itself, but other PCs time out.
+The server works at `http://127.0.0.1:5000` on the server PC itself, but other PCs cannot connect
+directly. This is intentional: CityLand refuses unencrypted LAN access. Configure the HTTPS
+reverse proxy first: [06 §5](06-SECURITY.md#5-https-on-the-lan-required-for-lan-access).
 
-**On the server PC**, in an **Administrator** PowerShell:
+Allow the HTTPS proxy through Windows Firewall on the office network only, in an **Administrator**
+PowerShell:
 
 ```powershell
 # 1. The office network must be "Private" (Public blocks incoming connections)
 Get-NetConnectionProfile
 Set-NetConnectionProfile -InterfaceAlias "<Wi-Fi or Ethernet name>" -NetworkCategory Private
 
-# 2. Allow CityLand's web port on private networks only
-New-NetFirewallRule -DisplayName "CityLand 9 (TCP 5000)" -Direction Inbound -Protocol TCP -LocalPort 5000 -Action Allow -Profile Private
+# 2. Allow the HTTPS proxy on private networks only
+New-NetFirewallRule -DisplayName "CityLand 9 HTTPS" -Direction Inbound -Protocol TCP -LocalPort 443 -Action Allow -Profile Private -RemoteAddress LocalSubnet
 ```
 
 Command Prompt equivalent (Administrator):
 
 ```bat
-netsh advfirewall firewall add rule name="CityLand 9 (TCP 5000)" dir=in action=allow protocol=TCP localport=5000 profile=private
+netsh advfirewall firewall add rule name="CityLand 9 HTTPS" dir=in action=allow protocol=TCP localport=443 profile=private
 ```
 
-When Windows shows *"Allow python.exe to communicate on these networks?"* the first time, tick
-**Private networks** only.
+Do not create a firewall exception for port 5000. Waitress must remain bound to loopback.
 
 **From another PC**, test the path:
 
 ```powershell
-Test-NetConnection <server IP> -Port 5000      # TcpTestSucceeded : True
+Test-NetConnection <server IP> -Port 443       # TcpTestSucceeded : True
 ```
 
 Still failing?
 
 - Both PCs must be on the **same network** (guest Wi-Fi is often isolated: "client isolation").
 - The server's IP may have changed → `ipconfig` on the server; reserve a fixed IP in the router.
-- `.env` must have `FLASK_HOST=0.0.0.0` (not `127.0.0.1`).
-- Third-party antivirus firewalls need the same exception for port 5000.
+- `.env` must use `FLASK_HOST=127.0.0.1`, `TRUSTED_PROXY=127.0.0.1`, and `SESSION_COOKIE_SECURE=1`.
+- Third-party antivirus firewalls must allow HTTPS (port 443) from the office subnet.
 
 **Never open port 3307 (database)**. Only the server PC talks to the database.
 
@@ -106,7 +108,7 @@ shouldn't appear. If the browser console shows a CORS error, something calls the
 |---|---|
 | A `VITE_API_BASE_URL` or absolute API URL was added | Remove it; API calls must stay relative (`/api/...`) |
 | Opening the dev server (5173) while the backend (5000) isn't running | Start `backend\run.py` first; the proxy needs it |
-| Opening the built `dist\index.html` as a file, or with `npm run preview` | Use `http://<server>:5000/app/` (served by Flask) |
+| Opening the built `dist\index.html` as a file, or with `npm run preview` | Use `http://127.0.0.1:5000/app/` locally or the configured HTTPS proxy URL (served by Flask) |
 
 **Signed out unexpectedly / "Missing or invalid CSRF token":**
 
@@ -118,7 +120,8 @@ shouldn't appear. If the browser console shows a CORS error, something calls the
 - The account was deactivated, its password was reset, or the person changed their password on
   another PC: other sessions end immediately (expected).
 - `SESSION_COOKIE_SECURE=1` while using plain `http://` → the browser never sends the session
-  cookie; set it to `0`, or use the HTTPS address ([06 §5](06-SECURITY.md#5-https-on-the-lan-recommended)).
+  cookie; use the configured HTTPS address for LAN access and keep `SESSION_COOKIE_SECURE=1`
+  ([06 §5](06-SECURITY.md#5-https-on-the-lan-required-for-lan-access)).
 - Reload the page; the app fetches a new CSRF token.
 
 **"Your resident portal access has ended…"** — not an error: the resident's owner/tenant record is
@@ -187,7 +190,7 @@ Quick health check:
 | `npm ci` fails with `EBADENGINE` / Vite needs newer Node | Upgrade Node.js to 20.19+ |
 | `[X] Package installation failed` | Needs internet the first time; behind a proxy set `HTTPS_PROXY`. Afterwards no internet is needed |
 | `Activate.ps1 cannot be loaded because running scripts is disabled` | Use `.venv\Scripts\python.exe` directly, or `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` |
-| `pyodbc` fails to install | Not needed: it is only in `requirements-optional.txt` (old SQL Server option) |
+| `pyodbc` fails to install | Only needed for SQL Server: confirm `.venv-sqlserver` uses Python 3.14 and install ODBC Driver 18; rerun the package install from [02 §8](02-DATABASE_SETUP.md#8-sql-server-express-alternative) |
 
 ## Collecting information for support
 

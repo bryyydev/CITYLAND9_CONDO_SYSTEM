@@ -28,7 +28,7 @@ account's existing sessions.
 import re
 
 from flask import Blueprint, jsonify, request
-from sqlalchemy import func
+from sqlalchemy import func, true
 from sqlalchemy.exc import IntegrityError
 
 from ..core import security
@@ -57,7 +57,7 @@ def make_users_blueprint(*, db, User, audit, generate_password_hash, set_passwor
     bp = protect_api_blueprint(Blueprint("api_users", __name__, url_prefix="/api/admin/users"))
 
     def active_superadmins_except(user_id, lock=False):
-        query = User.query.filter(User.role == SUPER_ADMIN, User.active.is_(True), User.id != user_id)
+        query = User.query.filter(User.role == SUPER_ADMIN, User.active == true(), User.id != user_id)
         if lock:
             # Two Superadmins demoting/deleting each other at the same moment must not leave none.
             return len(query.with_for_update().all())

@@ -1,0 +1,16 @@
+CITYLAND 9 CONDO SYSTEM 2026
+V10.47 UI APPEARANCE ENHANCEMENT
+
+Added:
+- Appearance button available across the application.
+- Preset themes: Classic Blue, Professional Navy, Forest Green, Warm Sand,
+  Slate Gray, Royal Purple, Teal and Dark Mode.
+- Custom background color.
+- Custom primary/accent color.
+- Theme is saved in browser local storage and remains after page refresh/restart.
+- Responsive appearance panel for smaller screens.
+- No database schema change required.
+
+Notes:
+- Theme preference is per browser/device.
+- This enhancement does not change billing, payroll, HR or other business logic.

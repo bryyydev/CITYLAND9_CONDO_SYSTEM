@@ -235,12 +235,22 @@ def run_py(code, **env):
     return subprocess.run([PY, "-c", code], cwd=_ROOT, env=full, capture_output=True, text=True, timeout=120)
 
 
-@pytest.mark.parametrize("key", ["", "change-me", "cityland9-v10-change-this-secret", "short-key-123"])
+@pytest.mark.parametrize("key", [
+    "", "change-me", "cityland9-v10-change-this-secret", "short-key-123",
+])
 def test_production_refuses_weak_secret_key(key):
     r = run_py("import sys; sys.path.insert(0,'backend'); import legacy_app", SECRET_KEY=key, DATABASE_URL="sqlite://")
     assert r.returncode != 0 and "SECRET_KEY" in r.stderr
     if key:
         assert key not in r.stderr  # the value itself is never echoed
+
+
+def test_example_secret_placeholder_is_rejected(monkeypatch):
+    from app.core import security
+
+    monkeypatch.delenv("APP_ENV", raising=False)
+    with pytest.raises(security.ConfigurationError):
+        security.check_secret_key("<generate-a-64-character-random-value>")
 
 
 def test_development_mode_must_be_explicit():
@@ -267,6 +277,40 @@ def test_debugger_refused_on_network_address(tmp_path):
     full.update(APP_ENV="development", FLASK_DEBUG="1", FLASK_HOST="0.0.0.0", DATABASE_URL=db, DB_ENGINE="sqlite")
     r = subprocess.run([PY, os.path.join("backend", "run.py")], cwd=_ROOT, env=full, capture_output=True, text=True, timeout=120)
     assert r.returncode != 0 and "Refusing to start the Flask debugger" in r.stderr
+
+
+def test_production_refuses_unencrypted_lan_bind(tmp_path):
+    db = "sqlite:///" + str(tmp_path / "lan.db").replace("\\", "/")
+    full = {k: v for k, v in os.environ.items() if k not in ("SECRET_KEY", "APP_ENV")}
+    full.update(APP_ENV="production", SECRET_KEY=__import__("secrets").token_hex(32),
+                FLASK_HOST="0.0.0.0", TRUSTED_PROXY="", DATABASE_URL=db, DB_ENGINE="sqlite")
+    r = subprocess.run([PY, os.path.join(_ROOT, "backend", "run.py"), "--lan"],
+                       cwd=tmp_path, env=full, capture_output=True, text=True, timeout=120)
+    assert r.returncode != 0 and "unencrypted HTTP" in r.stderr
+
+
+@pytest.mark.parametrize(("host", "secure_cookie", "expected"), [
+    ("0.0.0.0", "1", "FLASK_HOST must be loopback-only"),
+    ("127.0.0.1", "0", "SESSION_COOKIE_SECURE=1"),
+])
+def test_https_proxy_requires_safe_bind_and_cookie(host, secure_cookie, expected, tmp_path):
+    db = "sqlite:///" + str(tmp_path / "proxy.db").replace("\\", "/")
+    full = {k: v for k, v in os.environ.items() if k not in ("SECRET_KEY", "APP_ENV")}
+    full.update(APP_ENV="production", SECRET_KEY=__import__("secrets").token_hex(32),
+                FLASK_HOST=host, TRUSTED_PROXY="127.0.0.1", SESSION_COOKIE_SECURE=secure_cookie,
+                DATABASE_URL=db, DB_ENGINE="sqlite")
+    r = subprocess.run([PY, os.path.join(_ROOT, "backend", "run.py"), "--lan"],
+                       cwd=tmp_path, env=full, capture_output=True, text=True, timeout=120)
+    assert r.returncode != 0 and expected in r.stderr
+
+
+def test_lan_mode_refuses_development_secret(tmp_path):
+    db = "sqlite:///" + str(tmp_path / "dev-lan.db").replace("\\", "/")
+    full = {k: v for k, v in os.environ.items() if k not in ("SECRET_KEY",)}
+    full.update(APP_ENV="development", FLASK_HOST="127.0.0.1", DATABASE_URL=db, DB_ENGINE="sqlite")
+    r = subprocess.run([PY, os.path.join(_ROOT, "backend", "run.py"), "--lan"],
+                       cwd=tmp_path, env=full, capture_output=True, text=True, timeout=120)
+    assert r.returncode != 0 and "Refusing to start --lan in development mode" in r.stderr
 
 
 # ------------------------------------------------------------------ SMTP password

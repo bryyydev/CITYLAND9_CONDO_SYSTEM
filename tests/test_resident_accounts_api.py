@@ -37,7 +37,7 @@ def unit_with_people(app_module):
         unit = m.Unit(unit_no="RA-TEST-01", floor="9", unit_type="Residential", area_sqm=30, active=True)
         m.db.session.add(unit); m.db.session.flush()
         owner = m.Owner(unit_id=unit.id, owner_name="Olivia Owner", status="Current")
-        tenant = m.Tenant(unit_id=unit.id, tenant_name="Tomas Tenant", status="Current")
+        tenant = m.Tenant(unit_id=unit.id, tenant_name="Tomas Tenant", status="Current", representative=True)
         gone = m.Tenant(unit_id=unit.id, tenant_name="Gina Gone", status="Moved Out")
         m.db.session.add_all([owner, tenant, gone]); m.db.session.commit()
         ids = {"unit": unit.id, "owner": owner.id, "tenant": tenant.id, "gone": gone.id}
@@ -89,7 +89,7 @@ def test_create_linked_account_and_list_it(app_module, sa, unit_with_people):
     assert login["unitId"] == unit_with_people["unit"]
 
 
-def test_create_validation(sa, unit_with_people):
+def test_create_validation(app_module, sa, unit_with_people):
     ids = unit_with_people
     errs = sa.post(BASE, json={"username": "x", "password": "short", "unitId": 999999}).get_json()["error"]["fields"]
     assert {"username", "password", "unitId"} <= set(errs)
@@ -98,6 +98,17 @@ def test_create_validation(sa, unit_with_people):
     assert "no longer a current tenant" in f["personId"]
     f = create(sa, ids, "ra.nobody", personId=None).get_json()["error"]["fields"]
     assert "displayName" in f
+    with app_module.app.app_context():
+        tenant = app_module.db.session.get(app_module.Tenant, ids["tenant"])
+        tenant.representative = False
+        app_module.db.session.commit()
+    response = create(sa, ids, "ra.nonrep", personType="Tenant", personId=ids["tenant"])
+    assert response.status_code == 400
+    assert "representative tenant" in response.get_json()["error"]["fields"]["personId"]
+    with app_module.app.app_context():
+        tenant = app_module.db.session.get(app_module.Tenant, ids["tenant"])
+        tenant.representative = True
+        app_module.db.session.commit()
     assert create(sa, ids).status_code == 201
     f = create(sa, ids, "RA.OWNER").get_json()["error"]["fields"]           # username case-insensitive
     assert "already taken" in f["username"]

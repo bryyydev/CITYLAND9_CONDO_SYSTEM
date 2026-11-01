@@ -1,0 +1,19 @@
+CITYLAND 9 CONDO SYSTEM 2026 - V10.28
+
+Units redesign and parking/storage assignment update.
+
+- Units page redesigned to match the requested management layout.
+- Removed Parking tab from the main navigation and page tabs.
+- Main dashboard no longer shows a Parking column/section.
+- Unit Type options are exactly:
+  PARKING / STORAGE / STUDIO TYPE / 1 BEDROOM / 2 BEDROOM / 3 BEDROOM
+- Added With Parking and With Storage checkboxes when adding/editing units.
+- Selecting either option reveals an Additional Unit Assignment tab area.
+- Parking Unit and Storage Unit dropdowns are populated from Units whose type is PARKING or STORAGE.
+- Parking and storage asset units are excluded from monthly condo bill generation.
+- Added storage dues to Billing and SOA totals.
+- SOA current and previous descriptions can include assigned Parking/Storage units.
+- Existing legacy ParkingLot assignments remain supported for compatibility.
+- Added database migrations for the new unit assignment fields and storage_dues.
+- Renamed the web system branding/title to CITYLAND 9 CONDO SYSTEM 2026.
+- Existing V10.27 SOA changes are retained.

@@ -1,0 +1,37 @@
+{
+  "name": "cityland9-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "description": "CityLand 9 Condo System - React frontend (served locally by the Flask server at /app/)",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:mock": "vite --mode mock",
+    "build": "tsc && vite build",
+    "typecheck": "tsc",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@fontsource/plus-jakarta-sans": "^5.3.0",
+    "@fontsource/sora": "^5.3.0",
+    "html2pdf.js": "^0.14.0",
+    "print-js": "^1.6.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-router-dom": "^7.18.4",
+    "remixicon": "^4.9.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^22.20.4",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~5.9",
+    "vite": "^8.3.1"
+  },
+  "engines": {
+    "node": ">=20.19"
+  }
+}

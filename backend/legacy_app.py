@@ -5,9 +5,10 @@ import sqlite3
 import re
 import secrets
 import smtplib
+import ssl
 import time
 from email.message import EmailMessage
-from datetime import datetime, date, timezone
+from datetime import datetime, date, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from functools import wraps
 
@@ -50,6 +51,7 @@ app = Flask(
 )
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # backend/ (app.core.*)
 from app.core import security  # noqa: E402
+from app.services.excel_schema import EXPORT_FIELDS, normalize_import_unit_type  # noqa: E402
 
 # Production refuses a missing, short or placeholder SECRET_KEY (APP_ENV=development relaxes it).
 app.secret_key = security.check_secret_key(os.getenv("SECRET_KEY"))
@@ -100,6 +102,7 @@ app.config.update(
 IMPORT_MAX_ROWS = int(os.getenv("IMPORT_MAX_ROWS", "50000"))          # per sheet
 IMPORT_MAX_COLUMNS = 200
 IMPORT_MAX_UNCOMPRESSED_MB = int(os.getenv("IMPORT_MAX_UNCOMPRESSED_MB", "200"))
+PARTY_LEDGER_DEFAULT_CUTOVER = "2026-10"
 db = SQLAlchemy(app)
 
 
@@ -121,10 +124,10 @@ class ChangeTracked:
 
 
 def month_check(column, name):
-    """CHECK that a 'YYYY-MM' text column really holds a month (works on SQLite and MySQL)."""
+    """CHECK that a 'YYYY-MM' text column really holds a month across supported databases."""
     return db.CheckConstraint(
-        f"{column} LIKE '____-__' AND SUBSTR({column}, 1, 4) BETWEEN '1900' AND '2999' "
-        f"AND SUBSTR({column}, 6, 2) BETWEEN '01' AND '12'", name=name)
+        f"{column} LIKE '____-__' AND SUBSTRING({column}, 1, 4) BETWEEN '1900' AND '2999' "
+        f"AND SUBSTRING({column}, 6, 2) BETWEEN '01' AND '12'", name=name)
 
 
 @sa_event.listens_for(db.session, "before_flush")
@@ -198,8 +201,24 @@ def setting(key, default=""):
     """Read a Setting value. Returns the default string if the key is not yet
     seeded. Does NOT write to the database on read — keys are seeded once by
     init_db(). This avoids a commit-on-every-page-load race condition."""
+    if has_request_context():
+        cache = getattr(g, "_setting_values", None)
+        if cache is not None:
+            return cache.get(key, str(default))
     row = Setting.query.filter_by(key=key).first()
     return row.value if row else str(default)
+
+
+def prime_setting_cache():
+    """Load settings once for read-only endpoints that make many setting lookups."""
+    if has_request_context() and getattr(g, "_setting_values", None) is None:
+        g._setting_values = {row.key: row.value for row in Setting.query.all()}
+
+
+def reset_setting_cache():
+    """Forget settings read earlier in this request after changing them."""
+    if has_request_context():
+        g.pop("_setting_values", None)
 
 
 def setting_float(key, default=0):
@@ -302,6 +321,7 @@ def set_smtp_password(plaintext):
     row = Setting.query.filter_by(key="smtp_password").first() or Setting(key="smtp_password")
     row.value = security.encrypt_secret(plaintext, app.secret_key) if plaintext else ""
     db.session.add(row)
+    reset_setting_cache()
 
 
 USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]{3,80}$")
@@ -396,7 +416,9 @@ def guarded(fn):
 # their rate. (Fix 2026-10-04: "1/2/3 BEDROOM" used to find no rate, so auto-rate units billed ₱0.)
 TYPE_RATE_KEYS = {
     "STUDIO": "studio_rate_per_sqm", "STUDIO TYPE": "studio_rate_per_sqm",
-    "1 BEDROOM": "one_bed_rate_per_sqm", "2 BEDROOM": "two_bed_rate_per_sqm", "3 BEDROOM": "three_bed_rate_per_sqm",
+    "1 BEDROOM": "studio_rate_per_sqm", "2 BEDROOM": "studio_rate_per_sqm", "3 BEDROOM": "studio_rate_per_sqm",
+    "COMMERCIAL": "commercial_rate_per_sqm",
+    "DRYING AREA": "drying_area_rate_per_sqm",
 }
 
 
@@ -579,13 +601,38 @@ def _billing_history_for_unit(unit_id):
         g._billing_history_by_unit = cache
     return cache.get(unit_id, [])
 
+def _water_reading_month_for_bill(bill):
+    """The month a bill uses for its water charge.
+
+    New generation stores the bill-month snapshot explicitly. Older bills without that field keep the
+    latest prior reading month for the unit, which matches the way historical statements were issued.
+    """
+    month = getattr(bill, "water_reading_month", None)
+    if month:
+        return month
+    if bill.unit and bill.unit.unit_type == "COMMERCIAL":
+        return None
+    if hasattr(type(bill), "water_reading_month"):
+        # Explicitly null on the model means there is no snapshot; follow the latest prior reading.
+        reading = WaterReading.query.filter(
+            WaterReading.unit_id == bill.unit_id,
+            WaterReading.reading_month < bill.billing_month,
+        ).order_by(WaterReading.reading_month.desc(), WaterReading.id.desc()).first()
+        return reading.reading_month if reading else bill.billing_month
+    return bill.billing_month
+
+
 def _water_reading_for_bill(bill):
     """Return the latest water reading for a unit/month, using one query per month per request."""
+    if bill.unit and bill.unit.unit_type == "COMMERCIAL":
+        return None
     cache = getattr(g, "_water_readings_by_month", None)
     if cache is None:
         cache = {}
         g._water_readings_by_month = cache
-    month = bill.billing_month
+    month = _water_reading_month_for_bill(bill)
+    if not month:
+        return None
     if month not in cache:
         rows = WaterReading.query.filter_by(reading_month=month).order_by(WaterReading.unit_id.asc(), WaterReading.id.desc()).all()
         latest = {}
@@ -618,7 +665,7 @@ def _advance_balance_cached(advance):
     return cache[advance.id]
 
 
-def _prepare_bill_calculation_cache():
+def _prepare_bill_calculation_cache(unit_ids=None):
     """Bulk-calculate billing balances once per request.
 
     Imported Excel data can contain many units and months. Calculating each
@@ -627,10 +674,14 @@ def _prepare_bill_calculation_cache():
     bill once in chronological order per unit.
     """
     cache = getattr(g, "_bill_calc_cache", None)
+    scope = None if unit_ids is None else set(unit_ids)
+    cached_scope = getattr(g, "_bill_calc_cache_scope", None)
     if cache is not None:
-        return cache
-
-    bills = (
+        if cached_scope is None or (scope is not None and scope.issubset(cached_scope)):
+            return cache
+        if scope is not None:
+            scope.update(cached_scope)
+    bills_query = (
         Billing.query
         .options(
             selectinload(Billing.unit).selectinload(Unit.assigned_parking_unit),
@@ -639,8 +690,10 @@ def _prepare_bill_calculation_cache():
             selectinload(Billing.unit).selectinload(Unit.owners),
         )
         .order_by(Billing.unit_id.asc(), Billing.billing_month.asc(), Billing.id.asc())
-        .all()
     )
+    if scope is not None:
+        bills_query = bills_query.filter(Billing.unit_id.in_(scope))
+    bills = bills_query.all()
 
     # Billing/SOA only needs the selected month's water reading. Historical
     # bills already store their water charge, so loading every historical
@@ -648,21 +701,29 @@ def _prepare_bill_calculation_cache():
     # (The retired classic Billing list loaded only its month's readings here, so older bills there
     # used their stored water; every screen now loads all readings and shows the same figures.)
     water_map = {}
-    water_rows = WaterReading.query.order_by(
+    water_query = WaterReading.query.order_by(
         WaterReading.unit_id.asc(), WaterReading.reading_month.asc(), WaterReading.id.desc()
-    ).all()
+    )
+    if scope is not None:
+        water_query = water_query.filter(WaterReading.unit_id.in_(scope))
+    water_rows = water_query.all()
     for r in water_rows:
         water_map.setdefault((r.unit_id, r.reading_month), r)
 
     advance_map = {}
-    for bid, total in (
+    advance_query = (
         db.session.query(
             AdvanceApplication.billing_id,
             func.coalesce(func.sum(AdvanceApplication.amount), 0),
         )
         .group_by(AdvanceApplication.billing_id)
-        .all()
-    ):
+    )
+    if bills:
+        advance_query = advance_query.filter(AdvanceApplication.billing_id.in_([bill.id for bill in bills]))
+        advance_rows = advance_query.all()
+    else:
+        advance_rows = []
+    for bid, total in advance_rows:
         advance_map[bid] = money(total)
 
     result = {}
@@ -701,7 +762,9 @@ def _prepare_bill_calculation_cache():
             delta = zero
             month_buckets, month_paid = [], zero
             for bill in month_rows:
-                reading = water_map.get((bill.unit_id, bill.billing_month))
+                reading_month = _water_reading_month_for_bill(bill)
+                reading = water_map.get((bill.unit_id, reading_month)) if reading_month and \
+                    not (bill.unit and bill.unit.unit_type == "COMMERCIAL") else None
                 rate, kinds = bill_penalty_rules(bill, current_rules)
                 penalty_base = sum((amt for amt, kind in buckets if kind in kinds), zero).quantize(CENT, ROUND_HALF_UP)
                 if getattr(bill, "soa_manual_override", False):
@@ -793,11 +856,16 @@ def _prepare_bill_calculation_cache():
         i = j
 
     g._bill_calc_cache = result
+    g._bill_calc_cache_scope = scope
     return result
 
-
 def _bill_calc(bill):
-    cache = _prepare_bill_calculation_cache()
+    cache = getattr(g, "_bill_calc_cache", None)
+    scope = getattr(g, "_bill_calc_cache_scope", None)
+    if cache is None:
+        cache = _prepare_bill_calculation_cache({bill.unit_id})
+    elif scope is not None and bill.unit_id not in scope:
+        cache = _prepare_bill_calculation_cache()
     return cache.get(bill.id, {
         "condo": Decimal("0.00"),
         "parking": Decimal("0.00"),
@@ -911,8 +979,12 @@ def allocate_advances_for_month(month, unit_id=None):
     for bill in bills:
         # Advance payments apply to condo dues only.
         condo = money(bill.assessment)  # issued (frozen) condo dues
+        condo_payer = party_charge_payer(bill, "condo") if party_ledger_enabled(month) else None
 
-        already = money(advance_for_bill(bill))
+        application_query = AdvanceApplication.query.filter_by(billing_id=bill.id)
+        if condo_payer:
+            application_query = application_query.join(AdvancePayment).filter(AdvancePayment.payer_type == condo_payer)
+        already = money(application_query.with_entities(func.coalesce(func.sum(AdvanceApplication.amount), 0)).scalar() or 0)
         # Never more than the bill still owes (fix 2026-10-06): an advance recorded after the bill was
         # paid in cash used to be applied on top of the cash payment (each peso counted twice). What
         # isn't needed stays as remaining credit on the advance.
@@ -930,6 +1002,8 @@ def allocate_advances_for_month(month, unit_id=None):
         )
 
         for adv in advances:
+            if condo_payer and adv.payer_type != condo_payer:
+                continue
             start = adv.start_month
             end = month_shift(
                 start,
@@ -1005,6 +1079,225 @@ def bill_balance(bill):
 def bill_unpaid_part(bill):
     """The part of this bill's own charges still unpaid (adds up to the unit's balance across bills)."""
     return _bill_calc(bill)["own_balance"]
+
+
+def party_ledger_cutover_month():
+    value = str(setting("party_ledger_cutover_month", PARTY_LEDGER_DEFAULT_CUTOVER) or PARTY_LEDGER_DEFAULT_CUTOVER)
+    if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", value):
+        raise ValueError("The party-ledger cutover month setting is invalid.")
+    return value
+
+
+def party_ledger_enabled(month):
+    return bool(month and month >= party_ledger_cutover_month())
+
+
+def party_charge_payer(bill, category):
+    value = getattr(bill, f"{category}_charge_payer", None)
+    if value in ("Owner", "Tenant"):
+        return value
+    unit = bill.unit
+    value = getattr(unit, f"{category}_charge_payer", None) if unit else None
+    return value if value in ("Owner", "Tenant") else "Owner"
+
+
+def party_current_charges(bill, payer_type):
+    """Current-period amounts assigned to one party; prior balances are rolled separately."""
+    if payer_type not in ("Owner", "Tenant"):
+        raise ValueError("payer_type must be Owner or Tenant")
+    calc = _bill_calc(bill)
+    total = Decimal("0.00")
+    for category in ("condo", "parking", "storage", "water", "other", "adjustment"):
+        amount = Decimal(str(calc.get(category, 0) or 0))
+        if category == "other" and getattr(bill, "extra_charges", None):
+            extras = list(bill.extra_charges)
+            if extras:
+                amount = sum((Decimal(str(row.amount or 0)) for row in extras if row.payer_type == payer_type), Decimal("0"))
+            elif party_charge_payer(bill, "other") != payer_type:
+                amount = Decimal("0")
+        elif party_charge_payer(bill, category) != payer_type:
+            amount = Decimal("0")
+        total += amount
+    if payer_type == "Tenant":
+        total += Decimal(str(calc.get("penalty", 0) or 0))
+    return total.quantize(CENT, ROUND_HALF_UP)
+
+
+def ensure_party_opening_balance(unit_id, month):
+    """Freeze the unit's combined net balance into the Tenant ledger once at cutover."""
+    cutover = party_ledger_cutover_month()
+    if month < cutover:
+        return None
+    through_month = month_shift(cutover, -1)
+    existing = PartyOpeningBalance.query.filter_by(
+        unit_id=unit_id, payer_type="Tenant", as_of_month=through_month,
+    ).first()
+    if existing:
+        return existing
+    outstanding = sum(
+        (bill_unpaid_part(bill) for bill in _billing_history_for_unit(unit_id)
+         if bill.billing_month <= through_month),
+        Decimal("0.00"),
+    )
+    unpaid_advance = Decimal("0.00")
+    for advance in AdvancePayment.query.filter_by(unit_id=unit_id).filter(AdvancePayment.reversed_at.is_(None)).all():
+        if advance.payment_date and advance.payment_date.isoformat()[:7] <= through_month:
+            unpaid_advance += advance_balance(advance)
+    row = PartyOpeningBalance(
+        unit_id=unit_id,
+        payer_type="Tenant",
+        as_of_month=through_month,
+        amount=(outstanding - unpaid_advance).quantize(CENT, ROUND_HALF_UP),
+    )
+    db.session.add(row)
+    db.session.flush()
+    return row
+
+
+def party_balance_as_of(unit_id, payer_type, as_of):
+    """Net party ledger balance through a date, excluding any pre-cutover transaction detail."""
+    cutover = party_ledger_cutover_month()
+    opening = PartyOpeningBalance.query.filter(
+        PartyOpeningBalance.unit_id == unit_id,
+        PartyOpeningBalance.payer_type == payer_type,
+        PartyOpeningBalance.as_of_month <= as_of.isoformat()[:7],
+    ).order_by(PartyOpeningBalance.as_of_month.desc(), PartyOpeningBalance.id.desc()).first()
+    balance = Decimal(str(opening.amount)) if opening else Decimal("0.00")
+    if opening:
+        first_split_month = max(cutover, month_shift(opening.as_of_month, 1))
+    elif payer_type == "Tenant":
+        # Read-only fallback during dry-run/setup; generation persists this value.
+        balance = sum(
+            (bill_unpaid_part(bill) for bill in _billing_history_for_unit(unit_id)
+             if bill.billing_month < cutover),
+            Decimal("0.00"),
+        )
+        for advance in AdvancePayment.query.filter_by(unit_id=unit_id).filter(AdvancePayment.reversed_at.is_(None)).all():
+            if advance.payment_date and advance.payment_date.isoformat()[:7] < cutover:
+                balance -= advance_balance(advance)
+        first_split_month = cutover
+    else:
+        first_split_month = cutover
+    through_month = as_of.isoformat()[:7]
+    bills = Billing.query.filter(
+        Billing.unit_id == unit_id,
+        Billing.billing_month >= first_split_month,
+        Billing.billing_month <= through_month,
+    ).order_by(Billing.billing_month, Billing.id).all()
+    for bill in bills:
+        balance += party_current_charges(bill, payer_type)
+    first_date = date.fromisoformat(f"{first_split_month}-01")
+    if as_of >= first_date:
+        payments = Payment.query.join(Billing).filter(
+            Billing.unit_id == unit_id,
+            Payment.payer_type == payer_type,
+            Payment.reversed_at.is_(None),
+            or_(Payment.payment_date >= first_date, Billing.billing_month >= cutover),
+            Billing.billing_month <= as_of.isoformat()[:7],
+            Payment.payment_date <= as_of,
+        ).all()
+        advances = AdvancePayment.query.filter(
+            AdvancePayment.unit_id == unit_id,
+            AdvancePayment.payer_type == payer_type,
+            AdvancePayment.reversed_at.is_(None),
+            or_(AdvancePayment.payment_date >= first_date, AdvancePayment.start_month >= cutover),
+            AdvancePayment.payment_date <= as_of,
+        ).all()
+        water_allocations = ReceiptAllocation.query.join(
+            Receipt, ReceiptAllocation.receipt_id == Receipt.id,
+        ).join(
+            WaterReading, ReceiptAllocation.water_reading_id == WaterReading.id,
+        ).filter(
+            WaterReading.unit_id == unit_id,
+            ReceiptAllocation.kind == "water",
+            ReceiptAllocation.payer_type == payer_type,
+            Receipt.voided_at.is_(None),
+            or_(Receipt.received_date >= first_date, WaterReading.reading_month >= cutover),
+            WaterReading.reading_month <= as_of.isoformat()[:7],
+            Receipt.received_date <= as_of,
+        ).all()
+        balance -= sum((Decimal(str(row.amount or 0)) for row in payments), Decimal("0.00"))
+        balance -= sum((Decimal(str(row.amount or 0)) for row in advances), Decimal("0.00"))
+        balance -= sum((Decimal(str(row.amount or 0)) for row in water_allocations), Decimal("0.00"))
+    return balance.quantize(CENT, ROUND_HALF_UP)
+
+
+def party_balance_before(unit_id, payer_type, month):
+    previous_month = month_shift(month, -1)
+    y, m = (int(part) for part in previous_month.split("-"))
+    as_of = date(y + (m == 12), m % 12 + 1, 1) - timedelta(days=1)
+    return party_balance_as_of(unit_id, payer_type, as_of)
+
+
+def party_month_payments(unit_id, payer_type, month):
+    start = date.fromisoformat(f"{month}-01")
+    next_month = month_shift(month, 1)
+    end = date.fromisoformat(f"{next_month}-01")
+    payments = Payment.query.join(Billing).filter(
+        Billing.unit_id == unit_id,
+        Payment.payer_type == payer_type,
+        Payment.reversed_at.is_(None),
+        or_(
+            (Payment.payment_date >= start) & (Payment.payment_date < end),
+            (Billing.billing_month == month) & (Payment.payment_date < start),
+        ),
+    ).all()
+    advances = AdvancePayment.query.filter(
+        AdvancePayment.unit_id == unit_id,
+        AdvancePayment.payer_type == payer_type,
+        AdvancePayment.reversed_at.is_(None),
+        AdvancePayment.payment_date >= start,
+        AdvancePayment.payment_date < end,
+    ).all()
+    water_allocations = ReceiptAllocation.query.join(
+        Receipt, ReceiptAllocation.receipt_id == Receipt.id,
+    ).join(
+        WaterReading, ReceiptAllocation.water_reading_id == WaterReading.id,
+    ).filter(
+        WaterReading.unit_id == unit_id,
+        ReceiptAllocation.kind == "water",
+        ReceiptAllocation.payer_type == payer_type,
+        Receipt.voided_at.is_(None),
+        or_(
+            (Receipt.received_date >= start) & (Receipt.received_date < end),
+            (WaterReading.reading_month == month) & (Receipt.received_date < start),
+        ),
+    ).all()
+    return (sum((Decimal(str(row.amount or 0)) for row in payments), Decimal("0.00")) +
+            sum((Decimal(str(row.amount or 0)) for row in advances), Decimal("0.00")) +
+            sum((Decimal(str(row.amount or 0)) for row in water_allocations), Decimal("0.00")))
+
+
+def party_statement_ready(unit_id, month):
+    """Unknown post-cutover payer attribution must never be silently assigned."""
+    if not party_ledger_enabled(month):
+        return False
+    cutover = party_ledger_cutover_month()
+    first_date = date.fromisoformat(f"{cutover}-01")
+    payments = Payment.query.join(Billing).filter(
+        Billing.unit_id == unit_id,
+        or_(Payment.payment_date >= first_date, Billing.billing_month >= cutover),
+        Payment.payer_type.is_(None),
+        Payment.reversed_at.is_(None),
+    ).count()
+    advances = AdvancePayment.query.filter(
+        AdvancePayment.unit_id == unit_id,
+        or_(AdvancePayment.payment_date >= first_date, AdvancePayment.start_month >= cutover),
+        AdvancePayment.payer_type.is_(None),
+        AdvancePayment.reversed_at.is_(None),
+    ).count()
+    water_allocations = ReceiptAllocation.query.join(
+        Receipt, ReceiptAllocation.receipt_id == Receipt.id,
+    ).join(
+        WaterReading, ReceiptAllocation.water_reading_id == WaterReading.id,
+    ).filter(
+        Receipt.unit_id == unit_id,
+        or_(Receipt.received_date >= first_date, WaterReading.reading_month >= cutover),
+        ReceiptAllocation.kind == "water",
+        ReceiptAllocation.payer_type.is_(None),
+        Receipt.voided_at.is_(None),
+    ).count()
+    return payments == 0 and advances == 0 and water_allocations == 0
 
 
 
@@ -1146,6 +1439,11 @@ class Unit(ChangeTracked, db.Model):
     manual_monthly_dues = db.Column(db.Numeric(12, 2), default=0)
 
     occupancy_type = db.Column(db.String(20), default="Owner")  # Owner or Tenant
+    condo_charge_payer = db.Column(db.String(10), nullable=False, default="Owner", server_default="Owner")
+    water_charge_payer = db.Column(db.String(10), nullable=False, default="Owner", server_default="Owner")
+    parking_charge_payer = db.Column(db.String(10), nullable=False, default="Owner", server_default="Owner")
+    storage_charge_payer = db.Column(db.String(10), nullable=False, default="Owner", server_default="Owner")
+    other_charge_payer = db.Column(db.String(10), nullable=False, default="Owner", server_default="Owner")
     status = db.Column(db.String(30), default="Vacant")
     active = db.Column(db.Boolean, default=True)
 
@@ -1241,6 +1539,8 @@ class Billing(ChangeTracked, db.Model):
     parking_dues = db.Column(db.Numeric(12, 2), default=0)
     storage_dues = db.Column(db.Numeric(12, 2), default=0)
     water = db.Column(db.Numeric(12, 2), default=0)
+    if os.getenv("CL9_SCHEMA_BEFORE_0013") != "1":
+        water_reading_month = db.Column(db.String(7))
     other = db.Column(db.Numeric(12, 2), default=0)
     penalty = db.Column(db.Numeric(12, 2), default=0)
     adjustment = db.Column(db.Numeric(12, 2), default=0)
@@ -1251,6 +1551,11 @@ class Billing(ChangeTracked, db.Model):
     paid_date = db.Column(db.Date)
     soa_note = db.Column(db.String(1000), default="")
     soa_manual_override = db.Column(db.Boolean, default=False)
+    condo_charge_payer = db.Column(db.String(10))
+    water_charge_payer = db.Column(db.String(10))
+    parking_charge_payer = db.Column(db.String(10))
+    storage_charge_payer = db.Column(db.String(10))
+    other_charge_payer = db.Column(db.String(10))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     # Issue-time snapshot (migration 0010). Set when the bill is generated; NULL on bills issued
     # before it (their rules were not recorded and are not invented: they follow the current rules).
@@ -1273,6 +1578,21 @@ class Billing(ChangeTracked, db.Model):
         storage_rate = db.Column(db.Numeric(12, 4))
     unit = db.relationship("Unit", back_populates="bills")
     payments = db.relationship("Payment", back_populates="billing", lazy=True, cascade="all, delete-orphan")
+    extra_charges = db.relationship("BillingExtraCharge", back_populates="billing", lazy=True, cascade="all, delete-orphan")
+
+
+class BillingExtraCharge(ChangeTracked, db.Model):
+    __tablename__ = "billing_extra_charge"
+    __table_args__ = (
+        db.CheckConstraint("payer_type IN ('Owner', 'Tenant')", name="ck_billing_extra_charge_payer"),
+        db.CheckConstraint("amount >= 0", name="ck_billing_extra_charge_amount_nonneg"),
+    )
+    id = db.Column(db.Integer, primary_key=True)
+    billing_id = db.Column(db.Integer, db.ForeignKey("billing.id"), nullable=False, index=True)
+    description = db.Column(db.String(100), nullable=False)
+    amount = db.Column(db.Numeric(12, 2), nullable=False)
+    payer_type = db.Column(db.String(10), nullable=False)
+    billing = db.relationship("Billing", back_populates="extra_charges")
 
 
 class Payment(ChangeTracked, db.Model):
@@ -1283,6 +1603,7 @@ class Payment(ChangeTracked, db.Model):
     payment_date = db.Column(db.Date, default=date.today)
     payment_method = db.Column(db.String(20), default="CASH")
     payment_type = db.Column(db.String(20), default="FULL")
+    payer_type = db.Column(db.String(10))
     reference = db.Column(db.String(100))
     remarks = db.Column(db.String(300))
     # Set when the payment's official receipt is voided (migration 0009). The row is kept.
@@ -1302,6 +1623,7 @@ class AdvancePayment(ChangeTracked, db.Model):
     coverage_months = db.Column(db.Integer, default=1)
     monthly_amount = db.Column(db.Numeric(12, 2), default=0)
     payment_method = db.Column(db.String(20), default="CASH")
+    payer_type = db.Column(db.String(10))
     reference = db.Column(db.String(100))
     remarks = db.Column(db.String(300))
     # Set when the advance's official receipt is voided (migration 0009). The row is kept.
@@ -1325,6 +1647,20 @@ class AdvanceApplication(db.Model):
     billing = db.relationship("Billing")
 
 
+class PartyOpeningBalance(db.Model):
+    __tablename__ = "party_opening_balance"
+    __table_args__ = (
+        db.UniqueConstraint("unit_id", "payer_type", "as_of_month", name="uq_party_opening_balance"),
+        db.CheckConstraint("payer_type IN ('Owner', 'Tenant')", name="ck_party_opening_balance_payer"),
+    )
+    id = db.Column(db.Integer, primary_key=True)
+    unit_id = db.Column(db.Integer, db.ForeignKey("unit.id"), nullable=False, index=True)
+    payer_type = db.Column(db.String(10), nullable=False)
+    as_of_month = db.Column(db.String(7), nullable=False)
+    amount = db.Column(db.Numeric(12, 2), nullable=False)
+    unit = db.relationship("Unit")
+
+
 class WaterReading(ChangeTracked, db.Model):
     __table_args__ = (db.Index("ix_water_unit_month", "unit_id", "reading_month"), db.Index("ix_water_month", "reading_month"),
                       db.UniqueConstraint("unit_id", "reading_month", name="uq_water_unit_month"),
@@ -1336,6 +1672,9 @@ class WaterReading(ChangeTracked, db.Model):
     current_reading = db.Column(db.Float, default=0)
     rate = db.Column(db.Float, default=50)
     reading_date = db.Column(db.Date, default=date.today)
+    reading_period_start = db.Column(db.Date)
+    reading_period_end = db.Column(db.Date)
+    charge_payer = db.Column(db.String(10))
     paid = db.Column(db.Boolean, default=False)
     paid_amount = db.Column(db.Numeric(12, 2), default=0)
     payment_method = db.Column(db.String(20), default="CASH")
@@ -1354,6 +1693,70 @@ class WaterReading(ChangeTracked, db.Model):
         """usage × rate in Decimal, rounded half up to the centavo (same rule as all dues)."""
         usage = max(Decimal(str(self.current_reading or 0)) - Decimal(str(self.previous_reading or 0)), Decimal("0"))
         return (usage * Decimal(str(self.rate or 0))).quantize(Decimal("0.01"), rounding="ROUND_HALF_UP")
+
+
+class CommercialWaterReading(ChangeTracked, db.Model):
+    __tablename__ = "commercial_water_reading"
+    __table_args__ = (
+        db.Index("ix_commercial_water_month", "reading_month"),
+        db.UniqueConstraint("commercial_type", "reading_month", name="uq_commercial_water_type_month"),
+        month_check("reading_month", "ck_commercial_water_month_format"),
+        db.CheckConstraint("commercial_type IN ('2F', 'UG', 'LG')", name="ck_commercial_water_type"),
+    )
+    id = db.Column(db.Integer, primary_key=True)
+    commercial_type = db.Column(db.String(8), nullable=False)
+    reading_month = db.Column(db.String(7), nullable=False)
+    previous_reading = db.Column(db.Float, default=0)
+    current_reading = db.Column(db.Float, default=0)
+    rate = db.Column(db.Float, default=50)
+    reading_date = db.Column(db.Date, default=date.today)
+    reading_period_start = db.Column(db.Date)
+    reading_period_end = db.Column(db.Date)
+
+    @property
+    def usage(self):
+        return max(float(self.current_reading or 0) - float(self.previous_reading or 0), 0)
+
+    @property
+    def bill_amount(self):
+        usage = max(Decimal(str(self.current_reading or 0)) - Decimal(str(self.previous_reading or 0)), Decimal("0"))
+        return (usage * Decimal(str(self.rate or 0))).quantize(Decimal("0.01"), rounding="ROUND_HALF_UP")
+
+
+def previous_commercial_water_reading(commercial_type, month):
+    return CommercialWaterReading.query.filter(
+        CommercialWaterReading.commercial_type == commercial_type,
+        CommercialWaterReading.reading_month <= month,
+    ).order_by(CommercialWaterReading.reading_month.desc(), CommercialWaterReading.id.desc()).first()
+
+
+def commercial_water_amount_for_reading(reading):
+    if not reading or setting("water_auto_compute", "1") != "1":
+        return Decimal("0.00")
+    return reading.bill_amount
+
+
+def commercial_water_shares(commercial_type, total_amount):
+    """Allocate a shared commercial floor bill by active unit area, preserving the exact total."""
+    units = Unit.query.filter_by(active=True, unit_type="COMMERCIAL", floor=commercial_type).order_by(Unit.unit_no).all()
+    areas = [(unit, max(Decimal(str(unit.area_sqm or 0)), Decimal("0"))) for unit in units]
+    total_area = sum((area for _, area in areas), Decimal("0"))
+    total_amount = Decimal(str(total_amount or 0)).quantize(CENT, rounding=ROUND_HALF_UP)
+    if total_area <= 0:
+        return {}, total_area
+    positive = [(unit, area) for unit, area in areas if area > 0]
+    shares, remaining = {}, total_amount
+    for index, (unit, area) in enumerate(positive):
+        share = remaining if index == len(positive) - 1 else min(
+            max((total_amount * area / total_area).quantize(CENT, rounding=ROUND_HALF_UP), Decimal("0.00")),
+            remaining,
+        )
+        shares[unit.id] = share
+        remaining -= share
+    for unit, area in areas:
+        if area == 0:
+            shares[unit.id] = Decimal("0.00")
+    return shares, total_area
 
 
 class Receipt(db.Model):
@@ -1413,6 +1816,7 @@ class ReceiptAllocation(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     receipt_id = db.Column(db.Integer, db.ForeignKey("receipt.id"), nullable=False, index=True)
     kind = db.Column(db.String(10), nullable=False)
+    payer_type = db.Column(db.String(10))
     payment_id = db.Column(db.Integer, db.ForeignKey("payment.id"), index=True)
     water_reading_id = db.Column(db.Integer, db.ForeignKey("water_reading.id"), index=True)
     advance_payment_id = db.Column(db.Integer, db.ForeignKey("advance_payment.id"), index=True)
@@ -1429,7 +1833,7 @@ class DuplicateSubmission(Exception):
 
 def reset_financial_caches():
     """Forget per-request balance caches (after locking rows or changing payments)."""
-    for name in ("_billing_history_by_unit", "_bill_calc_cache", "_advance_balance_cache", "_advance_applied_cache"):
+    for name in ("_billing_history_by_unit", "_bill_calc_cache", "_bill_calc_cache_scope", "_advance_balance_cache", "_advance_applied_cache"):
         g.pop(name, None)
 
 
@@ -1545,6 +1949,7 @@ def issue_receipt(unit_id, received_date, method, reference, remarks, parts, sou
     for kind, record, amount in parts:
         db.session.add(ReceiptAllocation(
             receipt_id=receipt.id, kind=kind, amount=amount,
+            payer_type=getattr(record, "payer_type", None) or getattr(record, "charge_payer", None),
             payment_id=record.id if kind == "bill" else None,
             water_reading_id=record.id if kind == "water" else None,
             advance_payment_id=record.id if kind == "advance" else None))
@@ -1589,7 +1994,7 @@ class MoveCertificate(db.Model):
     unit = db.relationship("Unit")
 
 
-GATE_PASS_TYPES = ("Visitor", "Delivery", "Move-in", "Move-out")
+GATE_PASS_TYPES = ("Visitor", "Delivery", "Move-in", "Move-out", "Pull Out")
 # Staff-issued passes start "Issued". A resident's request starts "Requested"; staff then
 # approve it ("Issued") or reject it ("Rejected"), or the resident cancels it ("Cancelled").
 GATE_PASS_STATUSES = ("Requested", "Issued", "Rejected", "Cancelled")
@@ -1999,6 +2404,8 @@ def _force_password_change():
 def _security_headers(response):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
+    response.headers.setdefault("X-Permitted-Cross-Domain-Policies", "none")
     response.headers.setdefault("Referrer-Policy", "same-origin")
     response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
     response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
@@ -2069,7 +2476,14 @@ def login():
             flash("Too many failed sign-in attempts. Please wait a few minutes and try again.", "danger")
             return redirect(app_login_url())
         user = User.query.filter_by(username=username, active=True).first()
+        if user and user.must_change_password and user.temp_password_expires_at:
+            password = password.strip().upper()
         if user and check_password_hash(user.password_hash, password):
+            if activation_expired(user):
+                security.login_throttle.failure(username, client)
+                app.logger.warning("Expired activation-code sign-in for %r from %s", username, client)
+                flash("This activation code has expired. Ask the Admin Office for a new one.", "danger")
+                return redirect(app_login_url())
             security.login_throttle.success(username, client)
             if any(password == d for d in security.SHIPPED_DEFAULT_PASSWORDS):
                 user.must_change_password = True
@@ -2204,38 +2618,138 @@ def billing():
     return _billing_moved(month=request.args.get("month"))
 
 
+def assets_with_legacy_residential_charges(month, bills=None):
+    """Assets already charged on an issued residential SOA cannot be billed twice for this month."""
+    if bills is None:
+        bills = Billing.query.filter_by(billing_month=month).all()
+    bills_by_unit = {bill.unit_id: bill for bill in bills}
+    homes = Unit.query.filter(or_(
+        Unit.assigned_parking_unit_id.isnot(None),
+        Unit.assigned_storage_unit_id.isnot(None),
+    )).all()
+    deferred = set()
+    for home in homes:
+        if home.unit_type in ("PARKING", "STORAGE"):
+            continue
+        bill = bills_by_unit.get(home.id)
+        if not bill:
+            continue
+        if home.assigned_parking_unit_id and money(bill.parking_dues) > 0:
+            deferred.add(home.assigned_parking_unit_id)
+        if (home.assigned_storage_unit_id and storage_charged(bill)
+                and money(bill.storage_dues) > 0):
+            deferred.add(home.assigned_storage_unit_id)
+    return deferred
+
+
 def generate_bills(month):
-    """Create the missing bills of billing month YYYY-MM, one per active residential unit (bills
-    that exist are skipped). Returns (created, skipped, due_date). Commits."""
+    """Create missing residential and assigned-asset bills for billing month YYYY-MM.
+
+    Parking and storage fees are billed on their asset statements from this month onward;
+    existing statements are left unchanged. Returns (created, skipped, due_date). Commits.
+    """
     if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month or ""):
         raise InputError("month", "Choose a valid billing month.")
     check_open_period(month, "Bills")
     due_date = due_date_for(month)
     created = skipped = 0
+    existing_bills = Billing.query.filter_by(billing_month=month).all()
+    existing_ids = {bill.unit_id for bill in existing_bills}
     new_bills = []
-    for u in Unit.query.filter_by(active=True).all():
-        if u.unit_type in ("PARKING", "STORAGE"):
-            continue
-        if Billing.query.filter_by(unit_id=u.id, billing_month=month).first():
+    commercial_allocations = {}
+    residential_created = parking_created = storage_created = 0
+    deferred_assets = assets_with_legacy_residential_charges(month, bills=existing_bills) - existing_ids
+    g._assets_deferred_by_legacy_soa = sorted(
+        unit.unit_no for unit in Unit.query.filter(Unit.id.in_(deferred_assets)).all()
+    ) if deferred_assets else []
+    units = Unit.query.filter_by(active=True).options(
+        selectinload(Unit.assigned_parking_unit),
+        selectinload(Unit.assigned_storage_unit),
+    ).all()
+    for u in units:
+        if party_ledger_enabled(month):
+            ensure_party_opening_balance(u.id, month)
+        if u.id in existing_ids:
             skipped += 1
+            continue
+        is_parking = u.unit_type == "PARKING"
+        is_storage = u.unit_type == "STORAGE"
+        if is_parking or is_storage:
+            if u.id in deferred_assets:
+                continue
+            previous = previous_outstanding(u.id, month)
+            penalty = penalty_for_unit(u.id, month)
+            amount = asset_unit_charge(
+                u, "parking_rate_per_sqm" if is_parking else "storage_rate_per_sqm",
+            )
+            rate, kinds = current_penalty_rules()
+            bill = Billing(
+                unit_id=u.id, billing_month=month, assessment=0,
+                parking_dues=amount if is_parking else 0,
+                storage_dues=amount if is_storage else 0,
+                water=0, other=0, penalty=penalty, adjustment=0,
+                previous_balance=max(previous, Decimal("0")), amount_paid=0,
+                due_date=due_date, status="Unpaid", issued_at=datetime.utcnow(),
+                penalty_rate=rate, penalty_basis=",".join(kinds),
+                storage_included=month >= setting("storage_in_total_from", "9999-12"),
+                water_reading_month=None,
+                condo_charge_payer=u.condo_charge_payer,
+                water_charge_payer=u.water_charge_payer,
+                parking_charge_payer=u.parking_charge_payer,
+                storage_charge_payer=u.storage_charge_payer,
+                other_charge_payer=u.other_charge_payer,
+            )
+            if is_parking:
+                parking_manual = u.dues_mode == "manual" and money(u.manual_monthly_dues) > 0
+                bill.parking_unit_no = u.unit_no
+                bill.parking_area = None if parking_manual else dec(u.area_sqm)
+                bill.parking_rate = (None if parking_manual else
+                                     dec(u.unit_rate_per_sqm) or dec(setting("parking_rate_per_sqm", "0")))
+                parking_created += 1
+            else:
+                bill.storage_unit_no = u.unit_no
+                bill.storage_basis = "manual" if u.dues_mode == "manual" and money(u.manual_monthly_dues) > 0 else "sqm"
+                bill.storage_area = dec(u.area_sqm) if bill.storage_basis == "sqm" else None
+                bill.storage_rate = dec(u.unit_rate_per_sqm) or dec(setting("storage_rate_per_sqm", "0")) if bill.storage_basis == "sqm" else None
+                storage_created += 1
+            db.session.add(bill)
+            new_bills.append(bill)
+            created += 1
             continue
         previous = previous_outstanding(u.id, month)
         penalty = penalty_for_unit(u.id, month)
-        reading = WaterReading.query.filter_by(unit_id=u.id, reading_month=month).order_by(WaterReading.id.desc()).first()
-        water = water_amount_for_reading(reading)
+        if u.unit_type == "COMMERCIAL":
+            if u.floor not in commercial_allocations:
+                shared_reading = previous_commercial_water_reading(u.floor, month) if u.floor else None
+                shares, _ = commercial_water_shares(
+                    u.floor, commercial_water_amount_for_reading(shared_reading),
+                ) if shared_reading else ({}, Decimal("0"))
+                commercial_allocations[u.floor] = (shared_reading, shares)
+            reading, shares = commercial_allocations[u.floor]
+            water = shares.get(u.id, Decimal("0.00"))
+        else:
+            reading = previous_water_reading(u.id, month)
+            water = water_amount_for_reading(reading)
         condo = Decimal(str(unit_dues(u)))
-        parking = Decimal(str(parking_dues(u)))
-        storage = Decimal(str(storage_dues(u)))
         rate, kinds = current_penalty_rules()
-        bill = Billing(unit_id=u.id, billing_month=month, assessment=condo, parking_dues=parking,
-            storage_dues=storage, water=water, other=0, penalty=penalty, adjustment=0, previous_balance=max(previous, Decimal("0")),
+        bill = Billing(unit_id=u.id, billing_month=month, assessment=condo, parking_dues=0,
+            storage_dues=0, water=water, other=0, penalty=penalty, adjustment=0, previous_balance=max(previous, Decimal("0")),
             amount_paid=0, due_date=due_date, status="Unpaid",
             issued_at=datetime.utcnow(), penalty_rate=rate, penalty_basis=",".join(kinds),
-            storage_included=month >= setting("storage_in_total_from", "9999-12"))   # read fresh, not the request cache
+            storage_included=month >= setting("storage_in_total_from", "9999-12"),
+            water_reading_month=reading.reading_month if reading else None,
+            condo_charge_payer=u.condo_charge_payer,
+            water_charge_payer=u.water_charge_payer,
+            parking_charge_payer=u.parking_charge_payer,
+            storage_charge_payer=u.storage_charge_payer,
+            other_charge_payer=u.other_charge_payer)   # read fresh, not the request cache
         apply_charge_basis(bill, u)
+        bill.parking_unit_no = bill.parking_area = bill.parking_rate = None
+        bill.storage_unit_no = bill.storage_basis = bill.storage_area = bill.storage_rate = None
         db.session.add(bill)
         new_bills.append(bill)
         created += 1
+        residential_created += 1
     allocate_advances_for_month(month)
     # Amount due as first issued (after advances), kept apart from later payments / restatements.
     db.session.flush()
@@ -2243,7 +2757,10 @@ def generate_bills(month):
     for bill in new_bills:
         bill.issued_amount = bill_total(bill)
     audit(f"Generated {created} detailed bills for {month}", entity_type="billing_month", reason=None,
-          details={"month": month, "created": created, "due_date": due_date.isoformat()}, commit=False)
+          details={"month": month, "created": created, "residential_created": residential_created,
+                   "parking_created": parking_created, "storage_created": storage_created,
+                   "assets_deferred_by_existing_residential_charges": g._assets_deferred_by_legacy_soa,
+                   "due_date": due_date.isoformat()}, commit=False)
     db.session.commit()
     return created, skipped, due_date
 
@@ -2259,7 +2776,8 @@ def advance_payments():
     return redirect(react_url("/advances", unit=request.args.get("unit_id")))
 
 
-def record_advance_payment(*, unit_id, amount, start_month, months, method, reference, remarks, payment_date, form_token):
+def record_advance_payment(*, unit_id, amount, start_month, months, method, reference, remarks, payment_date, form_token,
+                           payer_type=None):
     """Record prepaid condo dues and issue the official receipt (the classic rules): split evenly per
     month, applied automatically to the unit's bills from start_month (condo dues only). One payment
     per form token; refused in a closed period. Returns (advance, receipt). Commits."""
@@ -2280,11 +2798,17 @@ def record_advance_payment(*, unit_id, amount, start_month, months, method, refe
     if method in ("CHECK", "ONLINE") and not reference:
         raise InputError("reference", "Reference number is required for Check or Online payments.")
     payment_date = payment_date or date.today()
+    if party_ledger_enabled(start_month) or party_ledger_enabled(payment_date.isoformat()[:7]):
+        if payer_type not in ("Owner", "Tenant"):
+            raise InputError("payerType", "Choose whether the advance belongs to the Owner or Tenant.")
+        if not party_statement_ready(unit.id, start_month):
+            raise InputError("payerType", "Payer assignment is required for earlier payments and advances before this unit can use separate SOAs.")
     check_open_period(payment_date, "Payments")
     claim_form_token("advance_payment", form_token)
     monthly = round_money(amount / months)
     adv = AdvancePayment(unit_id=unit.id, payment_date=payment_date, amount=amount, start_month=start_month, coverage_months=months,
-                         monthly_amount=monthly, payment_method=method, reference=reference, remarks=remarks)
+                         monthly_amount=monthly, payment_method=method, reference=reference, remarks=remarks,
+                         payer_type=payer_type)
     db.session.add(adv)
     db.session.flush()
     allocate_advances_for_month(start_month, unit.id)
@@ -2309,7 +2833,8 @@ def mark_bill_paid(bid):
     return _billing_moved(bill_id=bid)
 
 
-def record_bill_payment(bid, *, amount, payment_method, payment_type, reference, remarks, payment_date, form_token):
+def record_bill_payment(bid, *, amount, payment_method, payment_type, reference, remarks, payment_date, form_token,
+                        payer_type=None):
     """Record money received for a bill and issue its official receipt (the classic cashier rules).
 
     amount: Decimal > 0 (validated by the caller). The part needed to clear the bill is applied to
@@ -2327,6 +2852,13 @@ def record_bill_payment(bid, *, amount, payment_method, payment_type, reference,
     reference = (reference or "").strip()
     remarks = (remarks or "").strip()
     payment_date = payment_date or date.today()
+    if party_ledger_enabled(b.billing_month) or party_ledger_enabled(payment_date.isoformat()[:7]):
+        if payer_type not in ("Owner", "Tenant"):
+            raise InputError("payerType", "Choose whether the payment is for the Owner or Tenant ledger.")
+        if not party_statement_ready(b.unit_id, b.billing_month):
+            raise InputError("payerType", "Payer assignment is required for earlier payments and advances before this unit can use separate SOAs.")
+        party_balance = max(party_balance_as_of(b.unit_id, payer_type, payment_date), Decimal("0.00"))
+        balance_before = min(balance_before, party_balance)
     if payment_method not in ("CASH", "CHECK", "ONLINE"):
         raise InputError("method", "Choose Cash, Check or Online.")
     if payment_type not in ("FULL", "PARTIAL"):
@@ -2361,7 +2893,7 @@ def record_bill_payment(bid, *, amount, payment_method, payment_type, reference,
     bill_payment = excess_adv = None
     if amount_to_bill > 0:
         bill_payment = Payment(billing_id=b.id, amount=amount_to_bill, payment_date=payment_date, payment_method=payment_method,
-                               payment_type=payment_type, reference=reference, remarks=remarks)
+                               payment_type=payment_type, reference=reference, remarks=remarks, payer_type=payer_type)
         db.session.add(bill_payment)
 
     if excess_amount > 0:
@@ -2373,7 +2905,8 @@ def record_bill_payment(bid, *, amount, payment_method, payment_type, reference,
         excess_adv = AdvancePayment(
             unit_id=b.unit_id, payment_date=payment_date, amount=excess_amount, start_month=credit_month,
             coverage_months=1, monthly_amount=excess_amount, payment_method=payment_method, reference=reference,
-            remarks=(remarks + " " if remarks else "") + f"Automatic advance from excess payment for {b.billing_month}.")
+            remarks=(remarks + " " if remarks else "") + f"Automatic advance from excess payment for {b.billing_month}.",
+            payer_type=payer_type)
         db.session.add(excess_adv)
         db.session.flush()
         allocate_advances_for_month(credit_month, b.unit_id)
@@ -2394,15 +2927,22 @@ def record_bill_payment(bid, *, amount, payment_method, payment_type, reference,
 
 
 def soa_email_contacts(unit):
+    source_units = [unit]
+    if unit and unit.unit_type in ("PARKING", "STORAGE"):
+        assignment = Unit.assigned_parking_unit_id if unit.unit_type == "PARKING" else Unit.assigned_storage_unit_id
+        source_units = Unit.query.filter(
+            assignment == unit.id, Unit.active.is_(True), Unit.unit_type.notin_(("PARKING", "STORAGE")),
+        ).order_by(Unit.id).all() or [unit]
     contacts=[]; seen=set()
-    for owner in Owner.query.filter_by(unit_id=unit.id, status="Current").order_by(Owner.id.desc()).all():
-        email=(owner.email or "").strip()
-        if email and owner.receive_soa_email and email.lower() not in seen:
-            contacts.append({"name":owner.owner_name or "Owner","email":email,"type":"Owner","id":owner.id}); seen.add(email.lower())
-    for tenant in Tenant.query.filter_by(unit_id=unit.id, status="Current").order_by(Tenant.id.asc()).all():
-        email=(tenant.email or "").strip()
-        if email and tenant.receive_soa_email and email.lower() not in seen:
-            contacts.append({"name":tenant.tenant_name or "Tenant","email":email,"type":"Tenant","id":tenant.id}); seen.add(email.lower())
+    for source in source_units:
+        for owner in Owner.query.filter_by(unit_id=source.id, status="Current").order_by(Owner.id.desc()).all():
+            email=(owner.email or "").strip()
+            if email and owner.receive_soa_email and email.lower() not in seen:
+                contacts.append({"name":owner.owner_name or "Owner","email":email,"type":"Owner","id":owner.id}); seen.add(email.lower())
+        for tenant in Tenant.query.filter_by(unit_id=source.id, status="Current").order_by(Tenant.id.asc()).all():
+            email=(tenant.email or "").strip()
+            if email and tenant.receive_soa_email and email.lower() not in seen:
+                contacts.append({"name":tenant.tenant_name or "Tenant","email":email,"type":"Tenant","id":tenant.id}); seen.add(email.lower())
     return contacts
 
 
@@ -2413,7 +2953,7 @@ def outbound_email_disabled():
             or os.getenv("CL9_TEST_INSTALL", "").strip() == "1")
 
 
-def send_soa_email_to_contact(bill, contact):
+def send_soa_email_to_contact(bill, contact, payer_type=None):
     if outbound_email_disabled():
         raise RuntimeError("Outbound email is disabled on this installation (test installation).")
     host=setting("smtp_host","").strip(); port=int(setting("smtp_port","587") or 587); sender=setting("smtp_sender","").strip()
@@ -2423,17 +2963,19 @@ def send_soa_email_to_contact(bill, contact):
     # columns while its total came from the billing engine, so they could disagree).
     from app.services.soa import soa_detail
     from app.services.soa_pdf import build_soa_pdf
-    statement = soa_detail(sys.modules[__name__], bill)
+    statement = soa_detail(sys.modules[__name__], bill, payer_type=payer_type)
     body_html=render_template("soa_email_body.html",s=statement,recipient_name=contact["name"])
-    msg=EmailMessage(); msg["Subject"]=f"Statement of Account - Unit {bill.unit.unit_no} - {bill.billing_month}"; msg["From"]=sender; msg["To"]=contact["email"]
+    payer_suffix = f" - {payer_type}" if payer_type else ""
+    msg=EmailMessage(); msg["Subject"]=f"Statement of Account{payer_suffix} - Unit {bill.unit.unit_no} - {bill.billing_month}"; msg["From"]=sender; msg["To"]=contact["email"]
     msg.set_content(f"Statement of Account {statement['statementNo']} for Unit {bill.unit.unit_no}, billing period {bill.billing_month}. "
                     f"Total amount due: {Decimal(statement['total']):,.2f}; balance: {Decimal(statement['balance']):,.2f}. The statement is attached as a PDF.")
     msg.add_alternative(body_html,subtype="html")
     unit_safe = re.sub(r"[^A-Za-z0-9-]+", "-", bill.unit.unit_no).strip("-") or "unit"
-    msg.add_attachment(build_soa_pdf(statement, soa_qr_payload(bill, configured_only=True)), maintype="application", subtype="pdf",
-                       filename=f"SOA_{unit_safe}_{bill.billing_month}.pdf")
+    filename_suffix = f"_{payer_type}" if payer_type else ""
+    msg.add_attachment(build_soa_pdf(statement, soa_qr_payload(bill, configured_only=True, payer_type=payer_type)), maintype="application", subtype="pdf",
+                       filename=f"SOA_{unit_safe}_{bill.billing_month}{filename_suffix}.pdf")
     with smtplib.SMTP(host,port,timeout=20) as smtp:
-        smtp.ehlo(); smtp.starttls(); smtp.ehlo()
+        smtp.ehlo(); smtp.starttls(context=ssl.create_default_context()); smtp.ehlo()
         if username and password: smtp.login(username,password)
         smtp.send_message(msg)
 
@@ -2468,7 +3010,7 @@ def recalculate_soa(bid):
     return _billing_moved(bill_id=bid)
 
 
-def email_soas(bills):
+def email_soas(bills, party_specific=False):
     """Email each bill's SOA to the unit's opted-in owners/tenants. Returns (sent, skipped, failed, errors)."""
     sent = failed = skipped = 0
     errors = []
@@ -2479,7 +3021,8 @@ def email_soas(bills):
             continue
         for contact in contacts:
             try:
-                send_soa_email_to_contact(bill, contact)
+                payer_type = contact["type"] if party_specific else None
+                send_soa_email_to_contact(bill, contact, payer_type=payer_type)
                 sent += 1
                 audit(f"Emailed SOA for unit {bill.unit.unit_no}, billing {bill.billing_month} to {contact['email']} ({contact['type']})")
             except Exception as exc:
@@ -2492,7 +3035,7 @@ def email_soas(bills):
 SOA_FIELDS = ("assessment", "parking_dues", "storage_dues", "water", "other", "penalty", "adjustment", "previous_balance")
 
 
-def correct_soa(bid, amounts, due_date, note):
+def correct_soa(bid, amounts, due_date, note, other_items=None):
     """Manual SOA correction (classic Edit SOA): amounts = {field: Decimal} for any of SOA_FIELDS. Marks the
     bill as corrected by hand (it is then never re-priced or re-synced automatically). The change
     and its audit entry (before/after, the note as reason) are saved together. Returns the bill or None."""
@@ -2501,18 +3044,34 @@ def correct_soa(bid, amounts, due_date, note):
         return None
     check_open_period(b.billing_month, "Statements")
     before = {k: getattr(b, k) for k in SOA_FIELDS + ("due_date", "soa_note")}
+    previous_other_items = [
+        {"description": item.description, "amount": money(item.amount), "payerType": item.payer_type}
+        for item in b.extra_charges
+    ]
     for k in SOA_FIELDS:
         if k in amounts:          # fields not sent keep their value
             setattr(b, k, amounts[k])
     b.due_date = due_date or b.due_date
     b.soa_note = (note or "").strip()
+    if other_items is not None:
+        for item in list(b.extra_charges):
+            db.session.delete(item)
+        for item in other_items:
+            db.session.add(BillingExtraCharge(
+                billing_id=b.id,
+                description=item["description"],
+                amount=item["amount"],
+                payer_type=item["payerType"],
+            ))
     b.soa_manual_override = True
     reset_financial_caches()
     b.status = bill_status(b)
     changes = [k for k in before if before[k] != getattr(b, k)]
     audit(f"Manual SOA correction for unit {b.unit.unit_no}, billing {b.billing_month}; fields changed: {', '.join(changes) if changes else 'none'}",
           entity_type="billing", entity_id=b.id, reason=b.soa_note or None, commit=False,
-          details={k: {"before": before[k], "after": getattr(b, k)} for k in changes})
+          details={**{k: {"before": before[k], "after": getattr(b, k)} for k in changes},
+                   "otherItems": {"before": previous_other_items, "after": other_items}
+                   if other_items is not None and previous_other_items != other_items else None})
     db.session.commit()
     return b
 
@@ -2522,7 +3081,7 @@ class SoaCorrectedByHand(Exception):
 
 
 def recalculate_bill(bid):
-    """Re-price an issued bill from the unit's CURRENT rates (condo dues, parking, storage): the
+    """Re-price an issued bill from the unit's CURRENT rates (condo, parking or storage): the
     explicit, audited way to correct one (issued bills never change on their own).
     Returns (bill, changed) or None; raises SoaCorrectedByHand for a hand-corrected SOA. Commits."""
     b = lock_row(Billing, bid)
@@ -2532,10 +3091,33 @@ def recalculate_bill(bid):
         raise SoaCorrectedByHand()
     check_open_period(b.billing_month, "Statements")
     before = (money(b.assessment), money(b.parking_dues), money(b.storage_dues))
-    b.assessment = Decimal(str(unit_dues(b.unit)))
-    b.parking_dues = Decimal(str(parking_dues(b.unit)))
-    b.storage_dues = Decimal(str(storage_dues(b.unit)))
-    apply_charge_basis(b, b.unit)
+    if b.unit.unit_type == "PARKING":
+        b.assessment = Decimal("0.00")
+        b.parking_dues = asset_unit_charge(b.unit, "parking_rate_per_sqm")
+        b.storage_dues = Decimal("0.00")
+        b.dues_basis = b.condo_area = b.condo_rate = None
+        b.parking_unit_no = b.unit.unit_no
+        parking_manual = b.unit.dues_mode == "manual" and money(b.unit.manual_monthly_dues) > 0
+        b.parking_area = None if parking_manual else dec(b.unit.area_sqm)
+        b.parking_rate = (None if parking_manual else
+                          dec(b.unit.unit_rate_per_sqm) or dec(setting("parking_rate_per_sqm", "0")))
+        b.storage_unit_no = b.storage_basis = b.storage_area = b.storage_rate = None
+    elif b.unit.unit_type == "STORAGE":
+        b.assessment = b.parking_dues = Decimal("0.00")
+        b.storage_dues = asset_unit_charge(b.unit, "storage_rate_per_sqm")
+        b.dues_basis = b.condo_area = b.condo_rate = None
+        b.parking_unit_no = b.parking_area = b.parking_rate = None
+        b.storage_unit_no = b.unit.unit_no
+        b.storage_basis = "manual" if b.unit.dues_mode == "manual" and money(b.unit.manual_monthly_dues) > 0 else "sqm"
+        b.storage_area = dec(b.unit.area_sqm) if b.storage_basis == "sqm" else None
+        b.storage_rate = (dec(b.unit.unit_rate_per_sqm) or dec(setting("storage_rate_per_sqm", "0"))) if b.storage_basis == "sqm" else None
+    else:
+        b.assessment = Decimal(str(unit_dues(b.unit)))
+        b.parking_dues = Decimal("0.00")
+        b.storage_dues = Decimal("0.00")
+        apply_charge_basis(b, b.unit)
+        b.parking_unit_no = b.parking_area = b.parking_rate = None
+        b.storage_unit_no = b.storage_basis = b.storage_area = b.storage_rate = None
     after = (money(b.assessment), money(b.parking_dues), money(b.storage_dues))
     reset_financial_caches()
     b.status = bill_status(b)
@@ -2655,16 +3237,26 @@ def void_receipt_record(rid, reason, form_token):
     return r
 
 
-def soa_qr_payload(b, configured_only=False):
+def soa_qr_payload(b, configured_only=False, payer_type=None):
     """What an SOA's payment QR encodes: the configured online payment link with the unit, month and
     balance; without a link, a plain reference (or None when configured_only). Only text: opening or
     scanning it never records a payment or marks a bill paid."""
     pay_url = (setting("online_payment_url", "") or "").strip()
-    amount = f"{float(max(bill_balance(b), Decimal('0'))):.2f}"
+    if payer_type:
+        year, month = (int(part) for part in b.billing_month.split("-"))
+        as_of = date(year + (month == 12), month % 12 + 1, 1) - timedelta(days=1)
+        balance = party_balance_as_of(b.unit_id, payer_type, as_of)
+    else:
+        balance = bill_balance(b)
+    amount = f"{float(max(balance, Decimal('0'))):.2f}"
     if pay_url:
         sep = "&" if "?" in pay_url else "?"
-        return f"{pay_url}{sep}unit={b.unit.unit_no}&billing_month={b.billing_month}&amount={amount}"
-    return None if configured_only else f"CITYLAND9|UNIT:{b.unit.unit_no}|BILL:{b.billing_month}|AMOUNT:{amount}"
+        payer_query = f"&payer={payer_type}" if payer_type else ""
+        return f"{pay_url}{sep}unit={b.unit.unit_no}&billing_month={b.billing_month}&amount={amount}{payer_query}"
+    if configured_only:
+        return None
+    payer_reference = f"|PAYER:{payer_type}" if payer_type else ""
+    return f"CITYLAND9|UNIT:{b.unit.unit_no}|BILL:{b.billing_month}{payer_reference}|AMOUNT:{amount}"
 
 
 @app.route("/billing/<int:bid>/qr")
@@ -2731,12 +3323,12 @@ def edit_water(rid):
 
 
 def previous_water_reading(unit_id, month):
-    """The unit's latest reading before `month` (its current reading is this month's previous)."""
-    return WaterReading.query.filter(WaterReading.unit_id == unit_id, WaterReading.reading_month < month) \
+    """The unit's latest reading for or before `month`."""
+    return WaterReading.query.filter(WaterReading.unit_id == unit_id, WaterReading.reading_month <= month) \
         .order_by(WaterReading.reading_month.desc(), WaterReading.id.desc()).first()
 
 
-def save_water_reading(*, unit_id, month, previous, current, rate, reading_date):
+def save_water_reading(*, unit_id, month, previous, current, rate, reading_date, period_start=None, period_end=None, commit=True):
     """Create or correct the unit's reading for `month` (one per unit and month; the classic rules).
     previous/current/rate: Decimals already validated (rate None = Rates & Rules water rate).
     An already-generated bill for that month gets the new water amount, so it is refused when the
@@ -2746,40 +3338,128 @@ def save_water_reading(*, unit_id, month, previous, current, rate, reading_date)
     unit = db.session.get(Unit, unit_id) if unit_id else None
     if not unit or not unit.active:
         raise InputError("unitId", "Choose an active unit.")
+    if unit.unit_type == "COMMERCIAL":
+        raise InputError("unitId", "Commercial units use one shared water reading per commercial type.")
     if current < previous:
         raise InputError("current", "The current reading can't be lower than the previous reading.")
-    existing_bill = Billing.query.filter_by(unit_id=unit.id, billing_month=month).first()
-    if existing_bill:
-        check_open_period(month, "Water readings")
+    check_open_period(month, "Water readings")
+    if hasattr(Billing, "water_reading_month"):
+        affected_bills = Billing.query.filter_by(unit_id=unit.id, water_reading_month=month).all()
+    else:  # read-only compatibility for pre-0013 schemas
+        existing_bill = Billing.query.filter_by(unit_id=unit.id, billing_month=month).first()
+        affected_bills = [existing_bill] if existing_bill else []
+    for affected_bill in affected_bills:
+        check_open_period(affected_bill.billing_month, "Water readings")
     reading = WaterReading.query.filter_by(unit_id=unit.id, reading_month=month).first()
     created = reading is None
     before = None if created else {"previous": reading.previous_reading, "current": reading.current_reading, "rate": reading.rate}
     if created:
-        reading = WaterReading(unit_id=unit.id, reading_month=month)
+        reading = WaterReading(unit_id=unit.id, reading_month=month, charge_payer=unit.water_charge_payer)
         db.session.add(reading)
     reading.previous_reading = float(previous)
     reading.current_reading = float(current)
     reading.rate = float(rate if rate is not None else Decimal(str(setting_float("water_rate", 50))))
-    reading.reading_date = reading_date or date.today()
-    if existing_bill:
-        existing_bill.water = money(reading.bill_amount)
+    if period_start is not None or period_end is not None:
+        reading.reading_period_start = period_start
+        reading.reading_period_end = period_end
+    reading.reading_date = reading_date or period_end or date.today()
+    updated_bills = []
+    for affected_bill in affected_bills:
+        if getattr(affected_bill, "soa_manual_override", False):
+            continue
+        affected_bill.water = money(reading.bill_amount)
+        updated_bills.append(affected_bill)
+    if updated_bills:
         reset_financial_caches()
-        existing_bill.status = bill_status(existing_bill)
+        for affected_bill in updated_bills:
+            affected_bill.status = bill_status(affected_bill)
     after = {"previous": reading.previous_reading, "current": reading.current_reading, "rate": reading.rate}
     db.session.flush()
     audit(f"{'Saved' if created else 'Edited'} water reading for unit {unit.unit_no} for {month}", entity_type="water_reading",
-          entity_id=reading.id, details={"before": before, "after": after, "bill_updated": bool(existing_bill)}, commit=False)
-    db.session.commit()
-    return reading, created, bool(existing_bill)
+          entity_id=reading.id, details={"before": before, "after": after, "bill_updated": bool(updated_bills),
+                                         "billing_months": [b.billing_month for b in updated_bills]}, commit=False)
+    if commit:
+        db.session.commit()
+    return reading, created, bool(updated_bills)
 
 
-def record_water_payment(rid, *, amount, payment_method, payment_type, reference, paid_date, form_token):
+def save_commercial_water_reading(*, commercial_type, month, previous, current, rate, reading_date, period_start=None, period_end=None, commit=True):
+    """Save the one shared reading for a commercial type and allocate it across generated SOAs."""
+    if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month or ""):
+        raise InputError("month", "Choose the reading month.")
+    if commercial_type not in ("2F", "UG", "LG"):
+        raise InputError("commercialType", "Choose a valid commercial type.")
+    if current < previous:
+        raise InputError("current", "The current reading can't be lower than the previous reading.")
+    units = Unit.query.filter_by(active=True, unit_type="COMMERCIAL", floor=commercial_type).all()
+    if not units:
+        raise InputError("commercialType", "There are no active commercial units for this type.")
+    total_area = sum((max(Decimal(str(unit.area_sqm or 0)), Decimal("0")) for unit in units), Decimal("0"))
+    if total_area <= 0:
+        raise InputError("commercialType", "The active commercial units for this type need a total area greater than zero.")
+    check_open_period(month, "Water readings")
+    reading = CommercialWaterReading.query.filter_by(commercial_type=commercial_type, reading_month=month).first()
+    created = reading is None
+    before = None if created else {
+        "previous": reading.previous_reading, "current": reading.current_reading, "rate": reading.rate,
+    }
+    if created:
+        reading = CommercialWaterReading(commercial_type=commercial_type, reading_month=month)
+        db.session.add(reading)
+    reading.previous_reading = float(previous)
+    reading.current_reading = float(current)
+    reading.rate = float(rate if rate is not None else Decimal(str(setting_float("water_rate", 50))))
+    if period_start is not None or period_end is not None:
+        reading.reading_period_start = period_start
+        reading.reading_period_end = period_end
+    reading.reading_date = reading_date or period_end or date.today()
+    shares, _ = commercial_water_shares(commercial_type, commercial_water_amount_for_reading(reading))
+    updated_bills = []
+    next_reading = CommercialWaterReading.query.filter(
+        CommercialWaterReading.commercial_type == commercial_type,
+        CommercialWaterReading.reading_month > month,
+    ).order_by(CommercialWaterReading.reading_month.asc(), CommercialWaterReading.id.asc()).first()
+    affected_query = Billing.query.filter(
+        Billing.unit_id.in_([unit.id for unit in units]),
+        Billing.billing_month > month,
+    )
+    if next_reading:
+        affected_query = affected_query.filter(Billing.billing_month <= next_reading.reading_month)
+    affected_bills = affected_query.order_by(Billing.unit_id, Billing.billing_month).all()
+    for bill in affected_bills:
+        if bill.water_reading_month is not None and bill.water_reading_month > month:
+            continue
+        check_open_period(bill.billing_month, "Water readings")
+        if getattr(bill, "soa_manual_override", False):
+            continue
+        bill.water_reading_month = month
+        bill.water = money(shares.get(bill.unit_id, Decimal("0.00")))
+        updated_bills.append(bill)
+    if updated_bills:
+        reset_financial_caches()
+        for bill in updated_bills:
+            bill.status = bill_status(bill)
+    after = {"previous": reading.previous_reading, "current": reading.current_reading, "rate": reading.rate}
+    db.session.flush()
+    audit(f"{'Saved' if created else 'Edited'} shared commercial water reading for {commercial_type} for {month}",
+          entity_type="commercial_water_reading", entity_id=reading.id,
+          details={"before": before, "after": after, "bill_updated": bool(updated_bills),
+                   "billing_months": sorted({bill.billing_month for bill in updated_bills})}, commit=False)
+    if commit:
+        db.session.commit()
+    return reading, created, bool(updated_bills)
+
+
+def record_water_payment(rid, *, amount, payment_method, payment_type, reference, paid_date, form_token,
+                         payer_type=None):
     """Record a water payment and issue its official receipt (the classic rules): at most the
     remaining balance is applied; one payment per form token; refused in a closed period; the
     reading row is locked until commit. Returns None (not found) or (reading, receipt, applied). Commits."""
     reading = lock_row(WaterReading, rid)
     if not reading:
         return None
+    if reading.unit and reading.unit.unit_type == "COMMERCIAL":
+        raise InputError("readingId", "Commercial water charges are included in the unit's SOA.")
     total = money(reading.bill_amount)
     current_paid = money(getattr(reading, "paid_amount", 0))
     balance = max(total - current_paid, Decimal("0"))
@@ -2787,6 +3467,11 @@ def record_water_payment(rid, *, amount, payment_method, payment_type, reference
     payment_type = (payment_type or "FULL").upper()
     reference = (reference or "").strip()
     paid_date = paid_date or date.today()
+    if party_ledger_enabled(reading.reading_month) or party_ledger_enabled(paid_date.isoformat()[:7]):
+        if payer_type not in ("Owner", "Tenant"):
+            raise InputError("payerType", "Choose whether the water payment is for the Owner or Tenant.")
+        if reading.charge_payer in ("Owner", "Tenant") and payer_type != reading.charge_payer:
+            raise InputError("payerType", f"This water charge is assigned to the {reading.charge_payer}.")
     if payment_method not in ("CASH", "CHECK", "ONLINE"):
         raise InputError("method", "Choose Cash, Check or Online.")
     if payment_type not in ("FULL", "PARTIAL"):
@@ -2894,6 +3579,7 @@ def _excel_rows():
         "Billing": Billing.query.order_by(Billing.id).all(),
         "Payments": Payment.query.order_by(Payment.id).all(),
         "WaterReadings": WaterReading.query.order_by(WaterReading.id).all(),
+        "CommercialWaterReadings": CommercialWaterReading.query.order_by(CommercialWaterReading.id).all(),
         "Employees": Employee.query.order_by(Employee.id).all(),
         "Expenses": Expense.query.order_by(Expense.id).all(),
     }
@@ -2905,18 +3591,8 @@ def database_export():
     if Workbook is None: return "Install openpyxl first.", 500
     wb=Workbook(); wb.remove(wb.active)
     data=_excel_rows()
-    fields={
-      "Units":["id","unit_no","floor","unit_type","area_sqm","unit_rate_per_sqm","dues_mode","manual_monthly_dues","include_parking","include_storage","assigned_parking_unit_id","assigned_storage_unit_id","occupancy_type","owner_name","contact_no","email","status","active"],
-      "Owners":["id","unit_id","owner_name","contact_no","email","move_in","move_out","status","notes"],
-      "Tenants":["id","unit_id","tenant_name","contact_no","email","move_in","move_out","status","representative","notes"],
-      "Billing":["id","unit_id","billing_month","assessment","parking_dues","storage_dues","water","other","penalty","adjustment","previous_balance","amount_paid","due_date","status","paid_date"],
-      "Payments":["id","billing_id","amount","payment_date","reference","remarks"],
-      "WaterReadings":["id","unit_id","reading_month","previous_reading","current_reading","rate","reading_date","paid","paid_date"],
-      "Employees":["id","employee_no","full_name","position","department","employment_status","contact_no","email","date_hired","monthly_salary","notes"],
-      "Expenses":["id","expense_date","category","description","amount"],
-    }
     for sheet, rows in data.items():
-        ws=wb.create_sheet(sheet); fs=fields[sheet]; ws.append(fs)
+        ws=wb.create_sheet(sheet); fs=EXPORT_FIELDS[sheet]; ws.append(fs)
         for obj in rows:
             ws.append([getattr(obj,f,None) for f in fs])
         ws.freeze_panes="A2"
@@ -3099,6 +3775,7 @@ def run_excel_import(f):
                   "Owners": {"inserted": 0, "updated": 0},
                   "Tenants": {"inserted": 0, "updated": 0},
                   "WaterReadings": {"inserted": 0, "updated": 0},
+                  "CommercialWaterReadings": {"inserted": 0, "updated": 0},
                   "Billing": {"inserted": 0, "updated": 0},
                   "Payments": {"inserted": 0, "updated": 0},
                   "Employees": {"inserted": 0, "updated": 0},
@@ -3123,9 +3800,13 @@ def run_excel_import(f):
                 counts["Units"]["updated"] += 1
             obj.unit_no = unit_no
             obj.floor = str(val(r, "floor", "Floor", "FloorID", default=obj.floor or ""))
-            obj.unit_type = str(val(r, "unit_type", "Type", "RoomType", "RoomTypeID", default=obj.unit_type or ""))
+            obj.unit_type = normalize_import_unit_type(
+                val(r, "unit_type", "Type", "RoomType", "RoomTypeID", default=obj.unit_type or ""),
+                obj.unit_type,
+            )
             obj.area_sqm = float(val(r, "area_sqm", "AreaSQM", "Area", default=obj.area_sqm or 0) or 0)
             obj.unit_rate_per_sqm = float(val(r, "unit_rate_per_sqm", "RatePerSQM", default=obj.unit_rate_per_sqm or 0) or 0)
+            obj.auto_rate = as_bool(val(r, "auto_rate", "AutoRate"), getattr(obj, "auto_rate", True))
             obj.dues_mode = str(val(r, "dues_mode", "DuesMode", default=obj.dues_mode or "per_sqm"))
             obj.manual_monthly_dues = money(val(r, "manual_monthly_dues", "ManualMonthlyDues", "MonthlyRate", default=obj.manual_monthly_dues or 0))
             obj.include_parking = as_bool(val(r, "include_parking", "WithParking"), getattr(obj, "include_parking", False))
@@ -3137,6 +3818,9 @@ def run_excel_import(f):
                                            val(r, "email", "OwnerEmail", default=None)))
             obj.status = str(val(r, "status", "UnitStatus", default=obj.status or "Vacant"))
             obj.active = as_bool(val(r, "active", "IsActive"), True if obj.active is None else bool(obj.active))
+            for field in ("condo_charge_payer", "water_charge_payer", "parking_charge_payer",
+                          "storage_charge_payer", "other_charge_payer"):
+                setattr(obj, field, str(val(r, field, default=getattr(obj, field, None) or "Owner")))
             unit_id_map[old_id] = obj
             if old_id is not None:
                 unit_by_id[old_id] = obj
@@ -3190,6 +3874,10 @@ def run_excel_import(f):
             obj.move_in = parse_excel_date(val(r, "move_in", "MoveIn", default=obj.move_in))
             obj.move_out = parse_excel_date(val(r, "move_out", "MoveOut", default=obj.move_out))
             obj.status = val(r, "status", "Status", default=obj.status)
+            obj.receive_soa_email = as_bool(
+                val(r, "receive_soa_email", "ReceiveSoaEmail"), bool(obj.receive_soa_email))
+            obj.include_in_soa = as_bool(
+                val(r, "include_in_soa", "IncludeInSoa"), bool(obj.include_in_soa))
             obj.notes = val(r, "notes", "Notes", default=obj.notes)
 
         # S4: an owner given only on the Units sheet (no Owners row) becomes a Current owner record.
@@ -3223,6 +3911,10 @@ def run_excel_import(f):
             obj.move_out = parse_excel_date(val(r, "move_out", "MoveOut", default=obj.move_out))
             obj.status = val(r, "status", "Status", default=obj.status)
             obj.representative = as_bool(val(r, "representative", "Representative", "is_representative"), getattr(obj, "representative", False))
+            obj.receive_soa_email = as_bool(
+                val(r, "receive_soa_email", "ReceiveSoaEmail"), bool(obj.receive_soa_email))
+            obj.include_in_soa = as_bool(
+                val(r, "include_in_soa", "IncludeInSoa"), bool(obj.include_in_soa))
             obj.notes = val(r, "notes", "Notes", default=obj.notes)
 
         # ---------------------------------------------------------
@@ -3257,6 +3949,8 @@ def run_excel_import(f):
             obj.current_reading = float(val(r, "current_reading", "CurrentReading", default=obj.current_reading) or 0)
             obj.rate = float(val(r, "rate", "Rate", default=obj.rate if obj.rate is not None else setting_float("water_rate", 50)) or 0)
             obj.reading_date = parse_excel_date(val(r, "reading_date", "ReadingDate", default=obj.reading_date)) or obj.reading_date or date.today()
+            obj.reading_period_start = parse_excel_date(val(r, "reading_period_start", "ReadingPeriodStart", default=obj.reading_period_start))
+            obj.reading_period_end = parse_excel_date(val(r, "reading_period_end", "ReadingPeriodEnd", default=obj.reading_period_end))
             obj.paid = as_bool(val(r, "paid", "Paid"), bool(obj.paid))
             if hasattr(obj, "paid_amount"):
                 obj.paid_amount = money(val(r, "paid_amount", "PaidAmount", default=getattr(obj, "paid_amount", 0)))
@@ -3267,6 +3961,23 @@ def run_excel_import(f):
             if hasattr(obj, "payment_reference"):
                 obj.payment_reference = val(r, "payment_reference", "PaymentReference", "Reference", default=getattr(obj, "payment_reference", None))
             obj.paid_date = parse_excel_date(val(r, "paid_date", "PaidDate", default=obj.paid_date))
+
+        for r in rows("CommercialWaterReadings"):
+            old_id = int_id(val(r, "id", "CommercialWaterReadingID"))
+            obj = CommercialWaterReading.query.filter_by(id=old_id).first() if old_id is not None else None
+            if obj is None:
+                raise ImportProblem("CommercialWaterReadings sheet: only existing commercial readings from this database can be updated.")
+            commercial_type = str(val(r, "commercial_type", "CommercialType", default=obj.commercial_type)).strip().upper()
+            month = normalize_month(val(r, "reading_month", "ReadingMonth", default=obj.reading_month))
+            if (commercial_type, month) != (obj.commercial_type, obj.reading_month):
+                raise ImportProblem(f"CommercialWaterReadings sheet: reading id {old_id} cannot be moved to another type or month.")
+            counts["CommercialWaterReadings"]["updated"] += 1
+            obj.previous_reading = float(val(r, "previous_reading", "PreviousReading", default=obj.previous_reading) or 0)
+            obj.current_reading = float(val(r, "current_reading", "CurrentReading", default=obj.current_reading) or 0)
+            obj.rate = float(val(r, "rate", "Rate", default=obj.rate) or 0)
+            obj.reading_date = parse_excel_date(val(r, "reading_date", "ReadingDate", default=obj.reading_date)) or obj.reading_date
+            obj.reading_period_start = parse_excel_date(val(r, "reading_period_start", "ReadingPeriodStart", default=obj.reading_period_start))
+            obj.reading_period_end = parse_excel_date(val(r, "reading_period_end", "ReadingPeriodEnd", default=obj.reading_period_end))
 
         db.session.flush()
 
@@ -3315,6 +4026,11 @@ def run_excel_import(f):
                     setattr(obj, field, money(v) if field not in ("status",) else v)
             obj.due_date = parse_excel_date(val(r, "due_date", "DueDate", default=obj.due_date))
             obj.paid_date = parse_excel_date(val(r, "paid_date", "PaidDate", default=obj.paid_date))
+            if hasattr(obj, "water_reading_month"):
+                water_month = normalize_month(val(r, "water_reading_month", "WaterReadingMonth",
+                                                   default=obj.water_reading_month))
+                if water_month is not None:
+                    obj.water_reading_month = water_month
             billing_id_map[old_id] = obj if old_id is not None else obj
 
         db.session.flush()
@@ -3464,9 +4180,12 @@ SETTINGS_NUMBERS = [
     ("one_bed_rate_per_sqm", "1 bedroom rate per sqm", 4, "0", "100000"),
     ("two_bed_rate_per_sqm", "2 bedroom rate per sqm", 4, "0", "100000"),
     ("three_bed_rate_per_sqm", "3 bedroom rate per sqm", 4, "0", "100000"),
+    ("commercial_rate_per_sqm", "Commercial rate per sqm", 4, "0", "100000"),
+    ("drying_area_rate_per_sqm", "Drying area rate per sqm", 4, "0", "100000"),
     ("parking_rate_per_sqm", "Parking rate per sqm", 4, "0", "100000"),
     ("storage_rate_per_sqm", "Storage rate per sqm", 4, "0", "100000"),
     ("penalty_rate", "Penalty rate (%)", 4, "0", "100"),
+    ("vat_rate", "VAT rate (%)", 4, "0", "100"),
     ("due_day", "Due day", 0, "1", "31"),
 ]
 # (D8: "penalty_day" and "penalty_rate_per_sqm" were never used by billing - the penalty follows each
@@ -3496,6 +4215,11 @@ def change_password():
         new_password = request.form.get("new_password", "")
         confirm_password = request.form.get("confirm_password", "")
 
+        if activation_expired(u):
+            flash("This activation code has expired. Ask the Admin Office for a new one.", "danger")
+            return redirect(url_for("change_password"))
+        if u.must_change_password and u.temp_password_expires_at:
+            current_password = current_password.strip().upper()
         if not check_password_hash(u.password_hash, current_password):
             flash("Current password is incorrect.", "danger")
             return redirect(url_for("change_password"))
@@ -3644,13 +4368,12 @@ def documents():
 # Database initialization / migration
 # -----------------------------
 def schema_managed():
-    """True on MariaDB/MySQL, where only versioned migrations change the schema."""
-    return db.engine.url.drivername.startswith("mysql")
+    """True where schema changes must be applied separately from application startup."""
+    return db.engine.dialect.name in ("mysql", "mssql")
 
 
 def ensure_table(model):
-    """Create a table on the SQLite development database only. On MariaDB/MySQL tables come from
-    migrations (the application account has no CREATE right)."""
+    """Create a table only in SQLite development; production schemas are managed separately."""
     if not schema_managed():
         model.__table__.create(db.engine, checkfirst=True)
 
@@ -3669,11 +4392,12 @@ def verify_schema_present():
 def init_db():
     """Startup checks and defaults.
 
-    MariaDB/MySQL (production): the schema is changed ONLY by versioned migrations
-    (database/db_migrate.py), run with the migration account. Startup never creates or alters
-    tables; it only verifies they exist. SQLite (development/tests): tables and columns are
-    created and upgraded here, as before."""
+    MariaDB/MySQL and SQL Server (production): schema changes are applied separately from
+    application startup. Startup never creates or alters tables; it only verifies they exist.
+    SQLite (development/tests): tables and columns are created and upgraded here, as before."""
+    water_month_column_added = False
     with app.app_context():
+        water_month_column_added = False
         if schema_managed():
             verify_schema_present()
         else:
@@ -3708,9 +4432,15 @@ def init_db():
                 for idx_name, tbl, col in idx_defs:
                     if idx_name not in existing_indexes:
                         try:
-                            conn.exec_driver_sql(
-                                f'CREATE INDEX IF NOT EXISTS "{idx_name}" ON "{tbl}" ("{col}")'
-                            )
+                            if dialect == "mssql":
+                                preparer = conn.dialect.identifier_preparer
+                                statement = (
+                                    f"CREATE INDEX {preparer.quote(idx_name)} "
+                                    f"ON {preparer.quote(tbl)} ({preparer.quote(col)})"
+                                )
+                            else:
+                                statement = f'CREATE INDEX IF NOT EXISTS "{idx_name}" ON "{tbl}" ("{col}")'
+                            conn.exec_driver_sql(statement)
                         except Exception as exc:
                             print(f"Index {idx_name} could not be created: {exc}")
 
@@ -3732,6 +4462,11 @@ def init_db():
                         "dues_mode": "VARCHAR(20) DEFAULT 'per_sqm'",
                         "manual_monthly_dues": "NUMERIC(12,2) DEFAULT 0",
                         "occupancy_type": "VARCHAR(20) DEFAULT 'Owner'",
+                        "condo_charge_payer": "VARCHAR(10) NOT NULL DEFAULT 'Owner'",
+                        "water_charge_payer": "VARCHAR(10) NOT NULL DEFAULT 'Owner'",
+                        "parking_charge_payer": "VARCHAR(10) NOT NULL DEFAULT 'Owner'",
+                        "storage_charge_payer": "VARCHAR(10) NOT NULL DEFAULT 'Owner'",
+                        "other_charge_payer": "VARCHAR(10) NOT NULL DEFAULT 'Owner'",
                         "include_storage": "BOOLEAN DEFAULT 0",
                         "assigned_parking_unit_id": "INTEGER",
                         "assigned_storage_unit_id": "INTEGER",
@@ -3752,6 +4487,12 @@ def init_db():
                         "status": "VARCHAR(30) DEFAULT 'Unpaid'",
                         "soa_note": "VARCHAR(1000) DEFAULT ''",
                         "soa_manual_override": "BOOLEAN DEFAULT 0",
+                        "water_reading_month": "VARCHAR(7)",
+                        "condo_charge_payer": "VARCHAR(10)",
+                        "water_charge_payer": "VARCHAR(10)",
+                        "parking_charge_payer": "VARCHAR(10)",
+                        "storage_charge_payer": "VARCHAR(10)",
+                        "other_charge_payer": "VARCHAR(10)",
                         # Issue-time snapshot (MySQL: migration 0010).
                         "issued_at": "DATETIME", "issued_amount": "NUMERIC(12,2)", "penalty_rate": "NUMERIC(7,4)",
                         "penalty_basis": "VARCHAR(60)", "storage_included": "BOOLEAN", "dues_basis": "VARCHAR(10)",
@@ -3762,11 +4503,19 @@ def init_db():
                     "water_reading": {
                         "paid": "BOOLEAN DEFAULT 0",
                         "paid_date": "DATE",
+                        "reading_period_start": "DATE",
+                        "reading_period_end": "DATE",
+                        "charge_payer": "VARCHAR(10)",
+                    },
+                    "receipt_allocation": {"payer_type": "VARCHAR(10)"},
+                    "commercial_water_reading": {
+                        "reading_period_start": "DATE",
+                        "reading_period_end": "DATE",
                     },
                     # Payment integrity (MySQL: migration 0009).
                     "receipt": {"voided_at": "DATETIME", "voided_by": "VARCHAR(80)", "void_reason": "VARCHAR(500)"},
-                    "payment": {"reversed_at": "DATETIME"},
-                    "advance_payment": {"reversed_at": "DATETIME"},
+                    "payment": {"payer_type": "VARCHAR(10)", "reversed_at": "DATETIME"},
+                    "advance_payment": {"payer_type": "VARCHAR(10)", "reversed_at": "DATETIME"},
                     "audit_log": {"entity_type": "VARCHAR(40)", "entity_id": "INTEGER", "reason": "VARCHAR(500)", "details": "TEXT"},
                     # Session security (MySQL: migration 0008); activation-code expiry (0011).
                     "user": {
@@ -3789,13 +4538,27 @@ def init_db():
                 for tracked_model in ChangeTracked.__subclasses__():
                     migrations.setdefault(tracked_model.__tablename__, {}).update({"updated_at": "DATETIME", "updated_by": "VARCHAR(80)"})
                 pending = []
+                payer_fields = (
+                    "condo_charge_payer",
+                    "water_charge_payer",
+                    "parking_charge_payer",
+                    "storage_charge_payer",
+                    "other_charge_payer",
+                )
+                payer_columns_added = set()
                 with db.engine.connect() as conn:
                     for table, columns in migrations.items():
                         existing = {row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})").fetchall()}
                         if not existing:
                             continue  # table not created yet (HR tables are created on first use)
                         pending.extend((table, name, definition) for name, definition in columns.items() if name not in existing)
+                payer_columns_added = {
+                    (table, name)
+                    for table, name, _ in pending
+                    if name in payer_fields or name in ("payer_type", "charge_payer")
+                }
 
+                water_month_column_added = any(table == "billing" and name == "water_reading_month" for table, name, _ in pending)
                 if pending:
                     db_path = db.engine.url.database
                     if db_path and os.path.isfile(db_path):
@@ -3806,9 +4569,38 @@ def init_db():
                     with db.engine.begin() as conn:
                         for table, name, definition in pending:
                             conn.exec_driver_sql(f'ALTER TABLE "{table}" ADD COLUMN "{name}" {definition}')
+                        for column in payer_fields:
+                            if ("unit", column) in payer_columns_added:
+                                conn.exec_driver_sql(
+                                    f'UPDATE unit SET "{column}" = CASE WHEN occupancy_type = ? THEN ? ELSE ? END',
+                                    ("Tenant", "Tenant", "Owner"),
+                                )
+                            if ("billing", column) in payer_columns_added:
+                                conn.exec_driver_sql(
+                                    f'UPDATE billing SET "{column}" = '
+                                    f'(SELECT unit."{column}" FROM unit WHERE unit.id = billing.unit_id)'
+                                )
+                        if ("water_reading", "charge_payer") in payer_columns_added:
+                            conn.exec_driver_sql(
+                                "UPDATE water_reading SET charge_payer = "
+                                "(SELECT unit.water_charge_payer FROM unit WHERE unit.id = water_reading.unit_id)"
+                            )
+                        if ("receipt_allocation", "payer_type") in payer_columns_added:
+                            for kind, table, foreign_key, column in (
+                                ("bill", "payment", "payment_id", "payer_type"),
+                                ("water", "water_reading", "water_reading_id", "charge_payer"),
+                                ("advance", "advance_payment", "advance_payment_id", "payer_type"),
+                            ):
+                                conn.exec_driver_sql(
+                                    f"UPDATE receipt_allocation SET payer_type = "
+                                    f"(SELECT {column} FROM {table} WHERE {table}.id = receipt_allocation.{foreign_key}) "
+                                    "WHERE kind = ? AND payer_type IS NULL",
+                                    (kind,),
+                                )
 
             # Cross-database schema upgrades for newer fields. SQLAlchemy create_all() does
             # not add columns to an existing SQL Server/PostgreSQL database.
+            water_month_column_added = False
             generic_migrations = {
                 "unit": {
                     "include_storage": "BIT DEFAULT 0" if db.engine.dialect.name == "mssql" else ("BOOLEAN DEFAULT FALSE" if db.engine.dialect.name == "postgresql" else "BOOLEAN DEFAULT 0"),
@@ -3819,6 +4611,7 @@ def init_db():
                     "storage_dues": "NUMERIC(12,2) DEFAULT 0",
                     "soa_note": "NVARCHAR(1000) DEFAULT ''" if db.engine.dialect.name == "mssql" else "VARCHAR(1000) DEFAULT ''",
                     "soa_manual_override": "BIT DEFAULT 0" if db.engine.dialect.name == "mssql" else ("BOOLEAN DEFAULT FALSE" if db.engine.dialect.name == "postgresql" else "BOOLEAN DEFAULT 0"),
+                    "water_reading_month": "VARCHAR(7)",
                 },
                 "owner": {
                     "receive_soa_email": "BIT DEFAULT 0" if db.engine.dialect.name == "mssql" else ("BOOLEAN DEFAULT FALSE" if db.engine.dialect.name == "postgresql" else "BOOLEAN DEFAULT 0"),
@@ -3835,6 +4628,12 @@ def init_db():
                     "payment_type": "VARCHAR(20) DEFAULT 'FULL'",
                     "payment_reference": "VARCHAR(100)",
                     "paid_date": "DATE",
+                    "reading_period_start": "DATE",
+                    "reading_period_end": "DATE",
+                },
+                "commercial_water_reading": {
+                    "reading_period_start": "DATE",
+                    "reading_period_end": "DATE",
                 },
                 "payment": {
                     "payment_method": "VARCHAR(20) DEFAULT 'CASH'",
@@ -3850,6 +4649,19 @@ def init_db():
                     for name, definition in columns.items():
                         if name not in existing:
                             conn.exec_driver_sql(f'ALTER TABLE "{table}" ADD "{name}" {definition}')
+                            if table == "billing" and name == "water_reading_month":
+                                water_month_column_added = True
+
+            if water_month_column_added:
+                with db.engine.begin() as conn:
+                    conn.exec_driver_sql("""
+                        UPDATE billing SET water_reading_month = billing_month
+                        WHERE water_reading_month IS NULL AND EXISTS (
+                            SELECT 1 FROM water_reading
+                            WHERE water_reading.unit_id = billing.unit_id
+                              AND water_reading.reading_month = billing.billing_month
+                        )
+                    """)
 
         # Normalize the legacy Studio label to the new Unit Type option.
         for legacy_unit in Unit.query.filter_by(unit_type="Studio").all():
@@ -3869,6 +4681,8 @@ def init_db():
             "one_bed_rate_per_sqm": "75",
             "two_bed_rate_per_sqm": "100",
             "three_bed_rate_per_sqm": "125",
+            "commercial_rate_per_sqm": "0",
+            "drying_area_rate_per_sqm": "0",
             "parking_rate_per_sqm": "100",
             "storage_rate_per_sqm": "50",
             "storage_in_total_from": month_shift(datetime.now().strftime("%Y-%m"), 1),
@@ -4463,10 +5277,11 @@ def resident_link_for(user, unit_id):
 init_auth(app, current_user=current_user, resident_unit_id=resident_unit_id, resident_unit_ids=resident_unit_ids,
           resident_access_problem=resident_access_problem)
 app.register_blueprint(make_auth_blueprint(
-    User=User, audit=audit, check_password_hash=check_password_hash, commit=db.session.commit,
+    db=db, User=User, audit=audit, check_password_hash=check_password_hash, commit=db.session.commit,
     home_endpoint=home_endpoint, resident_access_problem=resident_access_problem,
     start_session=start_session, set_password=set_password, client_address=client_address,
     resident_unit_id=resident_unit_id, resident_access_links=resident_access_links, activation_expired=activation_expired,
+    end_sessions=end_other_sessions,
 ))
 app.register_blueprint(make_resident_blueprint(sys.modules[__name__]))
 def _expected_schema_revision():

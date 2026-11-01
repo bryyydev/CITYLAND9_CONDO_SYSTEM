@@ -17,12 +17,12 @@ powershell -NoProfile -Command "$p = Get-CimInstance Win32_Process | Where-Objec
 powershell -NoProfile -Command "$p = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -like '*backend*run.py*' }; if ($p) { $p | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }; Write-Host ('  stopped ' + @($p).Count + ' process(es)') } else { Write-Host '  the web server was not running' }"
 
 if /i "%~1"=="--keep-db" goto :done
-echo Stopping the CityLand 9 database...
-if exist ".venv\Scripts\python.exe" (
-    ".venv\Scripts\python.exe" database\local_mysql.py stop
-) else (
-    echo   .venv not found; nothing to stop.
-)
+findstr /b /i "DB_ENGINE=mysql" .env >nul 2>nul
+if errorlevel 1 goto :done
+findstr /b /i "DATABASE_URL=" .env >nul 2>nul
+if not errorlevel 1 goto :done
+echo Stopping CityLand's local MariaDB...
+if exist ".venv\Scripts\python.exe" ".venv\Scripts\python.exe" database\local_mysql.py stop
 
 :done
 echo Done.

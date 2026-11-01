@@ -19,6 +19,7 @@ export interface DataService {
     login(username: string, password: string): Promise<{ user: T.SessionUser; csrfToken: string | null }>;
     logout(): Promise<void>;
     changePassword(currentPassword: string, newPassword: string): Promise<void>;
+    changeUsername(currentPassword: string, newUsername: string): Promise<T.SessionUser>;
   };
   resident: {
     summary(unitId: number): Promise<T.ResidentSummary>;
@@ -53,6 +54,10 @@ export interface DataService {
     options(): Promise<T.UnitOptions>;
     detail(unitId: number): Promise<T.UnitDetail>;
     create(input: T.UnitCreate): Promise<T.UnitDetail>;
+    downloadBulkTemplate(): Promise<string>;
+    checkBulkImport(file: File): Promise<T.BulkUnitPreview>;
+    createBulk(file: File): Promise<{ created: number; skipped: number; unitNumbers: string[] }>;
+    delete(unitId: number): Promise<void>;
     update(unitId: number, input: T.UnitInput): Promise<T.UnitDetail>;
     /** Returns the unit and the new record's id (createdPersonId). */
     addPerson(unitId: number, kind: "Owner" | "Tenant", input: T.PersonInput): Promise<T.UnitDetail & { createdPersonId?: number }>;
@@ -60,8 +65,13 @@ export interface DataService {
   };
   billing: {
     list(month: T.Month): Promise<T.BillRow[]>;
-    detail(billId: number): Promise<T.BillDetail>;
+    detail(billId: number, payerType?: T.ChargePayer): Promise<T.BillDetail>;
+    partyBalance(billId: number, payerType: T.ChargePayer, date: T.IsoDate): Promise<{ balance: T.Money }>;
+    printStatements(month: T.Month, payerType?: T.ChargePayer): Promise<T.SoaDetail[]>;
+    partyTransactions(billId: number): Promise<{ transactions: T.PartyTransaction[]; ready: boolean }>;
+    assignPartyTransaction(billId: number, kind: T.PartyTransaction["kind"], transactionId: number, payerType: T.ChargePayer): Promise<{ payerType: T.ChargePayer; ready: boolean }>;
     generate(month: T.Month): Promise<T.GenerateBillsResult>;
+    deleteGenerated(month: T.Month, billIds?: number[]): Promise<{ month: T.Month; deleted: number; billIds: number[] }>;
     recordPayment(billId: number, input: T.PaymentInput): Promise<T.RecordPaymentResult>;
     recalculate(billId: number): Promise<{ changed: boolean; detail: T.BillDetail }>;
     /** Email the month's SOAs: all bills, or only `billIds`. */
@@ -87,9 +97,14 @@ export interface DataService {
   water: {
     month(month: T.Month): Promise<T.WaterMonth>;
     previousReading(unitId: number, month: T.Month): Promise<number>;
+    downloadBulkTemplate(): Promise<string>;
+    checkBulkImport(file: File): Promise<T.BulkWaterReadingPreview>;
+    createBulk(file: File): Promise<{ created: number; readings: { label: string; month: string }[] }>;
     /** Create or correct the unit's reading for the month. */
     save(input: T.WaterReadingInput): Promise<{ reading: T.WaterReadingAdmin; created: boolean; billUpdated: boolean }>;
     correct(readingId: number, input: Omit<T.WaterReadingInput, "unitId" | "month">): Promise<{ reading: T.WaterReadingAdmin; created: boolean; billUpdated: boolean }>;
+    saveCommercial(input: T.CommercialWaterInput): Promise<{ reading: T.CommercialWaterReadingAdmin; created: boolean; billUpdated: boolean }>;
+    correctCommercial(readingId: number, input: Omit<T.CommercialWaterInput, "commercialType" | "month">): Promise<{ reading: T.CommercialWaterReadingAdmin; created: boolean; billUpdated: boolean }>;
     pay(readingId: number, input: T.WaterPaymentInput): Promise<{ reading: T.WaterReadingAdmin; receiptNo: string; receiptId: number; applied: T.Money }>;
   };
   gatePasses: {
@@ -186,6 +201,8 @@ export interface DataService {
     saveRates(input: T.RatesAndRulesUpdate): Promise<T.RatesAndRules>;
     collections(months: number): Promise<T.CollectionSummary[]>;
     system(): Promise<T.SystemOverview>;
+    /** Create and verify a local database backup without importing or changing data. */
+    backupDatabase(): Promise<{ message: string; file: string }>;
     /** Import an Excel workbook (a database backup is taken first; nothing is imported if it fails). */
     importDatabase(file: File): Promise<T.ImportResult>;
     /** Check only (dry run): validate a migration workbook; nothing is written. */

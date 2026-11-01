@@ -20,11 +20,13 @@ const NEVER = "9999-12";
 // Field key (same as the server's error keys) -> label, used for errors and the "what changed" list.
 const LABELS: Record<string, string> = {
   corporationName: "Corporation name", address: "Address",
-  "ratesPerSqm.studio": "Studio rate", "ratesPerSqm.oneBed": "1 bedroom rate", "ratesPerSqm.twoBed": "2 bedroom rate", "ratesPerSqm.threeBed": "3 bedroom rate",
+  "ratesPerSqm.residential": "Residential rate", "ratesPerSqm.commercial": "Commercial rate", "ratesPerSqm.dryingArea": "Drying area rate",
   parkingRatePerSqm: "Parking rate", storageRatePerSqm: "Storage rate", storageInTotalFrom: "Storage in SOA totals from",
   booksClosedThrough: "Books closed through", waterRate: "Water rate", waterAutoCompute: "Automatic water computation",
   penaltyRate: "Penalty rate", "penaltyIncludes.condo": "Penalty on condo dues", "penaltyIncludes.parking": "Penalty on parking",
   "penaltyIncludes.storage": "Penalty on storage", "penaltyIncludes.water": "Penalty on water",
+  vatRate: "VAT rate", "vatIncludes.condo": "VAT on condo dues", "vatIncludes.parking": "VAT on parking",
+  "vatIncludes.storage": "VAT on storage", "vatIncludes.water": "VAT on water", "vatIncludes.other": "VAT on other charges",
   onlinePaymentUrl: "Online payment link", onlinePaymentInstructions: "Payment instructions",
   smtpHost: "SMTP host", smtpPort: "SMTP port", smtpSender: "Sender email", smtpUsername: "SMTP username", smtpPassword: "SMTP password",
 };
@@ -50,11 +52,12 @@ function clientErrors(f: RatesAndRulesUpdate): Record<string, string> {
     if (!RATE.test(v)) e[key] = "Enter a number with up to 4 decimals, e.g. 85.00.";
     else if (Number(v) > max) e[key] = `Can't be more than ${max.toLocaleString()}.`;
   };
-  (["studio", "oneBed", "twoBed", "threeBed"] as const).forEach((k) => rate(`ratesPerSqm.${k}`, f.ratesPerSqm[k]));
+  (["residential", "commercial", "dryingArea"] as const).forEach((k) => rate(`ratesPerSqm.${k}`, f.ratesPerSqm[k]));
   rate("parkingRatePerSqm", f.parkingRatePerSqm);
   rate("storageRatePerSqm", f.storageRatePerSqm);
   rate("waterRate", f.waterRate);
   rate("penaltyRate", f.penaltyRate, 100);
+  rate("vatRate", f.vatRate, 100);
   if (!f.corporationName.trim()) e.corporationName = "Required: it is printed on every SOA.";
   if (!MONTH.test(f.storageInTotalFrom)) e.storageInTotalFrom = "Choose a month.";
   if (f.booksClosedThrough && !MONTH.test(f.booksClosedThrough)) e.booksClosedThrough = "Choose a month, or leave it empty.";
@@ -90,7 +93,8 @@ function RatesForm({ saved, onSaved }: { saved: RatesAndRules; onSaved: (r: Rate
   const smtpChange = form.smtpPasswordClear ? "remove" : form.smtpPassword ? "replace" : null;
   const dirty = changed.length > 0 || smtpChange !== null;
   // Read live by the billing engine (not frozen on issued bills): see the note at the top of this file.
-  const affectsOpenBills = changed.some((k) => k === "penaltyRate" || k.startsWith("penaltyIncludes.") || k === "storageInTotalFrom");
+  const affectsSoas = changed.some((k) => k === "penaltyRate" || k.startsWith("penaltyIncludes.") || k === "storageInTotalFrom" ||
+    k === "vatRate" || k.startsWith("vatIncludes."));
   const local = clientErrors(form);
   const err = (k: string) => (touched ? local[k] : "") || serverFields[k] || "";
   const hasErrors = Object.keys(local).length > 0;
@@ -124,7 +128,7 @@ function RatesForm({ saved, onSaved }: { saved: RatesAndRules; onSaved: (r: Rate
       const result = await act(() => api.admin.saveRates(form));
       setConfirming(false); setTouched(false); setServerFields({});
       onSaved(result);
-      toast({ tone: "success", title: "Rates & Rules saved", message: affectsOpenBills ? "Penalty and storage settings also apply to unpaid bills' statements. Recorded payments and receipts don't change." : "New rates apply to bills generated from now on. Issued bills, payments and receipts don't change." });
+      toast({ tone: "success", title: "Rates & Rules saved", message: affectsSoas ? "Penalty, storage and VAT settings are applied when statements are shown. VAT does not change stored bills, payments or receipts." : "New rates apply to bills generated from now on. Issued bills, payments and receipts don't change." });
     } catch (e) {
       setConfirming(false);
       if (e instanceof ApiError && Object.keys(e.fields).length) {
@@ -160,7 +164,7 @@ function RatesForm({ saved, onSaved }: { saved: RatesAndRules; onSaved: (r: Rate
   return (
     <>
       <PageHeader eyebrow="Administration" title="Rates & Rules"
-        description="Dues and water rates, the penalty rule, payment instructions and SOA email. New dues, parking and water rates apply to bills generated from now on; issued bills keep theirs."
+        description="Dues and water rates, penalty and VAT rules, payment instructions and SOA email. VAT is calculated on SOAs only and does not change stored bills or payments."
         actions={<>
           {dirty && <span className="text-[12.5px] font-semibold text-copper-700" role="status">Unsaved changes</span>}
           <Button variant="secondary" icon="arrow-go-back-line" disabled={!dirty || busy} onClick={() => { setForm(toForm(saved)); setTouched(false); setServerFields({}); setServerError(""); }}>Discard</Button>
@@ -171,12 +175,21 @@ function RatesForm({ saved, onSaved }: { saved: RatesAndRules; onSaved: (r: Rate
       {touched && hasErrors && !serverError && <div className="mb-4" role="alert"><Notice tone="warn">Fix the highlighted fields before saving.</Notice></div>}
 
       <form className="grid gap-6 xl:grid-cols-2" noValidate onSubmit={(e) => { e.preventDefault(); askToSave(); }}>
-        <Card><CardHeader title="Condo dues" subtitle="Monthly rate per square metre, by unit type. A unit can also have a manual monthly amount (Units Directory)." />
-          <div className="grid gap-4 p-5 sm:grid-cols-2">
-            {numberField("ratesPerSqm.studio", "Studio", form.ratesPerSqm.studio, (v) => patch({ ratesPerSqm: { ...form.ratesPerSqm, studio: v } }, ["ratesPerSqm.studio"]), "₱/m²")}
-            {numberField("ratesPerSqm.oneBed", "1 bedroom", form.ratesPerSqm.oneBed, (v) => patch({ ratesPerSqm: { ...form.ratesPerSqm, oneBed: v } }, ["ratesPerSqm.oneBed"]), "₱/m²")}
-            {numberField("ratesPerSqm.twoBed", "2 bedroom", form.ratesPerSqm.twoBed, (v) => patch({ ratesPerSqm: { ...form.ratesPerSqm, twoBed: v } }, ["ratesPerSqm.twoBed"]), "₱/m²")}
-            {numberField("ratesPerSqm.threeBed", "3 bedroom", form.ratesPerSqm.threeBed, (v) => patch({ ratesPerSqm: { ...form.ratesPerSqm, threeBed: v } }, ["ratesPerSqm.threeBed"]), "₱/m²")}
+        <Card><CardHeader title="Condo dues" subtitle="Monthly rate per square metre. One Residential rate applies to Studio and all bedroom types. Units can also use a manual monthly amount in Units Directory." />
+          <div className="space-y-5 p-5">
+            <fieldset className="space-y-3">
+              <legend className="text-[13px] font-semibold text-ink-900">Commercial</legend>
+              <div className="grid gap-4 sm:grid-cols-2">
+                {numberField("ratesPerSqm.commercial", "Commercial rate", form.ratesPerSqm.commercial, (v) => patch({ ratesPerSqm: { ...form.ratesPerSqm, commercial: v } }, ["ratesPerSqm.commercial"]), "₱/m²")}
+              </div>
+            </fieldset>
+            <fieldset className="space-y-3 border-t border-ink-100 pt-4">
+              <legend className="text-[13px] font-semibold text-ink-900">Residential &amp; drying area</legend>
+              <div className="grid gap-4 sm:grid-cols-2">
+                {numberField("ratesPerSqm.residential", "Residential rate", form.ratesPerSqm.residential, (v) => patch({ ratesPerSqm: { ...form.ratesPerSqm, residential: v } }, ["ratesPerSqm.residential"]), "₱/m²")}
+                {numberField("ratesPerSqm.dryingArea", "DRYING AREA rate", form.ratesPerSqm.dryingArea, (v) => patch({ ratesPerSqm: { ...form.ratesPerSqm, dryingArea: v } }, ["ratesPerSqm.dryingArea"]), "₱/m²")}
+              </div>
+            </fieldset>
           </div></Card>
 
         <Card><CardHeader title="Parking & storage" />
@@ -219,6 +232,20 @@ function RatesForm({ saved, onSaved }: { saved: RatesAndRules; onSaved: (r: Rate
               </div>
             </fieldset>
             <p className="text-[12.5px] text-ink-500">Penalty = unpaid balance of the selected charges from earlier months × the penalty rate. It is worked out when a statement is shown, so a change here also applies to unpaid bills.</p>
+          </div></Card>
+
+        <Card><CardHeader title="VAT rule" subtitle="Calculated on SOAs only; stored bills, payments and receipts are not changed." />
+          <div className="grid gap-4 p-5">
+            <div className="sm:max-w-xs">{numberField("vatRate", "VAT rate", form.vatRate, (v) => patch({ vatRate: v }, ["vatRate"]), "%")}</div>
+            <fieldset>
+              <legend className="mb-1.5 text-[12.5px] font-semibold text-ink-700">Apply VAT to</legend>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {(["condo", "parking", "water", "storage", "other"] as const).map((k) => check(`vatIncludes.${k}`,
+                  { condo: "Condo due", parking: "Parking", water: "Water", storage: "Storage", other: "Other charges" }[k],
+                  form.vatIncludes[k], (v) => patch({ vatIncludes: { ...form.vatIncludes, [k]: v } }, [`vatIncludes.${k}`])))}
+              </div>
+            </fieldset>
+            <p className="text-[12.5px] text-ink-500">VAT is added as a separate line on each SOA, based only on the selected charges included in that statement. It is not added to billing records or payment calculations.</p>
           </div></Card>
 
         <Card><CardHeader title="Corporation & payment instructions" subtitle="Printed on every SOA." />
@@ -284,8 +311,8 @@ function RatesForm({ saved, onSaved }: { saved: RatesAndRules; onSaved: (r: Rate
             {changed.map((k) => <li key={k}>{LABELS[k] ?? k}</li>)}
             {smtpChange && <li>SMTP password ({smtpChange === "remove" ? "removed" : "replaced"})</li>}
           </ul>
-          {affectsOpenBills
-            ? <Notice tone="warn">The penalty rule and the storage month are applied when a statement is shown, so they also change the totals of <b>unpaid bills</b> (as on the classic screen). Recorded payments and receipts don't change.</Notice>
+          {affectsSoas
+            ? <Notice tone="warn">Penalty, storage and VAT settings are applied when SOAs are shown. VAT appears as a separate SOA charge only; stored bills, recorded payments and receipts are not changed.</Notice>
             : <p className="text-[13px] text-ink-500">Bills generated from now on use the new rates. Issued bills, payments and receipts don't change.</p>}
           <p className="text-[13px] text-ink-500">The change is recorded in the audit log.</p>
         </div>} />

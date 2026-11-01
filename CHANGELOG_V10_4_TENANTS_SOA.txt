@@ -1,0 +1,11 @@
+V10.4 – MULTIPLE TENANTS + VISIBLE SOA PRINT ACTIONS
+
+- Added dedicated Tenants Database page in the sidebar.
+- Multiple current/past tenants remain linked to each unit.
+- Added tenant editing with contact, optional email, move-in/out, status and notes.
+- Existing End Tenant function retained.
+- Parking assignment name is now a dropdown populated from the selected unit’s owner/current tenants.
+- Global Parking assignment also filters owner/tenant names based on selected unit and assignment type.
+- Billing list now has prominent View SOA and Print buttons.
+- Print opens the detailed SOA in a new tab and automatically opens the browser print dialog.
+- SOA already displays all current tenants, parking details, parking overdue months, unit overdue months and payment history.

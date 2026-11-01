@@ -1,11 +1,11 @@
 """/api/admin/resident-accounts — Resident Accounts (resident portal logins) for the React app.
 
     GET   /api/admin/resident-accounts?q=&status=&page=&perPage=   list (filter + pagination)
-    GET   /api/admin/resident-accounts/options                     active units with their current owners/tenants
+    GET   /api/admin/resident-accounts/options                     active units with their current owners/representative tenants
     POST  /api/admin/resident-accounts                             create {username, password, unitId, personType, personId?, displayName?}
     PATCH /api/admin/resident-accounts/<user_id>                   change link / name / status {unitId?, personType?, personId?, displayName?, active?, reason?}
     POST  /api/admin/resident-accounts/<user_id>/password          set a temporary password {newPassword}
-    GET   /api/admin/resident-accounts/people?q=&state=            current owners/tenants and their portal account state
+    GET   /api/admin/resident-accounts/people?q=&state=            current owners/representative tenants and their portal account state
     POST  /api/admin/resident-accounts/provision                   generate an account {personType, personId, mode, linkUserId?, formToken}
     POST  /api/admin/resident-accounts/<user_id>/activation-code   issue a new activation code {formToken}
     POST  /api/admin/resident-accounts/<user_id>/links/<link_id>/end   end access to one unit {reason?}
@@ -33,7 +33,7 @@ the list shows that reason. Password hashes are never returned.
 import re
 
 from flask import Blueprint, jsonify, request
-from sqlalchemy import func
+from sqlalchemy import func, true
 from sqlalchemy.exc import IntegrityError
 
 from ..core import security
@@ -166,15 +166,31 @@ def make_resident_accounts_blueprint(legacy, *, end_sessions):
             elif person.status != "Current":
                 errors["personId"] = f"{person_name(person)} is no longer a current {person_type.lower()} of this unit."
                 person = None
+            elif person_type == "Tenant" and not person.representative:
+                errors["personId"] = "Only the representative tenant can have a resident portal account."
+                person = None
             else:
                 taken = (Profile.query.join(User, User.id == Profile.user_id)
                          .filter(Profile.person_type == person_type, Profile.person_id == person.id,
-                                 Profile.active.is_(True), User.active.is_(True)))
+                                 Profile.active == true(), User.active == true()))
                 if current_user_id is not None:
                     taken = taken.filter(Profile.user_id != current_user_id)
                 other = taken.first()
                 if other:
                     errors["personId"] = f"{person_name(person)} already has a portal account ({other.user.username})."
+        if current_user_id is not None and person_type in PERSON_TYPES:
+            current_user = db.session.get(User, current_user_id)
+            if current_user and any(
+                link.person_type != person_type
+                for link in legacy.resident_links(current_user)
+                if link.active and not (
+                    partial is not None
+                    and link.unit_id == partial.unit_id
+                    and link.person_type == partial.person_type
+                    and link.person_id == partial.person_id
+                )
+            ):
+                errors["personType"] = "Owner and tenant records must use separate portal accounts."
         if not display_name and person:
             display_name = person_name(person)
         if not display_name:
@@ -220,12 +236,14 @@ def make_resident_accounts_blueprint(legacy, *, end_sessions):
     def options():
         linked = {(p.person_type, p.person_id): p.user.username
                   for p in Profile.query.join(User, User.id == Profile.user_id)
-                  .filter(Profile.person_id.isnot(None), Profile.active.is_(True), User.active.is_(True)).all()}
+                  .filter(Profile.person_id.isnot(None), Profile.active == true(), User.active == true()).all()}
         units = []
         for unit in Unit.query.filter_by(active=True).order_by(Unit.unit_no).all():
             people = []
             for person_type, model in (("Owner", Owner), ("Tenant", Tenant)):
                 for p in model.query.filter_by(unit_id=unit.id, status="Current").order_by(model.id).all():
+                    if person_type == "Tenant" and not p.representative:
+                        continue
                     people.append({"id": p.id, "personType": person_type, "name": person_name(p),
                                    "account": linked.get((person_type, p.id))})
             units.append({"id": unit.id, "unitNo": unit.unit_no, "people": people})
@@ -392,7 +410,7 @@ def make_resident_accounts_blueprint(legacy, *, end_sessions):
     @bp.get("/people")
     @permission_required("resident_users")
     def people():
-        """Current owners/tenants of active residential units with their portal account state:
+        """Current owners and representative tenants of active residential units with their portal account state:
         none | pending | active | disabled | ended. Billing never depends on this."""
         q = request.args.get("q", "").strip().lower()
         state = request.args.get("state", "").strip()
@@ -405,9 +423,12 @@ def make_resident_accounts_blueprint(legacy, *, end_sessions):
                 if prev is None or link.active or not prev.active:
                     links[(link.person_type, link.person_id)] = link
         rows = []
-        for unit in Unit.query.filter(Unit.active.is_(True), Unit.unit_type.notin_(prov.NON_RESIDENTIAL)).order_by(Unit.unit_no).all():
+        for unit in Unit.query.filter(Unit.active == true(), Unit.unit_type.notin_(prov.NON_RESIDENTIAL)).order_by(Unit.unit_no).all():
             for person_type, model in (("Owner", Owner), ("Tenant", Tenant)):
-                for p in model.query.filter_by(unit_id=unit.id, status="Current").order_by(model.id).all():
+                people_query = model.query.filter_by(unit_id=unit.id, status="Current")
+                if person_type == "Tenant":
+                    people_query = people_query.filter(Tenant.representative == true())
+                for p in people_query.order_by(model.id).all():
                     link = links.get((person_type, p.id))
                     user = link.user if link else None
                     st = prov.account_state(legacy, user) if (link and link.active and user) else "none"

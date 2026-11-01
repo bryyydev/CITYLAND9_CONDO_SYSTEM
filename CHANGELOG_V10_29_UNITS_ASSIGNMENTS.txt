@@ -1,0 +1,6 @@
+V10.29 Units Assignment + SOA
+- With Parking checkbox now shows its own Parking Unit dropdown directly underneath.
+- With Storage checkbox is directly below With Parking and shows its own Storage Unit dropdown when selected.
+- Unchecking either option clears its assignment.
+- Billing/SOA generation continues to calculate Condo Dues from Unit Details (area × configured rate or manual monthly dues), plus assigned Parking/Storage and Water charges.
+- Existing generated SOAs are not silently changed; generate the billing month again only when a new statement is needed.

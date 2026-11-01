@@ -66,7 +66,7 @@ export const ROLES: Record<Role, RoleConfig> = {
     badge: "bg-emerald-700 text-white",
     nav: [
       { group: "Workspace", items: ["dashboard"] },
-      { group: "Front Desk", items: ["gatePasses", "certificates", "maintenance"] },
+      { group: "Front Desk", items: ["gatePasses", "water", "certificates", "maintenance"] },
       { group: "Records", items: ["expenses", "attendanceEntry"] },
     ],
   },

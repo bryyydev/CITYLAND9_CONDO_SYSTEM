@@ -1,0 +1,6 @@
+V10.22 FIXED
+
+- Fixed startup NameError: water_history_status was registered before it was defined.
+- Added water_history_status helper to map SOA water rows to the corresponding monthly billing status.
+- SOA Water Reading History continues to show only Unpaid, Partially Paid, and Overdue rows; Paid rows are hidden.
+- Updated START_WINDOWS.bat so the command window stays open when the app stops, allowing errors to be read.

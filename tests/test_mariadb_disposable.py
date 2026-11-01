@@ -86,13 +86,13 @@ def test_the_disposable_instance_is_not_the_real_database(install):
     assert int(out[0]) == install.port and os.path.normcase(install.folder) in os.path.normcase(out[1])
 
 
-def test_migration_0012_downgrades_and_upgrades_with_bill_figures_unchanged(install):
+def test_migration_0013_downgrades_and_upgrades_with_bill_figures_unchanged(install):
     down = install.run("database/db_migrate.py", "downgrade", "0011_resident_provisioning").stdout
     assert "Bill figures unchanged" in down, down
     assert "0011_resident_provisioning" in install.run("database/db_migrate.py", "status").stdout
     up = install.run("database/db_migrate.py", "upgrade").stdout
     assert "Live schema matches the models: yes" in up and "Bill figures unchanged" in up, up
-    assert "0012_import_crosswalk (head)" in install.run("database/db_migrate.py", "status").stdout
+    assert "0015_water_reading_date_range (head)" in install.run("database/db_migrate.py", "status").stdout
 
 
 def test_crosswalk_uniqueness_is_enforced_by_mariadb(install):

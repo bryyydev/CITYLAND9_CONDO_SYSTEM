@@ -98,8 +98,12 @@ def test_office_issues_a_gate_pass_for_an_existing_unit(app_module, sa):
     assert p["unitNo"] == "TEST-501" and p["status"] == "Issued" and p["source"] == "office"
     assert audited(m, "gate_pass", p["id"]) == 1
     assert sa.post(f"/api/gate-passes/{p['id']}/review", json={"decision": "approve"}).status_code == 409   # not a request
+    pull_out = sa.post("/api/gate-passes", json={"unitNo": "test-501", "type": "Pull Out", "date": date.today().isoformat(),
+                                                 "name": "ABC Movers", "purpose": "Furniture removal"})
+    assert pull_out.status_code == 201 and pull_out.get_json()["pass"]["type"] == "Pull Out"
     with m.app.app_context():
-        m.GatePass.query.filter_by(id=p["id"]).delete(); m.db.session.commit()
+        m.GatePass.query.filter(m.GatePass.id.in_([p["id"], pull_out.get_json()["pass"]["id"]])).delete(synchronize_session=False)
+        m.db.session.commit()
 
 
 # ------------------------------------------------------------------ certificates

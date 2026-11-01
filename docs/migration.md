@@ -26,7 +26,7 @@ The original plan text follows.
 | Schema management | `init_db()` runs `create_all()`, then **SQLite-only** `ALTER TABLE … ADD COLUMN` upgrades (backup `*.before_v10_cleanup.bak` first), plus 4 indexes created with raw SQL. The HR tables are also created on demand by `__table__.create(checkfirst=True)` inside HR routes. There is **no migration history.** |
 | Size | **31 tables, 302 columns, 26 foreign keys, 10 UNIQUE columns, 23 indexes** (19 declared on models, one of them unique, + 4 created at runtime) |
 | Data on this development PC | Essentially empty: 1 user, 19 settings, 3 audit rows. **The client's real data is on the client's server.** Every data check in this plan must be re-run against a *copy* of that database. |
-| Earlier alternative | `migrate_sqlite_to_sqlserver.py` (SQL Server via pyodbc, V10.16). It's superseded by the MySQL target and kept for reference only. |
+| SQL Server Express alternative | `migrate_sqlite_to_sqlserver.py` (local SQL Server via ODBC Driver 18). Runtime and backup/restore support are documented in `docs/run-guide/02-DATABASE_SETUP.md` and `07-OPERATIONS.md`; SQL Server is not the default or currently selected production engine. |
 
 ### 1.1 Tables by business area
 
@@ -722,4 +722,3 @@ PK `id` · FK `billing_id` → `billing.id` · UNIQUE — · INDEX `ix_payment_b
 | `payment_type` | VARCHAR(20) | VARCHAR(20) | yes | 'FULL' |
 | `reference` | VARCHAR(100) | VARCHAR(100) | yes | — |
 | `remarks` | VARCHAR(300) | VARCHAR(300) | yes | — |
-

@@ -31,14 +31,14 @@ VALUE_MAX = 255  # Setting.value is String(255)
 
 # API field -> setting key. Numbers use the classic screen's label/places/min/max (legacy.SETTINGS_NUMBERS).
 NUMBERS = {
-    ("ratesPerSqm", "studio"): "studio_rate_per_sqm",
-    ("ratesPerSqm", "oneBed"): "one_bed_rate_per_sqm",
-    ("ratesPerSqm", "twoBed"): "two_bed_rate_per_sqm",
-    ("ratesPerSqm", "threeBed"): "three_bed_rate_per_sqm",
+    ("ratesPerSqm", "residential"): "studio_rate_per_sqm",
+    ("ratesPerSqm", "commercial"): "commercial_rate_per_sqm",
+    ("ratesPerSqm", "dryingArea"): "drying_area_rate_per_sqm",
     ("parkingRatePerSqm",): "parking_rate_per_sqm",
     ("storageRatePerSqm",): "storage_rate_per_sqm",
     ("waterRate",): "water_rate",
     ("penaltyRate",): "penalty_rate",
+    ("vatRate",): "vat_rate",
 }
 TEXTS = {
     "corporationName": ("corporation_name", "Corporation name"),
@@ -56,6 +56,11 @@ FLAGS = {
     ("penaltyIncludes", "parking"): "penalty_include_parking",
     ("penaltyIncludes", "storage"): "penalty_include_storage",
     ("penaltyIncludes", "water"): "penalty_include_water",
+    ("vatIncludes", "condo"): "vat_include_condo",
+    ("vatIncludes", "parking"): "vat_include_parking",
+    ("vatIncludes", "storage"): "vat_include_storage",
+    ("vatIncludes", "water"): "vat_include_water",
+    ("vatIncludes", "other"): "vat_include_other",
 }
 MONTHS = {"storageInTotalFrom": "storage_in_total_from", "booksClosedThrough": "books_closed_through"}
 
@@ -64,10 +69,14 @@ DEFAULTS = {
     "corporation_name": "CITYLAND 9 CONDOMINIUM CORPORATION",
     "address": "9 Dela Rosa Condominium, Dela Rosa Street, Barangay Pio del Pilar, Makati City",
     "water_rate": "50", "water_auto_compute": "1",
-    "studio_rate_per_sqm": "50", "one_bed_rate_per_sqm": "75", "two_bed_rate_per_sqm": "100", "three_bed_rate_per_sqm": "125",
+    "studio_rate_per_sqm": "50",
+    "commercial_rate_per_sqm": "0",
+    "drying_area_rate_per_sqm": "0",
     "parking_rate_per_sqm": "100", "storage_rate_per_sqm": "50", "storage_in_total_from": "9999-12",
     "penalty_rate": "4",        # confirmed 2026-10-06 (was 10); used only when no rate is saved
     "penalty_include_condo": "1", "penalty_include_parking": "0", "penalty_include_storage": "0", "penalty_include_water": "0",
+    "vat_rate": "0",
+    "vat_include_condo": "0", "vat_include_parking": "0", "vat_include_storage": "0", "vat_include_water": "0", "vat_include_other": "0",
     "online_payment_url": "",
     "online_payment_instructions": "Please use the online payment link or scan the Payment QR shown on this SOA.",
     "smtp_host": "", "smtp_port": "587", "smtp_sender": "", "smtp_username": "",
@@ -109,6 +118,8 @@ def make_rates_blueprint(legacy):
             "waterAutoCompute": current("water_auto_compute") == "1",
             "penaltyRate": current("penalty_rate"),
             "penaltyIncludes": nested(FLAGS, "penaltyIncludes"),
+            "vatRate": current("vat_rate"),
+            "vatIncludes": nested(FLAGS, "vatIncludes"),
             # 9999-12 is the classic "never" value: storage is not yet added to SOA totals.
             "storageInTotalFrom": storage_from if MONTH_RE.match(storage_from) else "9999-12",
             "booksClosedThrough": legacy.books_closed_through(),
@@ -223,6 +234,7 @@ def make_rates_blueprint(legacy):
         legacy.audit("Updated Rates & Rules: " + ", ".join(sorted(details)), entity_type="setting",
                      details=details, commit=False)
         legacy.db.session.commit()
+        legacy.reset_setting_cache()
         return jsonify({"rates": payload(), "changed": sorted(details)})
 
     return bp

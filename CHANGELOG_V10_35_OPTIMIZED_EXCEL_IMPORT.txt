@@ -1,0 +1,27 @@
+CITYLAND 9 CONDO WEB SYSTEM - V10.35
+Optimized Excel Import
+
+Changes:
+- Excel import now uses openpyxl read-only streaming mode.
+- Existing database records are preloaded once per table instead of doing a SELECT for every Excel row.
+- Unit, Owner, Tenant, Parking, Water, Billing, Payment, Employee and Expense imports are processed in memory and committed as one transaction.
+- Imported Unit/child relationships are mapped to the actual database IDs.
+- Parking/storage self-assignments are resolved after all Units are loaded.
+- Boolean Excel values such as 0/1, TRUE/FALSE, Yes/No and Paid are handled correctly.
+- Excel month/date values are normalized before saving.
+- A consistent SQLite backup is created automatically before an import when using the local SQLite database.
+- If an import fails, the transaction is rolled back and no partial import is committed.
+- The importer keeps the workbook data intact; it does not modify the uploaded Excel file.
+
+Recommended test file:
+CityLand9_800_UNITS_RANDOM_SOA(1).xlsx
+Expected data volume:
+- 1,000 Units
+- 800 Owners
+- 250 Tenants
+- 209 ParkingLots
+- 209 ParkingBilling
+- 1,600 WaterReadings
+- 1,600 Billing
+- 0 Payments
+- 800 SOA Summary (reference sheet; not imported)

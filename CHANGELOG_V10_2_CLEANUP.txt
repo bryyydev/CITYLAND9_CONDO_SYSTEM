@@ -1,0 +1,12 @@
+V10.2 CLEANUP CHANGELOG
+
+- Removed duplicate helper definitions in app.py.
+- Preserved a single source of truth for billing, water, dues, parking and balance calculations.
+- Registered helper functions directly with Jinja instead of shadowing Python functions.
+- Improved SQLite migration handling and added a pre-migration backup.
+- Fixed relative SQLite database path behavior.
+- Added Partially Paid status detection.
+- Capped payment entries at the outstanding bill balance.
+- Added billing/water month validation.
+- Removed bundled Python cache files.
+- Added Windows one-click setup/start batch file.

@@ -26,6 +26,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 from flask import Blueprint, jsonify, request
+from sqlalchemy import true
 
 from ..core.roles import RESIDENT
 from ..services import receipts as receipt_json
@@ -57,12 +58,28 @@ def make_resident_blueprint(legacy):
         unit = legacy.db.session.get(legacy.Unit, unit_id)
         return unit if unit and unit.active else None
 
+    def party_type_for_resident(bill):
+        if not legacy.party_ledger_enabled(bill.billing_month):
+            return None
+        user = signed_in_user()
+        profile = getattr(user, "resident_profile", None)
+        if profile and profile.person_type in ("Owner", "Tenant"):
+            active_types = {link.person_type for link in legacy.resident_access_links(user)}
+            if len(active_types) > 1 or (active_types and profile.person_type not in active_types):
+                raise ValueError("Owner and tenant records must use separate portal accounts. Please contact the Admin Office.")
+            return profile.person_type
+        raise ValueError("A valid Owner or Tenant resident profile is required for separate statements.")
+
     # The SOA JSON is shared with Billing (app/services/soa.py): residents and the office see the same figures.
     def bill_row(bill):
+        payer_type = party_type_for_resident(bill)
+        if payer_type:
+            statement = soa_json.soa_detail(legacy, bill, payer_type=payer_type)
+            return {key: statement[key] for key in ("id", "billingMonth", "dueDate", "status", "total", "amountPaid", "balance")}
         return soa_json.soa_row(legacy, bill)
 
     def bill_detail(bill):
-        return soa_json.soa_detail(legacy, bill)
+        return soa_json.soa_detail(legacy, bill, payer_type=party_type_for_resident(bill))
 
     def ticket_row(t):
         return {"ticketNo": t.ticket_no, "category": t.category, "title": t.title, "description": t.description,
@@ -80,13 +97,17 @@ def make_resident_blueprint(legacy):
         profile = getattr(signed_in_user(), "resident_profile", None)
         open_tickets = legacy.MaintenanceTicket.query.filter(
             legacy.MaintenanceTicket.unit_id == unit_id, legacy.MaintenanceTicket.status != "Closed").count()
+        try:
+            latest_row = bill_row(latest) if latest else None
+        except ValueError as exc:
+            return json_error(409, str(exc))
         return jsonify({
             "unit": {"id": unit.id, "unitNo": unit.unit_no, "floor": unit.floor, "type": unit.unit_type, "status": unit.status},
             "residentName": profile.display_name if profile else None,
             # Each SOA already carries unpaid earlier months as "previous balance", so the
             # amount owed is the latest SOA's balance (adding all SOAs would count months twice).
-            "outstandingBalance": bill_row(latest)["balance"] if latest else "0.00",
-            "latestSoa": bill_row(latest) if latest else None,
+            "outstandingBalance": latest_row["balance"] if latest_row else "0.00",
+            "latestSoa": latest_row,
             "openTickets": open_tickets,
         })
 
@@ -96,7 +117,11 @@ def make_resident_blueprint(legacy):
         if not get_unit(unit_id):
             return json_error(404, "Unit not found.")
         bills = legacy.Billing.query.filter_by(unit_id=unit_id).order_by(legacy.Billing.billing_month.desc(), legacy.Billing.id.desc()).all()
-        return jsonify({"statements": [bill_row(b) for b in bills]})
+        try:
+            statements = [bill_row(b) for b in bills]
+        except ValueError as exc:
+            return json_error(409, str(exc))
+        return jsonify({"statements": statements})
 
     @bp.get("/units/<int:unit_id>/soa/<int:bill_id>/pdf")
     @unit_scoped
@@ -105,7 +130,8 @@ def make_resident_blueprint(legacy):
         bill = legacy.db.session.get(legacy.Billing, bill_id)
         if not bill or bill.unit_id != unit_id:
             return json_error(404, "Statement not found.")
-        return pdf_response(legacy, bill)
+        return pdf_response(legacy, bill, inline=request.args.get("inline") == "1",
+                            payer_type=party_type_for_resident(bill))
 
     @bp.get("/units/<int:unit_id>/soa/<int:bill_id>")
     @unit_scoped
@@ -116,9 +142,13 @@ def make_resident_blueprint(legacy):
         if not bill or bill.unit_id != unit_id:
             return json_error(404, "Statement not found.")
         unit = bill.unit
+        try:
+            statement = bill_detail(bill)
+        except ValueError as exc:
+            return json_error(409, str(exc))
         return jsonify({"unit": {"id": unit.id, "unitNo": unit.unit_no, "type": unit.unit_type},
                         "corporation": legacy.setting("corporation_name", "CITYLAND 9 CONDOMINIUM CORPORATION"),
-                        "statement": bill_detail(bill)})
+                        "statement": statement})
 
     @bp.get("/units/<int:unit_id>/maintenance")
     @unit_scoped
@@ -158,7 +188,7 @@ def make_resident_blueprint(legacy):
     def documents(unit_id):
         """Document records meant for residents: shared with all residents, or with this unit."""
         D = legacy.DocumentRecord
-        rows = D.query.filter(D.active.is_(True), (D.audience == "residents") | ((D.audience == "unit") & (D.unit_id == unit_id))) \
+        rows = D.query.filter(D.active == true(), (D.audience == "residents") | ((D.audience == "unit") & (D.unit_id == unit_id))) \
             .order_by(D.created_at.desc()).limit(200).all()
         return jsonify({"documents": [{"id": d.id, "title": d.title, "category": d.category or "General", "description": d.description or "",
                                        "fileName": d.file_name or "", "filePath": d.file_path or "", "forUnit": d.audience == "unit",
@@ -169,7 +199,7 @@ def make_resident_blueprint(legacy):
     def notices():
         A = legacy.Announcement
         # Staff-only announcements are not shown to residents (audience "residents", "all", or unset).
-        rows = A.query.filter(A.published.is_(True), (A.audience.is_(None)) | (A.audience.in_(("residents", "all"))))             .order_by(A.publish_date.desc(), A.id.desc()).limit(50).all()
+        rows = A.query.filter(A.published == true(), (A.audience.is_(None)) | (A.audience.in_(("residents", "all"))))             .order_by(A.publish_date.desc(), A.id.desc()).limit(50).all()
         return jsonify({"notices": [{"id": a.id, "title": a.title, "message": a.message,
                                      "publishDate": a.publish_date.isoformat() if a.publish_date else None} for a in rows]})
 

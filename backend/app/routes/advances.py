@@ -15,6 +15,7 @@ from datetime import date
 from decimal import Decimal
 
 from flask import Blueprint, jsonify, request
+from sqlalchemy import true
 
 from ..core.numbers import InputError, parse_amount
 from ..services.soa import money
@@ -49,6 +50,7 @@ def make_advances_blueprint(legacy):
             "amount": amount, "startMonth": a.start_month, "endMonth": legacy.month_shift(a.start_month, months - 1),
             "months": months, "monthlyAmount": money(a.monthly_amount),
             "method": a.payment_method, "reference": a.reference or "", "remarks": a.remarks or "",
+            "payerType": a.payer_type,
             "applied": "0.00" if a.reversed_at else money(Decimal(amount) - remaining),
             "remaining": money(remaining), "receiptNo": receipt_no, "receiptId": receipt.id if receipt else None,
             "reversed": bool(a.reversed_at),
@@ -79,7 +81,7 @@ def make_advances_blueprint(legacy):
     @bp.get("/options")
     @permission_required("advance_payments")
     def options():
-        units = Unit.query.filter(Unit.active.is_(True), Unit.unit_type.notin_(("PARKING", "STORAGE"))).order_by(Unit.unit_no).all()
+        units = Unit.query.filter(Unit.active == true(), Unit.unit_type.notin_(("PARKING", "STORAGE"))).order_by(Unit.unit_no).all()
         return jsonify({"units": [{"id": u.id, "unitNo": u.unit_no, "payerName": payer(u), "monthlyDues": money(legacy.unit_dues(u))} for u in units]})
 
     @bp.post("")
@@ -114,7 +116,7 @@ def make_advances_blueprint(legacy):
         adv, receipt = legacy.record_advance_payment(
             unit_id=data.get("unitId"), amount=amount, start_month=str(data.get("startMonth") or ""), months=months,
             method=data.get("method"), reference=data.get("reference"), remarks=data.get("remarks"),
-            payment_date=pay_date, form_token=token)
+            payment_date=pay_date, form_token=token, payer_type=data.get("payerType"))
         legacy.reset_financial_caches()   # balances cached during the request predate the application
         return jsonify({"advance": row(adv), "receiptNo": receipt.receipt_no, "receiptId": receipt.id}), 201
 

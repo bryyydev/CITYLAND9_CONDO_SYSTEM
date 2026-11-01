@@ -33,10 +33,14 @@ def world(app_module):
     m = app_module
     tok = lambda: secrets.token_urlsafe(24)  # noqa: E731
     with m.app.test_request_context():
-        u = m.Unit(unit_no="RPT-1", unit_type="1 BEDROOM", area_sqm=40, active=True, status="Occupied")
+        u = m.Unit(unit_no="RPT-1", unit_type="1 BEDROOM", area_sqm=40, unit_rate_per_sqm=75, active=True, status="Occupied")
         m.db.session.add(u); m.db.session.commit()
         others = [x.id for x in m.Unit.query.filter(m.Unit.id != u.id, m.Unit.active.is_(True)).all()]
         m.Unit.query.filter(m.Unit.id.in_(others)).update({"active": False}, synchronize_session=False)
+        commercial = m.Unit(unit_no="RPT-COMMERCIAL", unit_type="COMMERCIAL", area_sqm=60, active=True, status="Vacant")
+        commercial_occupied = m.Unit(unit_no="RPT-COMMERCIAL-OCCUPIED", unit_type="COMMERCIAL", area_sqm=45, active=True, status="Occupied")
+        m.db.session.add_all([commercial, commercial_occupied])
+        m.db.session.commit()
         saved = {}
         for key, value in (("penalty_rate", "10"), ("penalty_include_condo", "1")):
             row = m.Setting.query.filter_by(key=key).first()
@@ -67,7 +71,7 @@ def world(app_module):
         exp = m.Expense(expense_date=date(2024, 4, 2), category="Repairs", description="Report test pump", amount=D("1200"))
         m.db.session.add(exp)
         m.db.session.commit()
-        ids = {"unit": u.id, "reading": reading.id, "expense": exp.id, "others": others, "settings": saved}
+        ids = {"unit": u.id, "commercial": [commercial.id, commercial_occupied.id], "reading": reading.id, "expense": exp.id, "others": others, "settings": saved}
     yield ids
     with m.app.app_context():
         for r in m.Receipt.query.filter_by(unit_id=ids["unit"]).all():
@@ -80,6 +84,7 @@ def world(app_module):
         m.WaterReading.query.filter_by(id=ids["reading"]).delete()
         m.Expense.query.filter_by(id=ids["expense"]).delete()
         m.Unit.query.filter_by(id=ids["unit"]).delete()
+        m.Unit.query.filter(m.Unit.id.in_(ids["commercial"])).delete(synchronize_session=False)
         m.Unit.query.filter(m.Unit.id.in_(ids["others"])).update({"active": True}, synchronize_session=False)
         for key, value in ids["settings"].items():
             if value is None:
@@ -154,6 +159,8 @@ def test_totals_are_counted_once(app_module, sa, world):
     other_total, other_units = owed_elsewhere(app_module, world["unit"])
     assert D(r["receivables"]["total"]) - other_total == D("5600.00") and r["receivables"]["units"] == other_units + 1
     assert r["property"]["residentialUnits"] == 1 and r["property"]["occupied"] == 1
+    assert r["property"]["commercialUnits"] == 2
+    assert r["property"]["commercialOccupied"] == 1 and r["property"]["commercialVacant"] == 1
 
 
 def test_report_changes_nothing(app_module, sa, world):

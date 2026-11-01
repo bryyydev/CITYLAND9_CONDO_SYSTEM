@@ -12,6 +12,7 @@
 | Units, owners, tenants, parking (B3: parking list is read-only) | ✅ | ✅ (**edit units / add owners fixed, D3**) | — (**was edit-only**) | — (**was edit-only**) | — | — (**was any unit page, D2**) |
 | Billing Management, SOA, payments, QR | ✅ | ✅ | — | — | **✅ read/write** | own SOA only (portal) |
 | Recalculate an issued SOA from current rates (new, B1) | ✅ | ✅ | — | — | ✅ | — |
+| Delete generated SOAs (open period, unpaid and unallocated only) | ✅ | — | — | — | — | — |
 | Official Receipts ledger + printable OR (new, B2) | ✅ | ✅ | — | — | ✅ | own OR numbers on own SOA |
 | Advance Payments | ✅ | ✅ | — | — | **✅** | — |
 | SOA Email | ✅ | ✅ | — | — | — ❓ | — |
@@ -34,6 +35,9 @@
 | Excel database export/import | ✅ | **—** | **— (D4)** | — | — | — |
 
 Everyone can use Change Password.
+
+Residents can change their own username and password from **Resident Portal → Account → Profile**.
+Changing a username requires the current password and signs the account out of other sessions.
 
 ### ❓ Items to confirm with the client
 1. **Rates & Rules taken from Admin.** The spec says Admin is "blocked from system settings". If Rates & Rules (billing rates, penalties) should stay with Admin, change `"settings"` in the matrix.

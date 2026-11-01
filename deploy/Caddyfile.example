@@ -1,0 +1,6 @@
+# Copy this file to C:\caddy\Caddyfile and replace the hostname with one that resolves
+# to this server PC on the office network.
+https://cityland9.local {
+    tls internal
+    reverse_proxy 127.0.0.1:5000
+}
